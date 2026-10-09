@@ -49,7 +49,14 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     }
     let paths = paths::Paths::from_env()?;
     log::init(paths.log_file.clone());
-    log::write("INFO", &format!("mcc {} — {:?}", env!("CARGO_PKG_VERSION"), std::env::args().skip(1).collect::<Vec<_>>()));
+    log::write(
+        "INFO",
+        &format!(
+            "mcc {} — {:?}",
+            env!("CARGO_PKG_VERSION"),
+            std::env::args().skip(1).collect::<Vec<_>>()
+        ),
+    );
 
     let explicit_init = matches!(cli.command, Command::Init(_));
     let mut cfg = config::Config::load(&paths.config_file)?;

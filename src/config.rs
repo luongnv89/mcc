@@ -48,12 +48,16 @@ impl Config {
         if !path.exists() {
             return Ok(Self::default());
         }
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         toml::from_str(&text).map_err(|e| {
-            CliError::input(format!("{} is not valid mcc config: {}", path.display(), e.message()))
-                .hint("fix the file by hand, or move it away and run `mcc init --force`".to_string())
-                .into()
+            CliError::input(format!(
+                "{} is not valid mcc config: {}",
+                path.display(),
+                e.message()
+            ))
+            .hint("fix the file by hand, or move it away and run `mcc init --force`".to_string())
+            .into()
         })
     }
 
@@ -62,7 +66,8 @@ impl Config {
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         }
         let body = toml::to_string_pretty(self).context("serializing config")?;
-        let text = format!("# mcc configuration — managed by `mcc`; safe to edit by hand.\n\n{body}");
+        let text =
+            format!("# mcc configuration — managed by `mcc`; safe to edit by hand.\n\n{body}");
         crate::fsutil::write_atomic(path, text.as_bytes())
     }
 }

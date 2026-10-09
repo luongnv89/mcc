@@ -13,21 +13,111 @@ const RESERVED_NAMES: &[&str] = &["claude", "mcc", "default", "help", "all"];
 
 /// Shell reserved words and builtins across sh/bash/zsh/fish.
 const SHELL_WORDS: &[&str] = &[
-    "alias", "autoload", "bg", "bind", "break", "builtin", "bye", "case", "cd", "chdir", "command",
-    "compgen", "complete", "continue", "coproc", "declare", "dirs", "disown", "do", "done", "echo",
-    "elif", "else", "emulate", "enable", "end", "esac", "eval", "exec", "exit", "export", "false",
-    "fc", "fg", "fi", "for", "foreach", "function", "functions", "getopts", "hash", "history", "if",
-    "in", "integer", "jobs", "kill", "let", "limit", "local", "logout", "noglob", "popd", "print",
-    "printf", "pushd", "pwd", "read", "readonly", "rehash", "repeat", "return", "select", "set",
-    "setopt", "shift", "source", "suspend", "test", "then", "time", "times", "trap", "true", "type",
-    "typeset", "ulimit", "umask", "unalias", "unfunction", "unhash", "unlimit", "unset", "unsetopt",
-    "until", "wait", "whence", "where", "which", "while",
+    "alias",
+    "autoload",
+    "bg",
+    "bind",
+    "break",
+    "builtin",
+    "bye",
+    "case",
+    "cd",
+    "chdir",
+    "command",
+    "compgen",
+    "complete",
+    "continue",
+    "coproc",
+    "declare",
+    "dirs",
+    "disown",
+    "do",
+    "done",
+    "echo",
+    "elif",
+    "else",
+    "emulate",
+    "enable",
+    "end",
+    "esac",
+    "eval",
+    "exec",
+    "exit",
+    "export",
+    "false",
+    "fc",
+    "fg",
+    "fi",
+    "for",
+    "foreach",
+    "function",
+    "functions",
+    "getopts",
+    "hash",
+    "history",
+    "if",
+    "in",
+    "integer",
+    "jobs",
+    "kill",
+    "let",
+    "limit",
+    "local",
+    "logout",
+    "noglob",
+    "popd",
+    "print",
+    "printf",
+    "pushd",
+    "pwd",
+    "read",
+    "readonly",
+    "rehash",
+    "repeat",
+    "return",
+    "select",
+    "set",
+    "setopt",
+    "shift",
+    "source",
+    "suspend",
+    "test",
+    "then",
+    "time",
+    "times",
+    "trap",
+    "true",
+    "type",
+    "typeset",
+    "ulimit",
+    "umask",
+    "unalias",
+    "unfunction",
+    "unhash",
+    "unlimit",
+    "unset",
+    "unsetopt",
+    "until",
+    "wait",
+    "whence",
+    "where",
+    "which",
+    "while",
 ];
 
 /// rc files scanned for aliases and functions (relative to home).
 const RC_FILES: &[&str] = &[
-    ".zshrc", ".zprofile", ".zshenv", ".zlogin", ".bashrc", ".bash_profile", ".bash_login",
-    ".bash_aliases", ".profile", ".aliases", ".config/fish/config.fish",
+    ".zshrc",
+    ".zprofile",
+    ".zshenv",
+    ".zlogin",
+    ".bashrc",
+    ".bash_profile",
+    ".bash_login",
+    ".bash_aliases",
+    ".profile",
+    ".aliases",
+    ".config/fish/config.fish",
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -48,7 +138,12 @@ pub fn check_syntax(alias: &str) -> Result<(), String> {
 }
 
 /// Every reason `alias` cannot be used. Empty = available.
-pub fn conflicts(alias: &str, paths: &Paths, cfg: &Config, shell_path: Option<&str>) -> Vec<Conflict> {
+pub fn conflicts(
+    alias: &str,
+    paths: &Paths,
+    cfg: &Config,
+    shell_path: Option<&str>,
+) -> Vec<Conflict> {
     let mut out = Vec::new();
     let mut add = |r: String| out.push(Conflict { reason: r });
 
@@ -63,7 +158,10 @@ pub fn conflicts(alias: &str, paths: &Paths, cfg: &Config, shell_path: Option<&s
     }
     let dir = paths.profile_dir(alias);
     if dir.exists() {
-        add(format!("profile directory {} already exists", paths.display(&dir)));
+        add(format!(
+            "profile directory {} already exists",
+            paths.display(&dir)
+        ));
     }
     let wrapper = paths.wrapper(alias);
     if std::fs::symlink_metadata(&wrapper).is_ok() {
@@ -71,23 +169,33 @@ pub fn conflicts(alias: &str, paths: &Paths, cfg: &Config, shell_path: Option<&s
     }
     for hit in path_executables(alias) {
         if hit != wrapper {
-            add(format!("a command named \"{alias}\" exists at {}", hit.display()));
+            add(format!(
+                "a command named \"{alias}\" exists at {}",
+                hit.display()
+            ));
         }
     }
     for (file, kind) in rc_definitions(alias, &paths.home) {
-        add(format!("{kind} \"{alias}\" is defined in {}", paths.display(&file)));
+        add(format!(
+            "{kind} \"{alias}\" is defined in {}",
+            paths.display(&file)
+        ));
     }
     if let Some(found) = shell_probe(alias, paths, shell_path)
         && out.is_empty()
     {
-        out.push(Conflict { reason: format!("your shell already resolves \"{alias}\": {found}") });
+        out.push(Conflict {
+            reason: format!("your shell already resolves \"{alias}\": {found}"),
+        });
     }
     out
 }
 
 /// Executables named `alias` on `$PATH`.
 fn path_executables(alias: &str) -> Vec<PathBuf> {
-    let Some(path) = std::env::var_os("PATH") else { return vec![] };
+    let Some(path) = std::env::var_os("PATH") else {
+        return vec![];
+    };
     let mut hits: Vec<PathBuf> = std::env::split_paths(&path)
         .map(|d| d.join(alias))
         .filter(|p| crate::fsutil::is_executable(p))
@@ -100,12 +208,13 @@ fn path_executables(alias: &str) -> Vec<PathBuf> {
 fn rc_definitions(alias: &str, home: &Path) -> Vec<(PathBuf, &'static str)> {
     let a = regex::escape(alias);
     let alias_re = Regex::new(&format!(r"^\s*alias\s+(?:-g\s+)?{a}(?:=|\s)")).expect("regex");
-    let func_re =
-        Regex::new(&format!(r"^\s*(?:function\s+{a}\b|{a}\s*\(\s*\))")).expect("regex");
+    let func_re = Regex::new(&format!(r"^\s*(?:function\s+{a}\b|{a}\s*\(\s*\))")).expect("regex");
     let mut out = Vec::new();
     for rel in RC_FILES {
         let file = home.join(rel);
-        let Ok(text) = std::fs::read_to_string(&file) else { continue };
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
         for line in text.lines() {
             if line.trim_start().starts_with('#') {
                 continue;
@@ -120,7 +229,9 @@ fn rc_definitions(alias: &str, home: &Path) -> Vec<(PathBuf, &'static str)> {
             }
         }
     }
-    let fish_fn = home.join(".config/fish/functions").join(format!("{alias}.fish"));
+    let fish_fn = home
+        .join(".config/fish/functions")
+        .join(format!("{alias}.fish"));
     if fish_fn.exists() {
         out.push((fish_fn, "fish function"));
     }
@@ -156,7 +267,12 @@ fn shell_probe(alias: &str, paths: &Paths, shell_path: Option<&str>) -> Option<S
                     use std::io::Read;
                     let _ = s.read_to_string(&mut out);
                 }
-                let line = out.lines().find(|l| l.contains(alias)).unwrap_or("").trim().to_string();
+                let line = out
+                    .lines()
+                    .find(|l| l.contains(alias))
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
                 return (status.success() && !line.is_empty()).then_some(line);
             }
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(25)),
@@ -175,10 +291,25 @@ mod tests {
 
     #[test]
     fn syntax() {
-        for ok in ["work", "a", "work-2", "cus_luong", "abcdefghijklmnopqrstuvwxyz012345"] {
+        for ok in [
+            "work",
+            "a",
+            "work-2",
+            "cus_luong",
+            "abcdefghijklmnopqrstuvwxyz012345",
+        ] {
             assert!(check_syntax(ok).is_ok(), "{ok}");
         }
-        for bad in ["", "Work", "2work", "-x", "my work", "a/b", "abcdefghijklmnopqrstuvwxyz0123456", "é"] {
+        for bad in [
+            "",
+            "Work",
+            "2work",
+            "-x",
+            "my work",
+            "a/b",
+            "abcdefghijklmnopqrstuvwxyz0123456",
+            "é",
+        ] {
             assert!(check_syntax(bad).is_err(), "{bad}");
         }
     }

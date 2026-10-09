@@ -31,11 +31,21 @@ pub fn init(verbose: bool, quiet: bool, no_color: bool) {
     let interactive = std::io::stdin().is_terminal()
         && std::io::stderr().is_terminal()
         && std::env::var_os("MCC_NON_INTERACTIVE").is_none();
-    let _ = SETTINGS.set(Settings { verbose, quiet, color, interactive });
+    let _ = SETTINGS.set(Settings {
+        verbose,
+        quiet,
+        color,
+        interactive,
+    });
 }
 
 pub fn settings() -> Settings {
-    *SETTINGS.get().unwrap_or(&Settings { verbose: false, quiet: false, color: false, interactive: false })
+    *SETTINGS.get().unwrap_or(&Settings {
+        verbose: false,
+        quiet: false,
+        color: false,
+        interactive: false,
+    })
 }
 
 pub fn is_interactive() -> bool {
@@ -54,7 +64,11 @@ pub fn header(title: &str) {
         return;
     }
     emit("");
-    emit(&format!("{} {}", style("◆").cyan().bold(), style(title).bold()));
+    emit(&format!(
+        "{} {}",
+        style("◆").cyan().bold(),
+        style(title).bold()
+    ));
 }
 
 pub fn info(msg: &str) {
@@ -104,7 +118,10 @@ pub fn error(msg: &str, hint: Option<&str>) {
 pub fn kv(key: &str, value: &str) {
     log::write("INFO", &format!("{key}: {value}"));
     if !settings().quiet {
-        emit(&format!("    {:<18} {value}", style(format!("{key}:")).dim()));
+        emit(&format!(
+            "    {:<18} {value}",
+            style(format!("{key}:")).dim()
+        ));
     }
 }
 
@@ -114,7 +131,11 @@ pub fn result(ok: bool, msg: &str) {
     if settings().quiet && ok {
         return;
     }
-    let label = if ok { style("Result:").green().bold() } else { style("Result:").yellow().bold() };
+    let label = if ok {
+        style("Result:").green().bold()
+    } else {
+        style("Result:").yellow().bold()
+    };
     emit("");
     emit(&format!("  {label} {msg}"));
 }
@@ -140,14 +161,23 @@ impl Steps {
 
     pub fn start(&mut self, label: &str) -> Step {
         self.current += 1;
-        log::write("INFO", &format!("[{}/{}] {label}", self.current, self.total));
+        log::write(
+            "INFO",
+            &format!("[{}/{}] {label}", self.current, self.total),
+        );
         if !settings().quiet {
             emit(&format!(
                 "  {} {label}",
                 style(format!("[{}/{}]", self.current, self.total)).cyan()
             ));
         }
-        Step { label: label.to_string(), started: Instant::now(), index: self.current, total: self.total, finished: false }
+        Step {
+            label: label.to_string(),
+            started: Instant::now(),
+            index: self.current,
+            total: self.total,
+            finished: false,
+        }
     }
 }
 
@@ -155,13 +185,23 @@ impl Step {
     fn finish(&mut self, mark: console::StyledObject<&str>, word: &str, note: &str) {
         self.finished = true;
         let ms = self.started.elapsed().as_millis();
-        let note_s = if note.is_empty() { String::new() } else { format!(" — {note}") };
+        let note_s = if note.is_empty() {
+            String::new()
+        } else {
+            format!(" — {note}")
+        };
         log::write(
             "INFO",
-            &format!("[{}/{}] {} {word}{note_s} ({ms}ms)", self.index, self.total, self.label),
+            &format!(
+                "[{}/{}] {} {word}{note_s} ({ms}ms)",
+                self.index, self.total, self.label
+            ),
         );
         if !settings().quiet {
-            emit(&format!("        {mark} {word}{note_s} {}", style(format!("({ms}ms)")).dim()));
+            emit(&format!(
+                "        {mark} {word}{note_s} {}",
+                style(format!("({ms}ms)")).dim()
+            ));
         }
     }
 
@@ -223,19 +263,28 @@ pub fn require_interactive(what: &str, flag_hint: &str) -> anyhow::Result<()> {
     if is_interactive() {
         Ok(())
     } else {
-        Err(CliError::usage(format!("{what} is required but no terminal is attached"))
-            .hint(flag_hint.to_string())
-            .into())
+        Err(
+            CliError::usage(format!("{what} is required but no terminal is attached"))
+                .hint(flag_hint.to_string())
+                .into(),
+        )
     }
 }
 
 pub fn input(prompt: &str, flag_hint: &str) -> anyhow::Result<String> {
     require_interactive(prompt, flag_hint)?;
-    let v: String = dialoguer::Input::with_theme(&theme()).with_prompt(prompt).interact_text()?;
+    let v: String = dialoguer::Input::with_theme(&theme())
+        .with_prompt(prompt)
+        .interact_text()?;
     Ok(v.trim().to_string())
 }
 
-pub fn select(prompt: &str, items: &[&str], default: usize, flag_hint: &str) -> anyhow::Result<usize> {
+pub fn select(
+    prompt: &str,
+    items: &[&str],
+    default: usize,
+    flag_hint: &str,
+) -> anyhow::Result<usize> {
     require_interactive(prompt, flag_hint)?;
     Ok(dialoguer::Select::with_theme(&theme())
         .with_prompt(prompt)
@@ -261,7 +310,11 @@ pub fn human_size(bytes: u64) -> String {
         v /= 1024.0;
         i += 1;
     }
-    if i == 0 { format!("{bytes} B") } else { format!("{v:.1} {}", UNITS[i]) }
+    if i == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{v:.1} {}", UNITS[i])
+    }
 }
 
 #[cfg(test)]

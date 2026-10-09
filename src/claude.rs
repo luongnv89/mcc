@@ -23,7 +23,9 @@ pub fn find_binary(remembered: Option<&Path>) -> Option<PathBuf> {
         return Some(p.to_path_buf());
     }
     let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).map(|d| d.join("claude")).find(|p| crate::fsutil::is_executable(p))
+    std::env::split_paths(&path)
+        .map(|d| d.join("claude"))
+        .find(|p| crate::fsutil::is_executable(p))
 }
 
 pub fn require_binary(remembered: Option<&Path>) -> Result<PathBuf> {
@@ -35,7 +37,11 @@ pub fn require_binary(remembered: Option<&Path>) -> Result<PathBuf> {
 }
 
 pub fn version(bin: &Path) -> Option<String> {
-    let out = Command::new(bin).arg("--version").stdin(Stdio::null()).output().ok()?;
+    let out = Command::new(bin)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
     (out.status.success() && !s.is_empty()).then_some(s)
 }
@@ -75,7 +81,9 @@ impl Claude<'_> {
         let mut cmd = self.command();
         cmd.args(["auth", "login"]);
         CHILD_RUNNING.store(true, Ordering::SeqCst);
-        let status = cmd.status().with_context(|| format!("running {} auth login", self.bin.display()));
+        let status = cmd
+            .status()
+            .with_context(|| format!("running {} auth login", self.bin.display()));
         CHILD_RUNNING.store(false, Ordering::SeqCst);
         Ok(status?.success())
     }
@@ -104,12 +112,21 @@ impl Claude<'_> {
 
 fn parse_status(raw: Value) -> AuthStatus {
     let str_at = |keys: &[&str]| {
-        keys.iter().find_map(|k| raw.pointer(k).and_then(Value::as_str).map(str::to_string))
+        keys.iter()
+            .find_map(|k| raw.pointer(k).and_then(Value::as_str).map(str::to_string))
     };
     AuthStatus {
-        logged_in: raw.get("loggedIn").and_then(Value::as_bool).unwrap_or(false),
+        logged_in: raw
+            .get("loggedIn")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         method: str_at(&["/authMethod"]).filter(|m| m != "none"),
-        email: str_at(&["/email", "/emailAddress", "/account/email", "/account/emailAddress"]),
+        email: str_at(&[
+            "/email",
+            "/emailAddress",
+            "/account/email",
+            "/account/emailAddress",
+        ]),
     }
 }
 
@@ -122,7 +139,9 @@ mod tests {
         let s = parse_status(serde_json::json!({"loggedIn": false, "authMethod": "none"}));
         assert!(!s.logged_in);
         assert_eq!(s.method, None);
-        let s = parse_status(serde_json::json!({"loggedIn": true, "authMethod": "claude.ai", "email": "a@b.c"}));
+        let s = parse_status(
+            serde_json::json!({"loggedIn": true, "authMethod": "claude.ai", "email": "a@b.c"}),
+        );
         assert!(s.logged_in);
         assert_eq!(s.email.as_deref(), Some("a@b.c"));
         assert!(!parse_status(Value::Null).logged_in);

@@ -17,15 +17,27 @@ pub struct CliError {
 
 impl CliError {
     pub fn usage(message: impl Into<String>) -> Self {
-        Self { code: EXIT_USAGE, message: message.into(), hint: None }
+        Self {
+            code: EXIT_USAGE,
+            message: message.into(),
+            hint: None,
+        }
     }
 
     pub fn input(message: impl Into<String>) -> Self {
-        Self { code: EXIT_INPUT, message: message.into(), hint: None }
+        Self {
+            code: EXIT_INPUT,
+            message: message.into(),
+            hint: None,
+        }
     }
 
     pub fn runtime(message: impl Into<String>) -> Self {
-        Self { code: EXIT_RUNTIME, message: message.into(), hint: None }
+        Self {
+            code: EXIT_RUNTIME,
+            message: message.into(),
+            hint: None,
+        }
     }
 
     pub fn hint(mut self, hint: impl Into<String>) -> Self {

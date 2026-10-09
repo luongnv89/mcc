@@ -9,7 +9,10 @@ use walkdir::WalkDir;
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let dir = path.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
     let tmp = dir.join(format!(".{name}.mcc-tmp-{}", std::process::id()));
     std::fs::write(&tmp, bytes).with_context(|| format!("writing {}", tmp.display()))?;
     // Keep the original file's permissions (e.g. 0600 on .claude.json).
@@ -54,7 +57,9 @@ pub fn set_executable(path: &Path) -> Result<()> {
 #[cfg(unix)]
 pub fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path).map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false)
+    std::fs::metadata(path)
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
 }
 
 #[cfg(unix)]

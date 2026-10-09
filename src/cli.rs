@@ -64,23 +64,35 @@ pub enum Command {
     Init(InitArgs),
 
     /// Add a Claude Code profile (creates the default one if ~/.claude is missing)
-    #[command(after_help = "Examples:\n  mcc add                       Interactive: asks for alias and setup\n  mcc add work --clone          Copy the default's setup (no credentials), then log in\n  mcc add lab --fresh --no-login\n\nAfter it finishes, start the profile with its alias, e.g. `work`.")]
+    #[command(
+        after_help = "Examples:\n  mcc add                       Interactive: asks for alias and setup\n  mcc add work --clone          Copy the default's setup (no credentials), then log in\n  mcc add lab --fresh --no-login\n\nAfter it finishes, start the profile with its alias, e.g. `work`."
+    )]
     Add(AddArgs),
 
     /// List all profiles with their metrics
-    #[command(visible_alias = "ls", after_help = "Examples:\n  mcc list\n  mcc list --long\n  mcc list --json | jq '.[] | {name, skills, plugins_installed}'")]
+    #[command(
+        visible_alias = "ls",
+        after_help = "Examples:\n  mcc list\n  mcc list --long\n  mcc list --json | jq '.[] | {name, skills, plugins_installed}'"
+    )]
     List(ListArgs),
 
     /// Delete a profile: log out, remove its directory, command and shell alias
-    #[command(visible_alias = "rm", after_help = "Examples:\n  mcc delete lab\n  mcc delete lab --yes --keep-auth")]
+    #[command(
+        visible_alias = "rm",
+        after_help = "Examples:\n  mcc delete lab\n  mcc delete lab --yes --keep-auth"
+    )]
     Delete(DeleteArgs),
 
     /// Copy the default profile's setup into a profile (one-way: default → profile)
-    #[command(after_help = "Items: settings, claude-md, keybindings, statusline, agents, skills,\n       commands, hooks, output-styles, plugins, mcp\n\nExamples:\n  mcc sync work --dry-run\n  mcc sync work --only skills,agents\n  mcc sync --all --prune")]
+    #[command(
+        after_help = "Items: settings, claude-md, keybindings, statusline, agents, skills,\n       commands, hooks, output-styles, plugins, mcp\n\nExamples:\n  mcc sync work --dry-run\n  mcc sync work --only skills,agents\n  mcc sync --all --prune"
+    )]
     Sync(SyncArgs),
 
     /// Print a shell completion script to stdout
-    #[command(after_help = "Examples:\n  mcc completions zsh > ~/.zfunc/_mcc\n  mcc completions bash > ~/.local/share/bash-completion/completions/mcc\n  mcc completions fish > ~/.config/fish/completions/mcc.fish")]
+    #[command(
+        after_help = "Examples:\n  mcc completions zsh > ~/.zfunc/_mcc\n  mcc completions bash > ~/.local/share/bash-completion/completions/mcc\n  mcc completions fish > ~/.config/fish/completions/mcc.fish"
+    )]
     Completions(CompletionsArgs),
 }
 

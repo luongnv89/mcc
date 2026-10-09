@@ -13,7 +13,11 @@ use crate::ui;
 
 pub fn run(paths: &Paths, cfg: &Config, args: &ListArgs) -> Result<()> {
     let mut all = vec![metrics::default_profile(paths)];
-    all.extend(cfg.profiles.iter().map(|(name, p)| metrics::mcc_profile(name, p, paths)));
+    all.extend(
+        cfg.profiles
+            .iter()
+            .map(|(name, p)| metrics::mcc_profile(name, p, paths)),
+    );
 
     let mut out = std::io::stdout().lock();
     if args.json {
@@ -46,12 +50,33 @@ pub fn run(paths: &Paths, cfg: &Config, args: &ListArgs) -> Result<()> {
 }
 
 fn table(out: &mut impl Write, all: &[ProfileMetrics]) -> Result<()> {
-    let headers = ["NAME", "COMMAND", "ACCOUNT", "SKILLS", "AGENTS", "CMDS", "PLUGINS", "MCP", "HOOKS", "SIZE", "LAST USED", "SYNCED"];
+    let headers = [
+        "NAME",
+        "COMMAND",
+        "ACCOUNT",
+        "SKILLS",
+        "AGENTS",
+        "CMDS",
+        "PLUGINS",
+        "MCP",
+        "HOOKS",
+        "SIZE",
+        "LAST USED",
+        "SYNCED",
+    ];
     let rows: Vec<Vec<String>> = all
         .iter()
         .map(|m| {
-            let name = if m.is_default { format!("{} ★", m.name) } else { m.name.clone() };
-            let name = if m.exists { name } else { format!("{name} (missing)") };
+            let name = if m.is_default {
+                format!("{} ★", m.name)
+            } else {
+                m.name.clone()
+            };
+            let name = if m.exists {
+                name
+            } else {
+                format!("{name} (missing)")
+            };
             vec![
                 name,
                 m.command.clone(),
@@ -64,13 +89,23 @@ fn table(out: &mut impl Write, all: &[ProfileMetrics]) -> Result<()> {
                 m.hooks.to_string(),
                 ui::human_size(m.size_bytes),
                 metrics::ago(m.last_used_time),
-                if m.is_default { "source".into() } else { metrics::ago_str(m.last_sync.as_deref()) },
+                if m.is_default {
+                    "source".into()
+                } else {
+                    metrics::ago_str(m.last_sync.as_deref())
+                },
             ]
         })
         .collect();
     let numeric = |i: usize| (3..=9).contains(&i);
     let widths: Vec<usize> = (0..headers.len())
-        .map(|i| rows.iter().map(|r| measure_text_width(&r[i])).chain([headers[i].len()]).max().unwrap_or(0))
+        .map(|i| {
+            rows.iter()
+                .map(|r| measure_text_width(&r[i]))
+                .chain([headers[i].len()])
+                .max()
+                .unwrap_or(0)
+        })
         .collect();
     let fmt_row = |cells: Vec<String>| -> String {
         cells
@@ -78,7 +113,11 @@ fn table(out: &mut impl Write, all: &[ProfileMetrics]) -> Result<()> {
             .enumerate()
             .map(|(i, c)| {
                 let pad = widths[i].saturating_sub(measure_text_width(c));
-                if numeric(i) { format!("{}{c}", " ".repeat(pad)) } else { format!("{c}{}", " ".repeat(pad)) }
+                if numeric(i) {
+                    format!("{}{c}", " ".repeat(pad))
+                } else {
+                    format!("{c}{}", " ".repeat(pad))
+                }
             })
             .collect::<Vec<_>>()
             .join("  ")
@@ -94,11 +133,20 @@ fn table(out: &mut impl Write, all: &[ProfileMetrics]) -> Result<()> {
 }
 
 fn card(out: &mut impl Write, m: &ProfileMetrics) -> Result<()> {
-    let title = if m.is_default { format!("{} ★ (~/.claude)", m.name) } else { m.name.clone() };
+    let title = if m.is_default {
+        format!("{} ★ (~/.claude)", m.name)
+    } else {
+        m.name.clone()
+    };
     writeln!(out, "{} {}", style("◆").cyan().bold(), style(title).bold())?;
-    let row = |out: &mut dyn Write, k: &str, v: String| writeln!(out, "    {:<16} {v}", format!("{k}:"));
+    let row =
+        |out: &mut dyn Write, k: &str, v: String| writeln!(out, "    {:<16} {v}", format!("{k}:"));
     row(out, "Command", m.command.clone())?;
-    row(out, "Directory", format!("{}{}", m.dir, if m.exists { "" } else { " (missing)" }))?;
+    row(
+        out,
+        "Directory",
+        format!("{}{}", m.dir, if m.exists { "" } else { " (missing)" }),
+    )?;
     row(
         out,
         "Account",
@@ -115,14 +163,29 @@ fn card(out: &mut impl Write, m: &ProfileMetrics) -> Result<()> {
     row(out, "Agents", m.agents.to_string())?;
     row(out, "Commands", m.commands.to_string())?;
     row(out, "Output styles", m.output_styles.to_string())?;
-    row(out, "Plugins", format!("{} enabled / {} installed", m.plugins_enabled, m.plugins_installed))?;
+    row(
+        out,
+        "Plugins",
+        format!(
+            "{} enabled / {} installed",
+            m.plugins_enabled, m.plugins_installed
+        ),
+    )?;
     row(out, "MCP servers", m.mcp_servers.to_string())?;
     row(out, "Hooks", m.hooks.to_string())?;
-    row(out, "Projects", format!("{} ({} sessions)", m.projects, m.sessions))?;
+    row(
+        out,
+        "Projects",
+        format!("{} ({} sessions)", m.projects, m.sessions),
+    )?;
     row(out, "Size", ui::human_size(m.size_bytes))?;
     row(out, "Last used", metrics::ago(m.last_used_time))?;
     if let Some(mode) = &m.mode {
-        row(out, "Created", format!("{} ({mode})", m.created_at.clone().unwrap_or_default()))?;
+        row(
+            out,
+            "Created",
+            format!("{} ({mode})", m.created_at.clone().unwrap_or_default()),
+        )?;
         row(out, "Last sync", metrics::ago_str(m.last_sync.as_deref()))?;
     }
     writeln!(out)?;

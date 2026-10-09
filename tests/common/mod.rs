@@ -72,7 +72,11 @@ impl Sandbox {
     pub fn mcc(&self) -> Command {
         let mut cmd = Command::cargo_bin("mcc").unwrap();
         let home = self.home();
-        let path = format!("{}:{}:/usr/bin:/bin", home.join("fakebin").display(), home.join(".local/bin").display());
+        let path = format!(
+            "{}:{}:/usr/bin:/bin",
+            home.join("fakebin").display(),
+            home.join(".local/bin").display()
+        );
         cmd.env_clear()
             .env("HOME", home)
             .env("MCC_HOME", home)
@@ -114,7 +118,10 @@ impl Sandbox {
             ".claude.json",
             r#"{"oauthAccount":{"emailAddress":"me@example.com","organizationName":"Acme"},"userID":"user-123","mcpServers":{"fs":{"command":"npx","args":["fs"]}},"projects":{}}"#,
         );
-        self.write(".zshrc", "export EDITOR=vim\nalias cus_luong='CLAUDE_CONFIG_DIR=~/.cus_luong claude'\n");
+        self.write(
+            ".zshrc",
+            "export EDITOR=vim\nalias cus_luong='CLAUDE_CONFIG_DIR=~/.cus_luong claude'\n",
+        );
     }
 }
 
@@ -125,5 +132,6 @@ pub fn chmod_x(p: &Path) {
 }
 
 pub fn json(bytes: &[u8]) -> serde_json::Value {
-    serde_json::from_slice(bytes).unwrap_or_else(|e| panic!("invalid JSON ({e}): {}", String::from_utf8_lossy(bytes)))
+    serde_json::from_slice(bytes)
+        .unwrap_or_else(|e| panic!("invalid JSON ({e}): {}", String::from_utf8_lossy(bytes)))
 }

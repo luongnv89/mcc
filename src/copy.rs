@@ -77,18 +77,36 @@ pub fn spec(only: Option<&[String]>, cfg: &SyncConfig) -> Result<Spec> {
     let mut items: Vec<Item> = BUILTIN
         .iter()
         .filter(|(g, _, _)| wanted(g))
-        .map(|(g, p, rw)| Item { group: g.to_string(), rel: PathBuf::from(p), rewrite: *rw })
+        .map(|(g, p, rw)| Item {
+            group: g.to_string(),
+            rel: PathBuf::from(p),
+            rewrite: *rw,
+        })
         .collect();
     if only.is_none() {
         for extra in &cfg.extra {
             let rel = PathBuf::from(extra);
-            if rel.is_absolute() || rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
-                return Err(CliError::input(format!("sync.extra entry \"{extra}\" must be a relative path inside the config dir")).into());
+            if rel.is_absolute()
+                || rel
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                return Err(CliError::input(format!(
+                    "sync.extra entry \"{extra}\" must be a relative path inside the config dir"
+                ))
+                .into());
             }
-            items.push(Item { group: "extra".into(), rel, rewrite: false });
+            items.push(Item {
+                group: "extra".into(),
+                rel,
+                rewrite: false,
+            });
         }
     }
-    Ok(Spec { items, mcp: wanted(MCP_GROUP) })
+    Ok(Spec {
+        items,
+        mcp: wanted(MCP_GROUP),
+    })
 }
 
 /// Rewrites default-profile paths to a target profile dir. Only paths that the
@@ -107,22 +125,30 @@ pub struct Rewriter {
 impl Rewriter {
     pub fn new(paths: &Paths, to_dir: &Path, sync_cfg: &SyncConfig) -> Self {
         let copied = spec(None, sync_cfg)
-            .map(|s| s.items.iter().map(|i| i.rel.to_string_lossy().to_string()).collect())
+            .map(|s| {
+                s.items
+                    .iter()
+                    .map(|i| i.rel.to_string_lossy().to_string())
+                    .collect()
+            })
             .unwrap_or_default();
         let home = regex::escape(&paths.home.to_string_lossy());
         let re = Regex::new(&format!(
             r#"(?P<p>{home}|~|\$HOME|\$\{{HOME\}})/\.claude(?P<b>$|[/"'\s),;:\]}}])"#
         ))
         .expect("static regex");
-        let home_rel_to =
-            to_dir.strip_prefix(&paths.home).ok().map(|r| r.to_string_lossy().to_string());
+        let home_rel_to = to_dir
+            .strip_prefix(&paths.home)
+            .ok()
+            .map(|r| r.to_string_lossy().to_string());
         Self {
             re,
             copied,
             abs_to: to_dir.to_string_lossy().to_string(),
             home_rel_to,
             from_dir: paths.default_dir.clone(),
-            from_dir_real: std::fs::canonicalize(&paths.default_dir).unwrap_or_else(|_| paths.default_dir.clone()),
+            from_dir_real: std::fs::canonicalize(&paths.default_dir)
+                .unwrap_or_else(|_| paths.default_dir.clone()),
             to_dir: to_dir.to_path_buf(),
         }
     }
@@ -135,10 +161,16 @@ impl Rewriter {
                     // `~/.claude/<rest>`: only rewrite when <rest> is copied.
                     let rest: String = text[whole.end()..]
                         .chars()
-                        .take_while(|ch| !matches!(ch, '"' | '\'' | ')' | ',' | ';' | ':' | ']' | '}') && !ch.is_whitespace())
+                        .take_while(|ch| {
+                            !matches!(ch, '"' | '\'' | ')' | ',' | ';' | ':' | ']' | '}')
+                                && !ch.is_whitespace()
+                        })
                         .collect();
                     let copied = self.copied.iter().any(|rel| {
-                        rest == *rel || rest.strip_prefix(rel.as_str()).is_some_and(|r| r.starts_with('/'))
+                        rest == *rel
+                            || rest
+                                .strip_prefix(rel.as_str())
+                                .is_some_and(|r| r.starts_with('/'))
                     });
                     if !copied {
                         return whole.as_str().to_string();
@@ -234,7 +266,10 @@ impl Plan {
     }
 
     pub fn actionable(&self) -> usize {
-        self.changes.iter().filter(|c| c.action != Action::Extra).count()
+        self.changes
+            .iter()
+            .filter(|c| c.action != Action::Extra)
+            .count()
             + self.mcp.as_ref().map_or(0, |m| usize::from(!m.is_empty()))
     }
 
@@ -249,8 +284,18 @@ impl Plan {
         groups
             .into_iter()
             .map(|g| {
-                let n = |a| self.changes.iter().filter(|c| c.group == g && c.action == a).count();
-                let (add, upd, rem, ext) = (n(Action::Add), n(Action::Update), n(Action::Remove), n(Action::Extra));
+                let n = |a| {
+                    self.changes
+                        .iter()
+                        .filter(|c| c.group == g && c.action == a)
+                        .count()
+                };
+                let (add, upd, rem, ext) = (
+                    n(Action::Add),
+                    n(Action::Update),
+                    n(Action::Remove),
+                    n(Action::Extra),
+                );
                 (g, add, upd, rem, ext)
             })
             .collect()
@@ -275,7 +320,9 @@ enum Kind {
 
 fn kind(p: &Path) -> Kind {
     match std::fs::symlink_metadata(p) {
-        Ok(m) if m.file_type().is_symlink() => Kind::Link(std::fs::read_link(p).unwrap_or_default()),
+        Ok(m) if m.file_type().is_symlink() => {
+            Kind::Link(std::fs::read_link(p).unwrap_or_default())
+        }
         Ok(m) if m.is_dir() => Kind::Dir,
         Ok(_) => Kind::File,
         Err(_) => Kind::Missing,
@@ -295,7 +342,11 @@ fn same(src: &Path, dst: &Path, rewrite: bool, rw: &Rewriter) -> Result<bool> {
             }
             let a = std::fs::read(src).with_context(|| format!("reading {}", src.display()))?;
             let b = std::fs::read(dst).with_context(|| format!("reading {}", dst.display()))?;
-            Ok(if rewrite { rewritten(&a, rw) == b } else { a == b })
+            Ok(if rewrite {
+                rewritten(&a, rw) == b
+            } else {
+                a == b
+            })
         }
         _ => Ok(false),
     }
@@ -323,7 +374,12 @@ pub fn plan(
         let src = src_dir.join(&item.rel);
         let dst = dst_dir.join(&item.rel);
         let mut push = |action, rel: PathBuf| {
-            plan.changes.push(Change { action, rel, group: item.group.clone(), rewrite: item.rewrite })
+            plan.changes.push(Change {
+                action,
+                rel,
+                group: item.group.clone(),
+                rewrite: item.rewrite,
+            })
         };
         match kind(&src) {
             Kind::Missing => {
@@ -345,10 +401,20 @@ pub fn plan(
                     push(Action::Add, item.rel.clone());
                 }
                 let mut seen = BTreeSet::new();
-                let walker = WalkDir::new(&src).min_depth(1).follow_links(false).sort_by_file_name();
-                for entry in walker.into_iter().filter_entry(|e| !is_noise(&e.file_name().to_string_lossy())) {
+                let walker = WalkDir::new(&src)
+                    .min_depth(1)
+                    .follow_links(false)
+                    .sort_by_file_name();
+                for entry in walker
+                    .into_iter()
+                    .filter_entry(|e| !is_noise(&e.file_name().to_string_lossy()))
+                {
                     let entry = entry.with_context(|| format!("walking {}", src.display()))?;
-                    let rel_in = entry.path().strip_prefix(&src).expect("walk prefix").to_path_buf();
+                    let rel_in = entry
+                        .path()
+                        .strip_prefix(&src)
+                        .expect("walk prefix")
+                        .to_path_buf();
                     seen.insert(rel_in.clone());
                     let rel = item.rel.join(&rel_in);
                     let d = dst_dir.join(&rel);
@@ -369,10 +435,18 @@ pub fn plan(
                     }
                 }
                 if kind(&dst) == Kind::Dir {
-                    let mut walker = WalkDir::new(&dst).min_depth(1).follow_links(false).sort_by_file_name().into_iter();
+                    let mut walker = WalkDir::new(&dst)
+                        .min_depth(1)
+                        .follow_links(false)
+                        .sort_by_file_name()
+                        .into_iter();
                     while let Some(entry) = walker.next() {
                         let entry = entry.with_context(|| format!("walking {}", dst.display()))?;
-                        let rel_in = entry.path().strip_prefix(&dst).expect("walk prefix").to_path_buf();
+                        let rel_in = entry
+                            .path()
+                            .strip_prefix(&dst)
+                            .expect("walk prefix")
+                            .to_path_buf();
                         if seen.contains(&rel_in) {
                             continue;
                         }
@@ -406,9 +480,18 @@ fn read_json(path: &Path) -> Result<Option<Value>> {
     }
 }
 
-fn plan_mcp(src_json: &Path, dst_json: &Path, rw: &Rewriter, prune: bool) -> Result<Option<McpChange>> {
+fn plan_mcp(
+    src_json: &Path,
+    dst_json: &Path,
+    rw: &Rewriter,
+    prune: bool,
+) -> Result<Option<McpChange>> {
     let src = read_json(src_json)?;
-    let src_servers = match src.as_ref().and_then(|v| v.get("mcpServers")).and_then(Value::as_object) {
+    let src_servers = match src
+        .as_ref()
+        .and_then(|v| v.get("mcpServers"))
+        .and_then(Value::as_object)
+    {
         Some(m) => {
             let text = serde_json::to_string(m)?;
             serde_json::from_str::<Map<String, Value>>(&rw.apply(&text))?
@@ -426,7 +509,11 @@ fn plan_mcp(src_json: &Path, dst_json: &Path, rw: &Rewriter, prune: bool) -> Res
         return Ok(None);
     }
     let mut change = McpChange::default();
-    let mut merged = if prune { Map::new() } else { dst_servers.clone() };
+    let mut merged = if prune {
+        Map::new()
+    } else {
+        dst_servers.clone()
+    };
     for (k, v) in &src_servers {
         match dst_servers.get(k) {
             None => change.added.push(k.clone()),
@@ -436,21 +523,37 @@ fn plan_mcp(src_json: &Path, dst_json: &Path, rw: &Rewriter, prune: bool) -> Res
         merged.insert(k.clone(), v.clone());
     }
     if prune {
-        change.removed = dst_servers.keys().filter(|k| !src_servers.contains_key(*k)).cloned().collect();
+        change.removed = dst_servers
+            .keys()
+            .filter(|k| !src_servers.contains_key(*k))
+            .cloned()
+            .collect();
     }
     change.merged = Some(Value::Object(merged));
     Ok(Some(change))
 }
 
 /// Apply a plan. Shows a progress bar when `progress` is true.
-pub fn apply(plan: &Plan, src_dir: &Path, dst_dir: &Path, rw: &Rewriter, progress: bool) -> Result<()> {
-    let todo: Vec<&Change> = plan.changes.iter().filter(|c| c.action != Action::Extra).collect();
+pub fn apply(
+    plan: &Plan,
+    src_dir: &Path,
+    dst_dir: &Path,
+    rw: &Rewriter,
+    progress: bool,
+) -> Result<()> {
+    let todo: Vec<&Change> = plan
+        .changes
+        .iter()
+        .filter(|c| c.action != Action::Extra)
+        .collect();
     let bar = if progress && !todo.is_empty() {
         let pb = ProgressBar::new(todo.len() as u64);
         pb.set_style(
-            ProgressStyle::with_template("        {bar:30.cyan/blue} {pos}/{len} items {wide_msg:.dim}")
-                .expect("template")
-                .progress_chars("█▉▊▋▌▍▎▏ "),
+            ProgressStyle::with_template(
+                "        {bar:30.cyan/blue} {pos}/{len} items {wide_msg:.dim}",
+            )
+            .expect("template")
+            .progress_chars("█▉▊▋▌▍▎▏ "),
         );
         pb
     } else {
@@ -488,7 +591,8 @@ fn copy_one(src: &Path, dst: &Path, rewrite: bool, rw: &Rewriter) -> Result<()> 
         if parent.is_file() || parent.is_symlink() && !parent.is_dir() {
             fsutil::remove_any(parent)?;
         }
-        std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
     }
     match kind(src) {
         Kind::Link(target) => {
@@ -501,7 +605,8 @@ fn copy_one(src: &Path, dst: &Path, rewrite: bool, rw: &Rewriter) -> Result<()> 
                 fsutil::remove_any(dst)?;
             }
             if rewrite {
-                let bytes = std::fs::read(src).with_context(|| format!("reading {}", src.display()))?;
+                let bytes =
+                    std::fs::read(src).with_context(|| format!("reading {}", src.display()))?;
                 fsutil::write_atomic(dst, &rewritten(&bytes, rw))?;
                 if let Ok(meta) = std::fs::metadata(src) {
                     let _ = std::fs::set_permissions(dst, meta.permissions());
@@ -559,24 +664,48 @@ mod tests {
     fn rewriter_boundaries() {
         let paths = Paths::new("/h".into());
         let rw = Rewriter::new(&paths, &paths.profile_dir("w"), &SyncConfig::default());
-        assert_eq!(rw.apply("/h/.claude/hooks/x.sh"), "/h/.mcc/profiles/w/hooks/x.sh");
+        assert_eq!(
+            rw.apply("/h/.claude/hooks/x.sh"),
+            "/h/.mcc/profiles/w/hooks/x.sh"
+        );
         assert_eq!(rw.apply("~/.claude/skills"), "~/.mcc/profiles/w/skills");
         assert_eq!(rw.apply("$HOME/.claude"), "$HOME/.mcc/profiles/w");
-        assert_eq!(rw.apply("${HOME}/.claude/skills/a"), "${HOME}/.mcc/profiles/w/skills/a");
+        assert_eq!(
+            rw.apply("${HOME}/.claude/skills/a"),
+            "${HOME}/.mcc/profiles/w/skills/a"
+        );
         assert_eq!(rw.apply("\"/h/.claude\""), "\"/h/.mcc/profiles/w\"");
         assert_eq!(rw.apply("~/.claude.json"), "~/.claude.json");
         assert_eq!(rw.apply("~/.claude-other/x"), "~/.claude-other/x");
         assert_eq!(rw.apply("/other/.claude/x"), "/other/.claude/x");
         // Not copied into the profile → keep pointing at the default.
-        assert_eq!(rw.apply("bash ~/.claude/statusline/run.sh"), "bash ~/.claude/statusline/run.sh");
-        assert_eq!(rw.apply("\"/h/.claude/projects\""), "\"/h/.claude/projects\"");
-        assert_eq!(rw.apply("~/.claude/plugins/data/x"), "~/.claude/plugins/data/x");
+        assert_eq!(
+            rw.apply("bash ~/.claude/statusline/run.sh"),
+            "bash ~/.claude/statusline/run.sh"
+        );
+        assert_eq!(
+            rw.apply("\"/h/.claude/projects\""),
+            "\"/h/.claude/projects\""
+        );
+        assert_eq!(
+            rw.apply("~/.claude/plugins/data/x"),
+            "~/.claude/plugins/data/x"
+        );
         assert_eq!(rw.apply("~/.claude/skillsfoo/x"), "~/.claude/skillsfoo/x");
         // Copied → rewritten, including multi-segment items.
-        assert_eq!(rw.apply("~/.claude/plugins/cache/m/p"), "~/.mcc/profiles/w/plugins/cache/m/p");
-        assert_eq!(rw.apply("\"~/.claude/statusline.conf\""), "\"~/.mcc/profiles/w/statusline.conf\"");
+        assert_eq!(
+            rw.apply("~/.claude/plugins/cache/m/p"),
+            "~/.mcc/profiles/w/plugins/cache/m/p"
+        );
+        assert_eq!(
+            rw.apply("\"~/.claude/statusline.conf\""),
+            "\"~/.mcc/profiles/w/statusline.conf\""
+        );
         // Excluded groups are not rewritten either.
-        let cfg = SyncConfig { exclude: vec!["hooks".into()], extra: vec![] };
+        let cfg = SyncConfig {
+            exclude: vec!["hooks".into()],
+            extra: vec![],
+        };
         let rw = Rewriter::new(&paths, &paths.profile_dir("w"), &cfg);
         assert_eq!(rw.apply("~/.claude/hooks/h.sh"), "~/.claude/hooks/h.sh");
     }
@@ -586,7 +715,15 @@ mod tests {
         let (_d, paths, dst) = setup();
         let rw = Rewriter::new(&paths, &dst, &SyncConfig::default());
         let spec = spec(None, &SyncConfig::default()).unwrap();
-        let p = plan(&paths.default_dir, &paths.default_json, &dst, &spec, &rw, false).unwrap();
+        let p = plan(
+            &paths.default_dir,
+            &paths.default_json,
+            &dst,
+            &spec,
+            &rw,
+            false,
+        )
+        .unwrap();
         // settings.json, skills/, skills/one/, skills/one/SKILL.md, agents/, agents/a.md, plugins/cache/
         assert_eq!(p.count(Action::Add), 7, "{:?}", p.changes);
         apply(&p, &paths.default_dir, &dst, &rw, false).unwrap();
@@ -600,17 +737,30 @@ mod tests {
         let settings = std::fs::read_to_string(dst.join("settings.json")).unwrap();
         assert!(settings.contains(&format!("{}/hooks/h.sh", dst.display())));
         assert!(settings.contains("~/.mcc/profiles/work/agents/x"));
-        assert!(settings.contains("\"ext\":\"~/.claude/statusline/run.sh\""), "{settings}");
+        assert!(
+            settings.contains("\"ext\":\"~/.claude/statusline/run.sh\""),
+            "{settings}"
+        );
         assert!(settings.contains("\"keep\":\"~/.claude.json\""));
         assert!(settings.contains("$HOME/.mcc/profiles/work"));
 
-        let json: Value = serde_json::from_str(&std::fs::read_to_string(dst.join(".claude.json")).unwrap()).unwrap();
+        let json: Value =
+            serde_json::from_str(&std::fs::read_to_string(dst.join(".claude.json")).unwrap())
+                .unwrap();
         assert!(json.get("oauthAccount").is_none());
         assert!(json.get("userID").is_none());
         assert_eq!(json["mcpServers"]["fs"]["command"], "~/.claude/bin/fs"); // bin/ is not copied
 
         // Second plan is a no-op.
-        let p2 = plan(&paths.default_dir, &paths.default_json, &dst, &spec, &rw, false).unwrap();
+        let p2 = plan(
+            &paths.default_dir,
+            &paths.default_json,
+            &dst,
+            &spec,
+            &rw,
+            false,
+        )
+        .unwrap();
         assert_eq!(p2.actionable(), 0, "{:?}", p2.changes);
     }
 
@@ -624,13 +774,29 @@ mod tests {
         std::fs::write(dst.join("agents/mine.md"), "x").unwrap();
         std::fs::write(dst.join("agents/sub/deep.md"), "x").unwrap();
 
-        let p = plan(&paths.default_dir, &paths.default_json, &dst, &sp, &rw, false).unwrap();
+        let p = plan(
+            &paths.default_dir,
+            &paths.default_json,
+            &dst,
+            &sp,
+            &rw,
+            false,
+        )
+        .unwrap();
         assert_eq!(p.count(Action::Add), 1);
         assert_eq!(p.count(Action::Extra), 2); // agents/mine.md, agents/sub (collapsed)
         apply(&p, &paths.default_dir, &dst, &rw, false).unwrap();
         assert!(dst.join("agents/mine.md").exists());
 
-        let p = plan(&paths.default_dir, &paths.default_json, &dst, &sp, &rw, true).unwrap();
+        let p = plan(
+            &paths.default_dir,
+            &paths.default_json,
+            &dst,
+            &sp,
+            &rw,
+            true,
+        )
+        .unwrap();
         assert_eq!(p.count(Action::Remove), 2);
         apply(&p, &paths.default_dir, &dst, &rw, false).unwrap();
         assert!(!dst.join("agents/mine.md").exists());
@@ -646,18 +812,31 @@ mod tests {
         std::os::unix::fs::symlink("/opt/elsewhere", src.join("skills/ext-link")).unwrap();
         // Relative links: one leaving the config dir, one staying inside it.
         std::fs::create_dir_all(paths.home.join(".agents/skills/shared")).unwrap();
-        std::os::unix::fs::symlink("../../.agents/skills/shared", src.join("skills/rel-out")).unwrap();
+        std::os::unix::fs::symlink("../../.agents/skills/shared", src.join("skills/rel-out"))
+            .unwrap();
         std::os::unix::fs::symlink("one", src.join("skills/rel-in")).unwrap();
         std::fs::create_dir_all(src.join("skills/.trash/old")).unwrap();
         let rw = Rewriter::new(&paths, &dst, &SyncConfig::default());
         let sp = spec(Some(&["skills".to_string()]), &SyncConfig::default()).unwrap();
         let p = plan(src, &paths.default_json, &dst, &sp, &rw, false).unwrap();
         apply(&p, src, &dst, &rw, false).unwrap();
-        assert_eq!(std::fs::read_link(dst.join("skills/abs-link")).unwrap(), dst.join("skills/one"));
-        assert_eq!(std::fs::read_link(dst.join("skills/ext-link")).unwrap(), PathBuf::from("/opt/elsewhere"));
+        assert_eq!(
+            std::fs::read_link(dst.join("skills/abs-link")).unwrap(),
+            dst.join("skills/one")
+        );
+        assert_eq!(
+            std::fs::read_link(dst.join("skills/ext-link")).unwrap(),
+            PathBuf::from("/opt/elsewhere")
+        );
         let shared = std::fs::canonicalize(paths.home.join(".agents/skills/shared")).unwrap();
-        assert_eq!(std::fs::canonicalize(dst.join("skills/rel-out")).unwrap(), shared);
-        assert_eq!(std::fs::read_link(dst.join("skills/rel-in")).unwrap(), dst.join("skills/one"));
+        assert_eq!(
+            std::fs::canonicalize(dst.join("skills/rel-out")).unwrap(),
+            shared
+        );
+        assert_eq!(
+            std::fs::read_link(dst.join("skills/rel-in")).unwrap(),
+            dst.join("skills/one")
+        );
         assert!(!dst.join("skills/.trash").exists());
         let p2 = plan(src, &paths.default_json, &dst, &sp, &rw, false).unwrap();
         assert_eq!(p2.actionable(), 0);

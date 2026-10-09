@@ -19,7 +19,14 @@ fn list_json_reports_metrics() {
     sb.seed_default();
     with_profile(&sb, "work", "--clone");
     with_profile(&sb, "lab", "--fresh");
-    let out = sb.mcc().args(["list", "--json"]).assert().success().get_output().stdout.clone();
+    let out = sb
+        .mcc()
+        .args(["list", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
     let v = json(&out);
     let arr = v.as_array().unwrap();
     assert_eq!(arr.len(), 3);
@@ -117,7 +124,11 @@ fn sync_dry_run_then_apply() {
     assert_eq!(state["mcpServers"]["fs"]["command"], "npx");
     assert!(state.get("oauthAccount").is_none());
 
-    sb.mcc().args(["sync", "work"]).assert().success().stderr(predicate::str::contains("already up to date"));
+    sb.mcc()
+        .args(["sync", "work"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("already up to date"));
 }
 
 #[test]
@@ -138,22 +149,39 @@ fn sync_updates_backs_up_and_keeps_identity() {
         .args(["sync", "work"])
         .assert()
         .success()
-        .stderr(predicate::str::contains("only in profile (kept; --prune removes)"))
+        .stderr(predicate::str::contains(
+            "only in profile (kept; --prune removes)",
+        ))
         .stderr(predicate::str::contains("Back up profile config"));
     assert!(sb.exists(".mcc/profiles/work/skills/gamma/SKILL.md"));
-    assert_eq!(sb.read(".mcc/profiles/work/settings.json"), r#"{"model":"sonnet"}"#);
+    assert_eq!(
+        sb.read(".mcc/profiles/work/settings.json"),
+        r#"{"model":"sonnet"}"#
+    );
     assert!(sb.exists(".mcc/profiles/work/agents/mine.md"));
     let state = json(sb.read(".mcc/profiles/work/.claude.json").as_bytes());
     assert_eq!(state["oauthAccount"]["emailAddress"], "work@corp.com");
-    assert_eq!(sb.read(".mcc/profiles/work/.credentials.json"), creds_before);
-    let backups = std::fs::read_dir(sb.path(".mcc/profiles/work/.mcc-backup")).unwrap().count();
+    assert_eq!(
+        sb.read(".mcc/profiles/work/.credentials.json"),
+        creds_before
+    );
+    let backups = std::fs::read_dir(sb.path(".mcc/profiles/work/.mcc-backup"))
+        .unwrap()
+        .count();
     assert_eq!(backups, 1);
 
     // Prune needs confirmation without a TTY…
-    sb.mcc().args(["sync", "work", "--prune"]).assert().code(2).stderr(predicate::str::contains("--yes"));
+    sb.mcc()
+        .args(["sync", "work", "--prune"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--yes"));
     assert!(sb.exists(".mcc/profiles/work/agents/mine.md"));
     // …and removes extras with --yes.
-    sb.mcc().args(["sync", "work", "--prune", "--yes"]).assert().success();
+    sb.mcc()
+        .args(["sync", "work", "--prune", "--yes"])
+        .assert()
+        .success();
     assert!(!sb.exists(".mcc/profiles/work/agents/mine.md"));
     assert!(sb.exists(".mcc/profiles/work/agents/reviewer.md"));
 }
@@ -164,7 +192,10 @@ fn sync_only_and_all() {
     sb.seed_default();
     with_profile(&sb, "a1", "--fresh");
     with_profile(&sb, "a2", "--fresh");
-    sb.mcc().args(["sync", "--all", "--only", "skills,claude-md"]).assert().success()
+    sb.mcc()
+        .args(["sync", "--all", "--only", "skills,claude-md"])
+        .assert()
+        .success()
         .stderr(predicate::str::contains("(2/2)"))
         .stderr(predicate::str::contains("2/2 profiles synced"));
     for a in ["a1", "a2"] {
@@ -180,11 +211,27 @@ fn sync_errors() {
     let sb = Sandbox::new();
     sb.seed_default();
     sb.mcc().arg("sync").assert().code(2);
-    sb.mcc().args(["sync", "ghost"]).assert().code(2).stderr(predicate::str::contains("no profile named \"ghost\""));
-    sb.mcc().args(["sync", "default"]).assert().code(2).stderr(predicate::str::contains("sync source"));
-    sb.mcc().args(["sync", "--all"]).assert().success().stderr(predicate::str::contains("nothing to sync"));
+    sb.mcc()
+        .args(["sync", "ghost"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("no profile named \"ghost\""));
+    sb.mcc()
+        .args(["sync", "default"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("sync source"));
+    sb.mcc()
+        .args(["sync", "--all"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("nothing to sync"));
     with_profile(&sb, "work", "--fresh");
-    sb.mcc().args(["sync", "work", "--only", "nope"]).assert().code(2).stderr(predicate::str::contains("valid items:"));
+    sb.mcc()
+        .args(["sync", "work", "--only", "nope"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("valid items:"));
     sb.mcc().args(["sync", "work", "--all"]).assert().code(2);
 }
 
@@ -221,14 +268,26 @@ fn delete_removes_everything() {
 fn delete_guardrails() {
     let sb = Sandbox::new();
     sb.seed_default();
-    sb.mcc().args(["delete", "default", "--yes"]).assert().code(2).stderr(predicate::str::contains("can't be deleted"));
+    sb.mcc()
+        .args(["delete", "default", "--yes"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("can't be deleted"));
     sb.mcc().args(["rm", "claude", "--yes"]).assert().code(2);
-    sb.mcc().args(["delete", "ghost", "--yes"]).assert().code(2).stderr(predicate::str::contains("mcc list"));
+    sb.mcc()
+        .args(["delete", "ghost", "--yes"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("mcc list"));
     sb.mcc().arg("delete").assert().code(2);
 
     with_profile(&sb, "work", "--fresh");
     // No TTY and no --yes: refuse, delete nothing.
-    sb.mcc().args(["delete", "work"]).assert().code(2).stderr(predicate::str::contains("--yes"));
+    sb.mcc()
+        .args(["delete", "work"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--yes"));
     assert!(sb.exists(".mcc/profiles/work"));
 
     // A launcher not written by mcc is left alone.
@@ -247,7 +306,10 @@ fn delete_guardrails() {
 fn delete_reports_not_logged_in_truthfully() {
     let sb = Sandbox::new();
     sb.seed_default();
-    sb.mcc().args(["add", "lab", "--fresh", "--no-login"]).assert().success();
+    sb.mcc()
+        .args(["add", "lab", "--fresh", "--no-login"])
+        .assert()
+        .success();
     sb.mcc()
         .args(["delete", "lab", "--yes"])
         .assert()
@@ -261,7 +323,10 @@ fn delete_cleans_unregistered_leftover_dir() {
     let sb = Sandbox::new();
     sb.seed_default();
     sb.write(".mcc/profiles/old/settings.json", "{}");
-    sb.mcc().args(["delete", "old", "--yes"]).assert().success()
+    sb.mcc()
+        .args(["delete", "old", "--yes"])
+        .assert()
+        .success()
         .stderr(predicate::str::contains("not in the mcc registry"));
     assert!(!sb.exists(".mcc/profiles/old"));
 }
@@ -275,9 +340,23 @@ fn full_lifecycle_round_trip() {
     let rc_before = sb.read(".zshrc");
     with_profile(&sb, "work", "--clone");
     sb.mcc().args(["sync", "work"]).assert().success();
-    sb.mcc().args(["delete", "work", "--yes"]).assert().success();
-    assert_eq!(sb.read(".zshrc"), rc_before, "rc file restored byte-for-byte");
-    let out = sb.mcc().args(["list", "--json"]).assert().success().get_output().stdout.clone();
+    sb.mcc()
+        .args(["delete", "work", "--yes"])
+        .assert()
+        .success();
+    assert_eq!(
+        sb.read(".zshrc"),
+        rc_before,
+        "rc file restored byte-for-byte"
+    );
+    let out = sb
+        .mcc()
+        .args(["list", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
     assert_eq!(json(&out).as_array().unwrap().len(), 1);
 }
 
@@ -314,7 +393,10 @@ fn ctrl_c_exits_130() {
         .spawn()
         .unwrap();
     std::thread::sleep(Duration::from_millis(500));
-    std::process::Command::new("kill").args(["-INT", &child.id().to_string()]).status().unwrap();
+    std::process::Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .unwrap();
     let status = child.wait().unwrap();
     assert_eq!(status.code(), Some(130));
 }

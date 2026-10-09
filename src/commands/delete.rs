@@ -12,12 +12,16 @@ use crate::{fsutil, shell, ui};
 pub fn run(paths: &Paths, cfg: &mut Config, args: &DeleteArgs) -> Result<()> {
     let alias = args.alias.as_str();
     if matches!(alias, "default" | "claude") {
-        return Err(CliError::usage("the default profile (~/.claude) can't be deleted with mcc")
-            .hint("mcc only deletes profiles it created; see `mcc list`")
-            .into());
+        return Err(
+            CliError::usage("the default profile (~/.claude) can't be deleted with mcc")
+                .hint("mcc only deletes profiles it created; see `mcc list`")
+                .into(),
+        );
     }
     let registered = cfg.profiles.get(alias).cloned();
-    let dir = registered.as_ref().map_or_else(|| paths.profile_dir(alias), |p| p.dir.clone());
+    let dir = registered
+        .as_ref()
+        .map_or_else(|| paths.profile_dir(alias), |p| p.dir.clone());
     if registered.is_none() && !dir.exists() {
         return Err(CliError::usage(format!("no profile named \"{alias}\""))
             .hint("run `mcc list` to see your profiles")
@@ -25,8 +29,15 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &DeleteArgs) -> Result<()> {
     }
 
     ui::header(&format!("Delete Claude Code profile \"{alias}\""));
-    let size = if dir.exists() { fsutil::dir_size(&dir) } else { 0 };
-    ui::kv("Directory", &format!("{} ({})", paths.display(&dir), ui::human_size(size)));
+    let size = if dir.exists() {
+        fsutil::dir_size(&dir)
+    } else {
+        0
+    };
+    ui::kv(
+        "Directory",
+        &format!("{} ({})", paths.display(&dir), ui::human_size(size)),
+    );
     ui::kv("Command", alias);
     if registered.is_none() {
         ui::warn("not in the mcc registry — cleaning up the leftover directory");
@@ -34,9 +45,14 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &DeleteArgs) -> Result<()> {
 
     if !args.yes {
         ui::require_interactive("confirmation", "pass --yes to delete without a prompt")?;
-        let typed = ui::input(&format!("This permanently deletes \"{alias}\". Type the alias to confirm"), "")?;
+        let typed = ui::input(
+            &format!("This permanently deletes \"{alias}\". Type the alias to confirm"),
+            "",
+        )?;
         if typed != alias {
-            return Err(CliError::runtime("confirmation did not match — nothing was deleted").into());
+            return Err(
+                CliError::runtime("confirmation did not match — nothing was deleted").into(),
+            );
         }
     }
 
@@ -55,7 +71,11 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &DeleteArgs) -> Result<()> {
         (Some(bin), ..) => {
             // `claude auth logout` exits 0 even when nothing was logged in,
             // so ask for the status first to report what really happened.
-            let c = Claude { bin, paths, config_dir: Some(&dir) };
+            let c = Claude {
+                bin,
+                paths,
+                config_dir: Some(&dir),
+            };
             let logged_in = c.status().map(|s| s.logged_in).unwrap_or(true);
             match if logged_in { c.logout() } else { Ok(false) } {
                 Ok(true) => step.ok("credentials removed"),
@@ -73,7 +93,10 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &DeleteArgs) -> Result<()> {
     }
 
     let step = steps.start("Remove launcher");
-    let wrapper = registered.as_ref().and_then(|p| p.wrapper.clone()).unwrap_or_else(|| paths.wrapper(alias));
+    let wrapper = registered
+        .as_ref()
+        .and_then(|p| p.wrapper.clone())
+        .unwrap_or_else(|| paths.wrapper(alias));
     if std::fs::symlink_metadata(&wrapper).is_err() {
         step.skip("not present");
     } else if shell::is_mcc_wrapper(&wrapper) {
@@ -81,11 +104,18 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &DeleteArgs) -> Result<()> {
         step.ok(&paths.display(&wrapper));
     } else {
         warnings += 1;
-        step.warn(&format!("{} was not created by mcc — left untouched", paths.display(&wrapper)));
+        step.warn(&format!(
+            "{} was not created by mcc — left untouched",
+            paths.display(&wrapper)
+        ));
     }
 
     let step = steps.start("Remove shell alias");
-    let mut rc_files: Vec<_> = registered.as_ref().and_then(|p| p.rc_file.clone()).into_iter().collect();
+    let mut rc_files: Vec<_> = registered
+        .as_ref()
+        .and_then(|p| p.rc_file.clone())
+        .into_iter()
+        .collect();
     if let Some(rc) = cfg.env.as_ref().and_then(|e| e.rc_file.clone())
         && !rc_files.contains(&rc)
     {
@@ -123,11 +153,17 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &DeleteArgs) -> Result<()> {
         warnings == 0,
         &format!(
             "profile \"{alias}\" deleted{}",
-            if warnings > 0 { format!(" with {warnings} warning(s) — see above") } else { String::new() }
+            if warnings > 0 {
+                format!(" with {warnings} warning(s) — see above")
+            } else {
+                String::new()
+            }
         ),
     );
     if !removed.is_empty() {
-        ui::hint(&format!("open a new terminal (or `unalias {alias}`) so the old alias disappears"));
+        ui::hint(&format!(
+            "open a new terminal (or `unalias {alias}`) so the old alias disappears"
+        ));
     }
     Ok(())
 }

@@ -24,7 +24,12 @@ fn end(id: &str) -> String {
 /// Wrapper script that launches claude with the profile's config dir. Uses
 /// `claude` from PATH when available, else the binary found at `add` time
 /// (so it also works from cron, IDE tasks, or shells with a trimmed PATH).
-pub fn wrapper_script(paths: &Paths, alias: &str, profile_dir: &Path, claude_bin: Option<&Path>) -> String {
+pub fn wrapper_script(
+    paths: &Paths,
+    alias: &str,
+    profile_dir: &Path,
+    claude_bin: Option<&Path>,
+) -> String {
     let fallback = match claude_bin {
         Some(bin) => format!("exec {} \"$@\"", sh_quote(&bin.to_string_lossy())),
         None => "echo \"claude not found on PATH\" >&2\nexit 127".to_string(),
@@ -43,16 +48,26 @@ fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-pub fn write_wrapper(paths: &Paths, alias: &str, profile_dir: &Path, claude_bin: Option<&Path>) -> Result<PathBuf> {
+pub fn write_wrapper(
+    paths: &Paths,
+    alias: &str,
+    profile_dir: &Path,
+    claude_bin: Option<&Path>,
+) -> Result<PathBuf> {
     let path = paths.wrapper(alias);
-    fsutil::write_atomic(&path, wrapper_script(paths, alias, profile_dir, claude_bin).as_bytes())?;
+    fsutil::write_atomic(
+        &path,
+        wrapper_script(paths, alias, profile_dir, claude_bin).as_bytes(),
+    )?;
     fsutil::set_executable(&path)?;
     Ok(path)
 }
 
 /// True when the file at `path` is a wrapper mcc wrote (safe to delete).
 pub fn is_mcc_wrapper(path: &Path) -> bool {
-    std::fs::read_to_string(path).map(|s| s.contains(WRAPPER_MARKER)).unwrap_or(false)
+    std::fs::read_to_string(path)
+        .map(|s| s.contains(WRAPPER_MARKER))
+        .unwrap_or(false)
 }
 
 /// The rc block body defining the alias for one profile.
@@ -62,7 +77,9 @@ pub fn alias_block(paths: &Paths, shell: Shell, alias: &str, profile_dir: &Path)
         Shell::Fish => format!("alias {alias} 'env CLAUDE_CONFIG_DIR=\"{dir}\" claude'"),
         Shell::Zsh | Shell::Bash => format!("alias {alias}='CLAUDE_CONFIG_DIR=\"{dir}\" claude'"),
     };
-    format!("# Claude Code profile \"{alias}\" — managed by mcc (remove with: mcc delete {alias})\n{line}")
+    format!(
+        "# Claude Code profile \"{alias}\" — managed by mcc (remove with: mcc delete {alias})\n{line}"
+    )
 }
 
 /// rc block that puts `~/.local/bin` on PATH.
@@ -74,7 +91,9 @@ pub fn path_block(shell: Shell) -> String {
 }
 
 pub fn has_block(rc: &Path, id: &str) -> bool {
-    std::fs::read_to_string(rc).map(|s| s.contains(&begin(id))).unwrap_or(false)
+    std::fs::read_to_string(rc)
+        .map(|s| s.contains(&begin(id)))
+        .unwrap_or(false)
 }
 
 /// Insert or replace the block `id` in `rc`. Backs the file up first.
@@ -85,7 +104,12 @@ pub fn upsert_block(paths: &Paths, rc: &Path, id: &str, body: &str) -> Result<()
     if !out.is_empty() {
         out.push_str("\n\n");
     }
-    out.push_str(&format!("{}\n{}\n{}\n", begin(id), body.trim_end(), end(id)));
+    out.push_str(&format!(
+        "{}\n{}\n{}\n",
+        begin(id),
+        body.trim_end(),
+        end(id)
+    ));
     backup(paths, rc, &original)?;
     fsutil::write_atomic(rc, out.as_bytes())
 }
@@ -118,7 +142,10 @@ fn backup(paths: &Paths, rc: &Path, content: &str) -> Result<()> {
     if content.is_empty() {
         return Ok(());
     }
-    let name = rc.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "rc".into());
+    let name = rc
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "rc".into());
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S%.3f");
     let base = format!("{}.{stamp}", name.trim_start_matches('.'));
     let mut dest = paths.backups_dir.join(&base);
@@ -139,14 +166,15 @@ fn strip_block(text: &str, id: &str) -> (String, bool) {
     let mut i = 0;
     while i < lines.len() {
         if lines[i].trim() == b
-            && let Some(off) = lines[i..].iter().position(|l| l.trim() == e) {
-                found = true;
-                if out.last().is_some_and(|l| l.trim().is_empty()) {
-                    out.pop();
-                }
-                i += off + 1;
-                continue;
+            && let Some(off) = lines[i..].iter().position(|l| l.trim() == e)
+        {
+            found = true;
+            if out.last().is_some_and(|l| l.trim().is_empty()) {
+                out.pop();
             }
+            i += off + 1;
+            continue;
+        }
         out.push(lines[i]);
         i += 1;
     }
@@ -170,7 +198,9 @@ mod tests {
 
         upsert_block(&paths, &rc, "work", "alias work='true'").unwrap();
         let s = std::fs::read_to_string(&rc).unwrap();
-        assert!(s.starts_with("export A=1\nalias x=y\n\n# >>> mcc:work >>>\nalias work='true'\n# <<< mcc:work <<<\n"));
+        assert!(s.starts_with(
+            "export A=1\nalias x=y\n\n# >>> mcc:work >>>\nalias work='true'\n# <<< mcc:work <<<\n"
+        ));
 
         // Idempotent replace.
         upsert_block(&paths, &rc, "work", "alias work='false'").unwrap();
@@ -179,12 +209,24 @@ mod tests {
         assert!(s.contains("alias work='false'"));
 
         assert!(remove_block(&paths, &rc, "work").unwrap());
-        assert_eq!(std::fs::read_to_string(&rc).unwrap(), "export A=1\nalias x=y\n");
+        assert_eq!(
+            std::fs::read_to_string(&rc).unwrap(),
+            "export A=1\nalias x=y\n"
+        );
         assert!(!remove_block(&paths, &rc, "work").unwrap());
         // One backup per modification, none overwritten, the original kept.
-        let backups: Vec<_> = paths.backups_dir.read_dir().unwrap().map(|e| e.unwrap().path()).collect();
+        let backups: Vec<_> = paths
+            .backups_dir
+            .read_dir()
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
         assert_eq!(backups.len(), 3, "{backups:?}");
-        assert!(backups.iter().any(|p| std::fs::read_to_string(p).unwrap() == "export A=1\nalias x=y\n"));
+        assert!(
+            backups
+                .iter()
+                .any(|p| std::fs::read_to_string(p).unwrap() == "export A=1\nalias x=y\n")
+        );
     }
 
     #[test]
@@ -199,10 +241,14 @@ mod tests {
     fn alias_lines() {
         let paths = Paths::new("/h".into());
         let dir = paths.profile_dir("work");
-        assert!(alias_block(&paths, Shell::Zsh, "work", &dir)
-            .contains("alias work='CLAUDE_CONFIG_DIR=\"$HOME/.mcc/profiles/work\" claude'"));
-        assert!(alias_block(&paths, Shell::Fish, "work", &dir)
-            .contains("alias work 'env CLAUDE_CONFIG_DIR=\"$HOME/.mcc/profiles/work\" claude'"));
+        assert!(
+            alias_block(&paths, Shell::Zsh, "work", &dir)
+                .contains("alias work='CLAUDE_CONFIG_DIR=\"$HOME/.mcc/profiles/work\" claude'")
+        );
+        assert!(
+            alias_block(&paths, Shell::Fish, "work", &dir)
+                .contains("alias work 'env CLAUDE_CONFIG_DIR=\"$HOME/.mcc/profiles/work\" claude'")
+        );
         let w = wrapper_script(&paths, "work", &dir, Some(Path::new("/opt/it's/claude")));
         assert!(w.starts_with("#!/bin/sh\n# managed-by: mcc\n"));
         assert!(w.contains("export CLAUDE_CONFIG_DIR=\"$HOME/.mcc/profiles/work\"\n"));

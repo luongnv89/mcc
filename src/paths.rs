@@ -84,7 +84,10 @@ mod tests {
         let p = Paths::new(PathBuf::from("/h"));
         assert_eq!(p.default_dir, PathBuf::from("/h/.claude"));
         assert_eq!(p.default_json, PathBuf::from("/h/.claude.json"));
-        assert_eq!(p.profile_dir("work"), PathBuf::from("/h/.mcc/profiles/work"));
+        assert_eq!(
+            p.profile_dir("work"),
+            PathBuf::from("/h/.mcc/profiles/work")
+        );
         assert_eq!(p.wrapper("work"), PathBuf::from("/h/.local/bin/work"));
         assert_eq!(p.config_file, PathBuf::from("/h/.mcc/config.toml"));
         assert_eq!(p.log_file, PathBuf::from("/h/.mcc/logs/mcc.log"));
@@ -93,9 +96,15 @@ mod tests {
     #[test]
     fn display_and_shell_expr() {
         let p = Paths::new(PathBuf::from("/h"));
-        assert_eq!(p.display(&PathBuf::from("/h/.mcc/profiles/x")), "~/.mcc/profiles/x");
+        assert_eq!(
+            p.display(&PathBuf::from("/h/.mcc/profiles/x")),
+            "~/.mcc/profiles/x"
+        );
         assert_eq!(p.display(&PathBuf::from("/h")), "~");
         assert_eq!(p.display(&PathBuf::from("/etc/x")), "/etc/x");
-        assert_eq!(p.shell_expr(&PathBuf::from("/h/.mcc/profiles/x")), "$HOME/.mcc/profiles/x");
+        assert_eq!(
+            p.shell_expr(&PathBuf::from("/h/.mcc/profiles/x")),
+            "$HOME/.mcc/profiles/x"
+        );
     }
 }

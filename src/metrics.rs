@@ -43,11 +43,27 @@ pub struct ProfileMetrics {
 }
 
 pub fn default_profile(paths: &Paths) -> ProfileMetrics {
-    collect("default", "claude", true, &paths.default_dir, &paths.default_json, None, paths)
+    collect(
+        "default",
+        "claude",
+        true,
+        &paths.default_dir,
+        &paths.default_json,
+        None,
+        paths,
+    )
 }
 
 pub fn mcc_profile(name: &str, p: &Profile, paths: &Paths) -> ProfileMetrics {
-    collect(name, name, false, &p.dir, &p.dir.join(".claude.json"), Some(p), paths)
+    collect(
+        name,
+        name,
+        false,
+        &p.dir,
+        &p.dir.join(".claude.json"),
+        Some(p),
+        paths,
+    )
 }
 
 fn collect(
@@ -78,9 +94,17 @@ fn collect(
     let state = read(state_json.to_path_buf());
     let installed = read(dir.join("plugins/installed_plugins.json"));
 
-    let s = |v: &Option<Value>, ptr: &str| v.as_ref().and_then(|v| v.pointer(ptr)).and_then(Value::as_str).map(str::to_string);
+    let s = |v: &Option<Value>, ptr: &str| {
+        v.as_ref()
+            .and_then(|v| v.pointer(ptr))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
     let obj_len = |v: &Option<Value>, ptr: &str| {
-        v.as_ref().and_then(|v| v.pointer(ptr)).and_then(Value::as_object).map_or(0, |o| o.len())
+        v.as_ref()
+            .and_then(|v| v.pointer(ptr))
+            .and_then(Value::as_object)
+            .map_or(0, |o| o.len())
     };
 
     let last_used_time = [dir.join("history.jsonl"), state_json.to_path_buf()]
@@ -107,14 +131,23 @@ fn collect(
             .as_ref()
             .and_then(|v| v.get("enabledPlugins"))
             .and_then(Value::as_object)
-            .map_or(0, |o| o.values().filter(|v| v.as_bool() == Some(true)).count()),
+            .map_or(0, |o| {
+                o.values().filter(|v| v.as_bool() == Some(true)).count()
+            }),
         mcp_servers: obj_len(&state, "/mcpServers"),
         hooks: count_hooks(settings.as_ref()),
         projects: count_entries(&dir.join("projects"), |p| p.is_dir()),
         sessions: count_sessions(&dir.join("projects")),
         size_bytes: if exists { fsutil::dir_size(dir) } else { 0 }
-            + if is_default { std::fs::metadata(state_json).map_or(0, |m| m.len()) } else { 0 },
-        last_used: last_used_time.map(|t| chrono::DateTime::<chrono::Local>::from(t).to_rfc3339_opts(chrono::SecondsFormat::Secs, false)),
+            + if is_default {
+                std::fs::metadata(state_json).map_or(0, |m| m.len())
+            } else {
+                0
+            },
+        last_used: last_used_time.map(|t| {
+            chrono::DateTime::<chrono::Local>::from(t)
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
+        }),
         created_at: reg.map(|r| r.created_at.clone()),
         last_sync: reg.and_then(|r| r.last_sync.clone()),
         last_used_time,
@@ -160,19 +193,31 @@ fn count_sessions(dir: &Path) -> usize {
 
 /// settings.json: `{"hooks": {"Event": [{"matcher": …, "hooks": [cmd, …]}]}}`.
 fn count_hooks(settings: Option<&Value>) -> usize {
-    let Some(events) = settings.and_then(|s| s.get("hooks")).and_then(Value::as_object) else { return 0 };
+    let Some(events) = settings
+        .and_then(|s| s.get("hooks"))
+        .and_then(Value::as_object)
+    else {
+        return 0;
+    };
     events
         .values()
         .filter_map(Value::as_array)
         .flatten()
-        .map(|m| m.get("hooks").and_then(Value::as_array).map_or(1, |h| h.len()))
+        .map(|m| {
+            m.get("hooks")
+                .and_then(Value::as_array)
+                .map_or(1, |h| h.len())
+        })
         .sum()
 }
 
 /// "3m ago", "5h ago", "2d ago".
 pub fn ago(t: Option<SystemTime>) -> String {
     let Some(t) = t else { return "never".into() };
-    let secs = SystemTime::now().duration_since(t).map(|d| d.as_secs()).unwrap_or(0);
+    let secs = SystemTime::now()
+        .duration_since(t)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     match secs {
         0..60 => "just now".into(),
         60..3600 => format!("{}m ago", secs / 60),
@@ -197,7 +242,16 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let paths = Paths::new(d.path().to_path_buf());
         let c = &paths.default_dir;
-        for p in ["skills/a", "skills/b", "skills/.hidden", "agents/ns", "commands", "projects/p1/x", "projects/p2", "plugins"] {
+        for p in [
+            "skills/a",
+            "skills/b",
+            "skills/.hidden",
+            "agents/ns",
+            "commands",
+            "projects/p1/x",
+            "projects/p2",
+            "plugins",
+        ] {
             std::fs::create_dir_all(c.join(p)).unwrap();
         }
         std::fs::write(c.join("skills/stray.txt"), "").unwrap();
@@ -211,8 +265,16 @@ mod tests {
             r#"{"model":"opus","enabledPlugins":{"a@m":true,"b@m":false},"hooks":{"Stop":[{"hooks":[{"type":"command"},{"type":"command"}]}],"PreToolUse":[{"matcher":"Bash","hooks":[{}]}]}}"#,
         )
         .unwrap();
-        std::fs::write(c.join("plugins/installed_plugins.json"), r#"{"version":2,"plugins":{"a@m":[],"b@m":[]}}"#).unwrap();
-        std::fs::write(&paths.default_json, r#"{"oauthAccount":{"emailAddress":"me@x.io"},"mcpServers":{"one":{},"two":{}}}"#).unwrap();
+        std::fs::write(
+            c.join("plugins/installed_plugins.json"),
+            r#"{"version":2,"plugins":{"a@m":[],"b@m":[]}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &paths.default_json,
+            r#"{"oauthAccount":{"emailAddress":"me@x.io"},"mcpServers":{"one":{},"two":{}}}"#,
+        )
+        .unwrap();
 
         let m = default_profile(&paths);
         assert_eq!((m.name.as_str(), m.command.as_str()), ("default", "claude"));
@@ -249,7 +311,13 @@ mod tests {
         let now = SystemTime::now();
         assert_eq!(ago(None), "never");
         assert_eq!(ago(Some(now)), "just now");
-        assert_eq!(ago(Some(now - std::time::Duration::from_secs(7200))), "2h ago");
-        assert_eq!(ago(Some(now - std::time::Duration::from_secs(3 * 86400))), "3d ago");
+        assert_eq!(
+            ago(Some(now - std::time::Duration::from_secs(7200))),
+            "2h ago"
+        );
+        assert_eq!(
+            ago(Some(now - std::time::Duration::from_secs(3 * 86400))),
+            "3d ago"
+        );
     }
 }

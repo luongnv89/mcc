@@ -93,11 +93,13 @@ pub fn detect(paths: &Paths, shell_override: Option<Shell>) -> EnvInfo {
 fn os_version(os: &str) -> String {
     match os {
         "macos" => cmd_out("sw_vers", &["-productVersion"]).map(|v| format!("macOS {v}")),
-        "linux" => std::fs::read_to_string("/etc/os-release").ok().and_then(|s| {
-            s.lines()
-                .find_map(|l| l.strip_prefix("PRETTY_NAME="))
-                .map(|v| v.trim_matches('"').to_string())
-        }),
+        "linux" => std::fs::read_to_string("/etc/os-release")
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find_map(|l| l.strip_prefix("PRETTY_NAME="))
+                    .map(|v| v.trim_matches('"').to_string())
+            }),
         _ => None,
     }
     .or_else(|| cmd_out("uname", &["-sr"]))
@@ -126,7 +128,10 @@ fn terminal() -> String {
 
 fn cmd_out(cmd: &str, args: &[&str]) -> Option<String> {
     let out = Command::new(cmd).args(args).output().ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()).filter(|s| !s.is_empty())
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 pub fn dir_on_path(dir: &Path) -> bool {
@@ -142,7 +147,10 @@ mod tests {
     #[test]
     fn shell_from_path() {
         assert_eq!(Shell::from_path("/bin/zsh"), Some(Shell::Zsh));
-        assert_eq!(Shell::from_path("/opt/homebrew/bin/bash"), Some(Shell::Bash));
+        assert_eq!(
+            Shell::from_path("/opt/homebrew/bin/bash"),
+            Some(Shell::Bash)
+        );
         assert_eq!(Shell::from_path("-zsh"), Some(Shell::Zsh));
         assert_eq!(Shell::from_path("/usr/bin/fish"), Some(Shell::Fish));
         assert_eq!(Shell::from_path("/bin/tcsh"), None);
@@ -152,8 +160,17 @@ mod tests {
     #[test]
     fn rc_files_per_os() {
         let p = Paths::new(PathBuf::from("/h"));
-        assert_eq!(Shell::Bash.rc_file(&p, "macos"), PathBuf::from("/h/.bash_profile"));
-        assert_eq!(Shell::Bash.rc_file(&p, "linux"), PathBuf::from("/h/.bashrc"));
-        assert_eq!(Shell::Fish.rc_file(&p, "linux"), PathBuf::from("/h/.config/fish/config.fish"));
+        assert_eq!(
+            Shell::Bash.rc_file(&p, "macos"),
+            PathBuf::from("/h/.bash_profile")
+        );
+        assert_eq!(
+            Shell::Bash.rc_file(&p, "linux"),
+            PathBuf::from("/h/.bashrc")
+        );
+        assert_eq!(
+            Shell::Fish.rc_file(&p, "linux"),
+            PathBuf::from("/h/.config/fish/config.fish")
+        );
     }
 }

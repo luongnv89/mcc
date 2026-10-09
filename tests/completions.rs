@@ -8,7 +8,11 @@ use predicates::prelude::*;
 #[test]
 fn generates_for_supported_shells() {
     let sb = Sandbox::new();
-    for (shell, marker) in [("bash", "complete -F"), ("zsh", "#compdef mcc"), ("fish", "complete -c mcc")] {
+    for (shell, marker) in [
+        ("bash", "complete -F"),
+        ("zsh", "#compdef mcc"),
+        ("fish", "complete -c mcc"),
+    ] {
         sb.mcc()
             .args(["completions", shell])
             .assert()
@@ -24,6 +28,10 @@ fn generates_for_supported_shells() {
 #[test]
 fn rejects_unsupported_shell() {
     let sb = Sandbox::new();
-    sb.mcc().args(["completions", "tcsh"]).assert().code(2).stderr(predicate::str::contains("invalid value"));
+    sb.mcc()
+        .args(["completions", "tcsh"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("invalid value"));
     sb.mcc().arg("completions").assert().code(2);
 }
