@@ -3,7 +3,6 @@ name = "mcc"
 version = "0.1.0"
 edition = "2024"
 description = "Manage multiple Claude Code profiles (accounts) from one CLI"
-license = "MIT"
 repository = "https://github.com/luongnv89/mcc"
 readme = "README.md"
 keywords = ["claude", "claude-code", "profiles", "cli"]
