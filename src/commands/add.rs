@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use serde_json::{Map, Value};
 
 use crate::claude::{self, Claude};
 use crate::cli::AddArgs;
@@ -97,13 +98,20 @@ fn add_default(paths: &Paths, env: &EnvInfo, args: &AddArgs) -> Result<()> {
         paths,
         config_dir: None,
     };
-    login_steps(&mut steps, &c)?;
+    login_steps(&mut steps, &c, &paths.default_json, None)?;
     ui::result(true, "default profile ready — start it with `claude`");
     Ok(())
 }
 
 /// Run login + verification steps. Returns Ok(true) when logged in.
-fn login_steps(steps: &mut ui::Steps, c: &Claude) -> Result<bool> {
+/// `state_json` is the profile's `.claude.json`; `theme_src` is a state file to
+/// take the UI theme from (the default profile's, when cloning).
+fn login_steps(
+    steps: &mut ui::Steps,
+    c: &Claude,
+    state_json: &Path,
+    theme_src: Option<&Path>,
+) -> Result<bool> {
     let step = steps.start("Log in (complete the sign-in in your browser)");
     let ok = c.login()?;
     if ok {
@@ -119,11 +127,36 @@ fn login_steps(steps: &mut ui::Steps, c: &Claude) -> Result<bool> {
             .or(status.method)
             .unwrap_or_else(|| "logged in".into());
         step.ok(&who);
+        if let Err(e) = mark_onboarded(state_json, theme_src) {
+            ui::warn(&format!(
+                "could not update {}: {e:#} — Claude Code may show its first-run setup once",
+                state_json.display()
+            ));
+        }
         Ok(true)
     } else {
         step.warn("not logged in");
         Ok(false)
     }
+}
+
+/// `claude auth login` stores credentials but not `hasCompletedOnboarding`, so
+/// without this the first interactive start shows the theme picker and the
+/// login screen again even though the account is already logged in.
+fn mark_onboarded(state_json: &Path, theme_src: Option<&Path>) -> Result<()> {
+    let mut doc = copy::read_json(state_json)?.unwrap_or_else(|| Value::Object(Map::new()));
+    let Some(obj) = doc.as_object_mut() else {
+        return Ok(());
+    };
+    obj.insert("hasCompletedOnboarding".into(), Value::Bool(true));
+    if !obj.contains_key("theme")
+        && let Some(theme) = theme_src
+            .and_then(|p| copy::read_json(p).ok().flatten())
+            .and_then(|v| v.get("theme").cloned())
+    {
+        obj.insert("theme".into(), theme);
+    }
+    fsutil::write_atomic(state_json, serde_json::to_string_pretty(&doc)?.as_bytes())
 }
 
 fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -> Result<()> {
@@ -240,7 +273,12 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
                 paths,
                 config_dir: Some(&profile_dir),
             };
-            let ok = match login_steps(&mut steps, &c) {
+            let ok = match login_steps(
+                &mut steps,
+                &c,
+                &profile_dir.join(".claude.json"),
+                clone.then_some(paths.default_json.as_path()),
+            ) {
                 Ok(ok) => ok,
                 Err(e) => {
                     rollback(paths, cfg, undo);

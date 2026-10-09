@@ -116,7 +116,7 @@ impl Sandbox {
         self.write(".claude/.credentials.json", r#"{"secret":"default-token"}"#);
         self.write(
             ".claude.json",
-            r#"{"oauthAccount":{"emailAddress":"me@example.com","organizationName":"Acme"},"userID":"user-123","mcpServers":{"fs":{"command":"npx","args":["fs"]}},"projects":{}}"#,
+            r#"{"oauthAccount":{"emailAddress":"me@example.com","organizationName":"Acme"},"userID":"user-123","theme":"dark-ansi","hasCompletedOnboarding":true,"mcpServers":{"fs":{"command":"npx","args":["fs"]}},"projects":{}}"#,
         );
         self.write(
             ".zshrc",

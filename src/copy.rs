@@ -515,7 +515,7 @@ pub fn plan(
     Ok(plan)
 }
 
-fn read_json(path: &Path) -> Result<Option<Value>> {
+pub(crate) fn read_json(path: &Path) -> Result<Option<Value>> {
     match std::fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|e| {
             CliError::input(format!("{} is not valid JSON: {e}", path.display()))

@@ -17,6 +17,11 @@ fn creates_default_profile_when_missing() {
         .stderr(predicate::str::contains("start it with `claude`"));
     assert!(sb.exists(".claude/.credentials.json"));
     assert!(!sb.exists(".mcc/profiles"));
+    // Logged in, so Claude Code must not rerun its first-run login on start.
+    assert_eq!(
+        json(sb.read(".claude.json").as_bytes())["hasCompletedOnboarding"],
+        true
+    );
 }
 
 #[test]
@@ -74,6 +79,8 @@ fn clone_profile_end_to_end() {
     assert!(state.get("oauthAccount").is_none());
     assert!(state.get("userID").is_none());
     assert_eq!(state["mcpServers"]["fs"]["command"], "npx");
+    assert_eq!(state["hasCompletedOnboarding"], true);
+    assert_eq!(state["theme"], "dark-ansi");
 
     // Paths rewritten.
     let home = sb.home().display().to_string();
@@ -150,6 +157,16 @@ fn fresh_profile_no_login() {
     assert!(dir.is_dir());
     assert_eq!(std::fs::read_dir(dir).unwrap().count(), 0);
     assert!(sb.exists(".local/bin/lab"));
+}
+
+#[test]
+fn fresh_profile_login_skips_first_run_setup() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    sb.mcc().args(["add", "lab", "--fresh"]).assert().success();
+    let state = json(sb.read(".mcc/profiles/lab/.claude.json").as_bytes());
+    assert_eq!(state["hasCompletedOnboarding"], true);
+    assert!(state.get("theme").is_none()); // fresh: nothing taken from the default
 }
 
 #[test]
@@ -234,6 +251,8 @@ fn failed_login_keeps_profile_non_interactively() {
         .stderr(predicate::str::contains("not logged in"))
         .stderr(predicate::str::contains("run `work` to log in"));
     assert!(sb.exists(".mcc/profiles/work"));
+    // Not logged in: leave the first-run setup (with its login) in place.
+    assert!(!sb.exists(".mcc/profiles/work/.claude.json"));
 }
 
 #[test]
