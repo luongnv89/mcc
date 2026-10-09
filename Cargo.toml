@@ -1,0 +1,39 @@
+[package]
+name = "mcc"
+version = "0.1.0"
+edition = "2024"
+description = "Manage multiple Claude Code profiles (accounts) from one CLI"
+license = "MIT"
+repository = "https://github.com/luongnv89/mcc"
+readme = "README.md"
+keywords = ["claude", "claude-code", "profiles", "cli"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "mcc"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+chrono = "0.4.45"
+clap = { version = "4.6.7", features = ["derive", "env", "wrap_help"] }
+clap_complete = "4.6.11"
+console = "0.16.6"
+ctrlc = "3.5.2"
+dialoguer = "0.12.0"
+indicatif = "0.18.6"
+regex = "1.13.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
+toml = "1.1.8"
+walkdir = "2.5.0"
+
+[dev-dependencies]
+assert_cmd = "2.2.2"
+predicates = "3.1.4"
+tempfile = "3.27.0"
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
