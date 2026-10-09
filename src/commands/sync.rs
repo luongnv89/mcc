@@ -61,7 +61,8 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &SyncArgs) -> Result<()> {
                 if targets.len() > 1
                     && crate::error::classify(&e).0 != crate::error::EXIT_USAGE =>
             {
-                ui::error(&format!("{alias}: {e:#}"), None);
+                let (_, hint) = crate::error::classify(&e);
+                ui::error(&format!("{alias}: {e:#}"), hint.as_deref());
                 failed.push(alias.clone());
             }
             Err(e) => return Err(e),

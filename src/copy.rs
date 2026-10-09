@@ -360,6 +360,27 @@ fn rewritten(bytes: &[u8], rw: &Rewriter) -> Vec<u8> {
     }
 }
 
+/// A real (non-symlink) directory with at least one entry.
+fn is_nonempty_dir(p: &Path) -> bool {
+    kind(p) == Kind::Dir
+        && std::fs::read_dir(p)
+            .map(|mut d| d.next().is_some())
+            .unwrap_or(true)
+}
+
+/// The source has a file or symlink where the profile has its own non-empty
+/// directory. Replacing it would delete profile-only content, so that only
+/// happens with `--prune` (counted as a removal, which needs confirmation);
+/// otherwise the directory is kept and reported as profile-only.
+fn replace_dir(push: &mut impl FnMut(Action, PathBuf), rel: PathBuf, prune: bool) {
+    if prune {
+        push(Action::Remove, rel.clone());
+        push(Action::Add, rel);
+    } else {
+        push(Action::Extra, rel);
+    }
+}
+
 /// Compute what a copy from `src` to `dst` would change.
 pub fn plan(
     src_dir: &Path,
@@ -391,6 +412,8 @@ pub fn plan(
             Kind::File | Kind::Link(_) => {
                 if kind(&dst) == Kind::Missing {
                     push(Action::Add, item.rel.clone());
+                } else if is_nonempty_dir(&dst) {
+                    replace_dir(&mut push, item.rel.clone(), prune);
                 } else if same(&src, &dst, item.rewrite, rw)? {
                     plan.unchanged += 1;
                 } else {
@@ -411,6 +434,9 @@ pub fn plan(
                 }
                 // Nested dirs replaced the same way; their contents are fresh.
                 let mut replaced: Vec<PathBuf> = Vec::new();
+                // Profile dirs where the source has a file or symlink; their
+                // contents are covered by replace_dir and must not be walked.
+                let mut dir_conflicts = BTreeSet::new();
                 let mut seen = BTreeSet::new();
                 let walker = WalkDir::new(&src)
                     .min_depth(1)
@@ -446,6 +472,9 @@ pub fn plan(
                     }
                     if matches!(kind(&d), Kind::Missing) {
                         push(Action::Add, rel);
+                    } else if is_nonempty_dir(&d) {
+                        dir_conflicts.insert(rel_in);
+                        replace_dir(&mut push, rel, prune);
                     } else if same(entry.path(), &d, false, rw)? {
                         plan.unchanged += 1;
                     } else {
@@ -466,6 +495,9 @@ pub fn plan(
                             .expect("walk prefix")
                             .to_path_buf();
                         if seen.contains(&rel_in) {
+                            if dir_conflicts.contains(&rel_in) {
+                                walker.skip_current_dir();
+                            }
                             continue;
                         }
                         if entry.file_type().is_dir() {
@@ -936,6 +968,83 @@ mod tests {
             "skill"
         );
         assert!(outside.join("SKILL.md").exists());
+    }
+
+    fn plan_skills(paths: &Paths, dst: &Path, prune: bool) -> Plan {
+        let rw = Rewriter::new(paths, dst, &SyncConfig::default());
+        let sp = spec(Some(&["skills".to_string()]), &SyncConfig::default()).unwrap();
+        plan(
+            &paths.default_dir,
+            &paths.default_json,
+            dst,
+            &sp,
+            &rw,
+            prune,
+        )
+        .unwrap()
+    }
+
+    fn apply_plan(paths: &Paths, dst: &Path, p: &Plan) {
+        let rw = Rewriter::new(paths, dst, &SyncConfig::default());
+        apply(p, &paths.default_dir, dst, &rw, false).unwrap();
+    }
+
+    #[test]
+    fn symlinked_source_dir_never_deletes_profile_dir_without_prune() {
+        let (_d, paths, dst) = setup();
+        let dotfiles = paths.home.join("dotfiles/skills");
+        std::fs::create_dir_all(dotfiles.join("shared")).unwrap();
+        std::fs::write(dotfiles.join("shared/SKILL.md"), "shared").unwrap();
+        std::fs::remove_dir_all(paths.default_dir.join("skills")).unwrap();
+        std::os::unix::fs::symlink(&dotfiles, paths.default_dir.join("skills")).unwrap();
+        std::fs::create_dir_all(dst.join("skills/mine")).unwrap();
+        std::fs::write(dst.join("skills/mine/SKILL.md"), "mine").unwrap();
+
+        let p = plan_skills(&paths, &dst, false);
+        assert_eq!(p.count(Action::Remove), 0, "{:?}", p.changes);
+        assert_eq!(p.count(Action::Update), 0, "{:?}", p.changes);
+        assert_eq!(p.count(Action::Extra), 1, "{:?}", p.changes);
+        apply_plan(&paths, &dst, &p);
+        assert_eq!(
+            std::fs::read_to_string(dst.join("skills/mine/SKILL.md")).unwrap(),
+            "mine"
+        );
+
+        let p = plan_skills(&paths, &dst, true);
+        assert_eq!(p.count(Action::Remove), 1, "{:?}", p.changes);
+        apply_plan(&paths, &dst, &p);
+        assert_eq!(std::fs::read_link(dst.join("skills")).unwrap(), dotfiles);
+        assert!(dotfiles.join("shared/SKILL.md").exists());
+        assert!(!dotfiles.join("mine").exists());
+        assert_eq!(plan_skills(&paths, &dst, true).actionable(), 0);
+    }
+
+    #[test]
+    fn nested_symlinked_source_dir_never_deletes_profile_dir_without_prune() {
+        let (_d, paths, dst) = setup();
+        let target = paths.home.join("dotfiles/one");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("SKILL.md"), "skill").unwrap();
+        std::fs::remove_dir_all(paths.default_dir.join("skills/one")).unwrap();
+        std::os::unix::fs::symlink(&target, paths.default_dir.join("skills/one")).unwrap();
+        std::fs::create_dir_all(dst.join("skills/one")).unwrap();
+        std::fs::write(dst.join("skills/one/mine.md"), "mine").unwrap();
+
+        let p = plan_skills(&paths, &dst, false);
+        assert_eq!(p.count(Action::Remove), 0, "{:?}", p.changes);
+        assert_eq!(p.count(Action::Extra), 1, "{:?}", p.changes);
+        apply_plan(&paths, &dst, &p);
+        assert!(dst.join("skills/one/mine.md").exists());
+
+        // With --prune the dir is replaced once; nothing is removed through the new link.
+        let p = plan_skills(&paths, &dst, true);
+        assert_eq!(p.count(Action::Remove), 1, "{:?}", p.changes);
+        apply_plan(&paths, &dst, &p);
+        assert_eq!(std::fs::read_link(dst.join("skills/one")).unwrap(), target);
+        assert_eq!(
+            std::fs::read_to_string(target.join("SKILL.md")).unwrap(),
+            "skill"
+        );
     }
 
     #[test]

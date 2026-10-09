@@ -479,3 +479,58 @@ fn errors_without_a_specific_hint_get_a_fallback_hint() {
         .stderr(predicate::str::contains("hint:"))
         .stderr(predicate::str::contains("~/.mcc/logs/mcc.log"));
 }
+
+#[test]
+fn sync_keeps_profile_dir_when_default_item_is_a_symlink() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    with_profile(&sb, "work", "--clone");
+    sb.write(".mcc/profiles/work/skills/mine/SKILL.md", "mine");
+    // The default's skills/ becomes a symlink into a dotfiles repo.
+    std::fs::create_dir_all(sb.path("dotfiles")).unwrap();
+    std::fs::rename(sb.path(".claude/skills"), sb.path("dotfiles/skills")).unwrap();
+    std::os::unix::fs::symlink(sb.path("dotfiles/skills"), sb.path(".claude/skills")).unwrap();
+
+    sb.mcc()
+        .args(["sync", "work", "--yes"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "only in profile (kept; --prune removes)",
+        ));
+    assert_eq!(sb.read(".mcc/profiles/work/skills/mine/SKILL.md"), "mine");
+
+    // Replacing it is a removal: needs --prune and confirmation.
+    sb.mcc()
+        .args(["sync", "work", "--prune"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--yes"));
+    assert_eq!(sb.read(".mcc/profiles/work/skills/mine/SKILL.md"), "mine");
+    sb.mcc()
+        .args(["sync", "work", "--prune", "--yes"])
+        .assert()
+        .success();
+    assert_eq!(
+        std::fs::read_link(sb.path(".mcc/profiles/work/skills")).unwrap(),
+        sb.path("dotfiles/skills")
+    );
+    assert!(sb.exists("dotfiles/skills/alpha/SKILL.md"));
+    assert!(!sb.exists("dotfiles/skills/mine"));
+}
+
+#[test]
+fn sync_all_shows_each_failing_profiles_hint() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    with_profile(&sb, "a1", "--fresh");
+    with_profile(&sb, "a2", "--fresh");
+    std::fs::remove_dir_all(sb.path(".mcc/profiles/a1")).unwrap();
+    sb.mcc()
+        .args(["sync", "--all"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("a1: profile directory"))
+        .stderr(predicate::str::contains("mcc delete a1 --yes"))
+        .stderr(predicate::str::contains("1/2 profiles synced"));
+}
