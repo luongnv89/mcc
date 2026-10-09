@@ -91,9 +91,12 @@ pub fn spec(only: Option<&[String]>, cfg: &SyncConfig) -> Result<Spec> {
     Ok(Spec { items, mcp: wanted(MCP_GROUP) })
 }
 
-/// Rewrites default-profile paths to a target profile dir.
+/// Rewrites default-profile paths to a target profile dir. Only paths that the
+/// profile actually receives (whitelisted items) are rewritten; anything else,
+/// e.g. `~/.claude/statusline/x.sh`, keeps pointing at the default profile.
 pub struct Rewriter {
     re: Regex,
+    copied: Vec<String>,
     abs_to: String,
     home_rel_to: Option<String>,
     from_dir: PathBuf,
@@ -102,7 +105,10 @@ pub struct Rewriter {
 }
 
 impl Rewriter {
-    pub fn new(paths: &Paths, to_dir: &Path) -> Self {
+    pub fn new(paths: &Paths, to_dir: &Path, sync_cfg: &SyncConfig) -> Self {
+        let copied = spec(None, sync_cfg)
+            .map(|s| s.items.iter().map(|i| i.rel.to_string_lossy().to_string()).collect())
+            .unwrap_or_default();
         let home = regex::escape(&paths.home.to_string_lossy());
         let re = Regex::new(&format!(
             r#"(?P<p>{home}|~|\$HOME|\$\{{HOME\}})/\.claude(?P<b>$|[/"'\s),;:\]}}])"#
@@ -112,6 +118,7 @@ impl Rewriter {
             to_dir.strip_prefix(&paths.home).ok().map(|r| r.to_string_lossy().to_string());
         Self {
             re,
+            copied,
             abs_to: to_dir.to_string_lossy().to_string(),
             home_rel_to,
             from_dir: paths.default_dir.clone(),
@@ -123,6 +130,20 @@ impl Rewriter {
     pub fn apply(&self, text: &str) -> String {
         self.re
             .replace_all(text, |c: &regex::Captures| {
+                let whole = c.get(0).expect("match");
+                if &c["b"] == "/" {
+                    // `~/.claude/<rest>`: only rewrite when <rest> is copied.
+                    let rest: String = text[whole.end()..]
+                        .chars()
+                        .take_while(|ch| !matches!(ch, '"' | '\'' | ')' | ',' | ';' | ':' | ']' | '}') && !ch.is_whitespace())
+                        .collect();
+                    let copied = self.copied.iter().any(|rel| {
+                        rest == *rel || rest.strip_prefix(rel.as_str()).is_some_and(|r| r.starts_with('/'))
+                    });
+                    if !copied {
+                        return whole.as_str().to_string();
+                    }
+                }
                 let p = &c["p"];
                 let target = match (&self.home_rel_to, p) {
                     (Some(rel), "~" | "$HOME" | "${HOME}") => format!("{p}/{rel}"),
@@ -521,7 +542,7 @@ mod tests {
         let home = paths.home.display().to_string();
         std::fs::write(
             src.join("settings.json"),
-            format!(r#"{{"hooks":"bash '{home}/.claude/hooks/h.sh'","s":"~/.claude/x","keep":"~/.claude.json","e":"$HOME/.claude"}}"#),
+            format!(r#"{{"hooks":"bash '{home}/.claude/hooks/h.sh'","s":"~/.claude/agents/x","ext":"~/.claude/statusline/run.sh","keep":"~/.claude.json","e":"$HOME/.claude"}}"#),
         )
         .unwrap();
         std::fs::write(
@@ -537,21 +558,33 @@ mod tests {
     #[test]
     fn rewriter_boundaries() {
         let paths = Paths::new("/h".into());
-        let rw = Rewriter::new(&paths, &paths.profile_dir("w"));
+        let rw = Rewriter::new(&paths, &paths.profile_dir("w"), &SyncConfig::default());
         assert_eq!(rw.apply("/h/.claude/hooks/x.sh"), "/h/.mcc/profiles/w/hooks/x.sh");
         assert_eq!(rw.apply("~/.claude/skills"), "~/.mcc/profiles/w/skills");
         assert_eq!(rw.apply("$HOME/.claude"), "$HOME/.mcc/profiles/w");
-        assert_eq!(rw.apply("${HOME}/.claude/a"), "${HOME}/.mcc/profiles/w/a");
+        assert_eq!(rw.apply("${HOME}/.claude/skills/a"), "${HOME}/.mcc/profiles/w/skills/a");
         assert_eq!(rw.apply("\"/h/.claude\""), "\"/h/.mcc/profiles/w\"");
         assert_eq!(rw.apply("~/.claude.json"), "~/.claude.json");
         assert_eq!(rw.apply("~/.claude-other/x"), "~/.claude-other/x");
         assert_eq!(rw.apply("/other/.claude/x"), "/other/.claude/x");
+        // Not copied into the profile → keep pointing at the default.
+        assert_eq!(rw.apply("bash ~/.claude/statusline/run.sh"), "bash ~/.claude/statusline/run.sh");
+        assert_eq!(rw.apply("\"/h/.claude/projects\""), "\"/h/.claude/projects\"");
+        assert_eq!(rw.apply("~/.claude/plugins/data/x"), "~/.claude/plugins/data/x");
+        assert_eq!(rw.apply("~/.claude/skillsfoo/x"), "~/.claude/skillsfoo/x");
+        // Copied → rewritten, including multi-segment items.
+        assert_eq!(rw.apply("~/.claude/plugins/cache/m/p"), "~/.mcc/profiles/w/plugins/cache/m/p");
+        assert_eq!(rw.apply("\"~/.claude/statusline.conf\""), "\"~/.mcc/profiles/w/statusline.conf\"");
+        // Excluded groups are not rewritten either.
+        let cfg = SyncConfig { exclude: vec!["hooks".into()], extra: vec![] };
+        let rw = Rewriter::new(&paths, &paths.profile_dir("w"), &cfg);
+        assert_eq!(rw.apply("~/.claude/hooks/h.sh"), "~/.claude/hooks/h.sh");
     }
 
     #[test]
     fn clone_copies_whitelist_only() {
         let (_d, paths, dst) = setup();
-        let rw = Rewriter::new(&paths, &dst);
+        let rw = Rewriter::new(&paths, &dst, &SyncConfig::default());
         let spec = spec(None, &SyncConfig::default()).unwrap();
         let p = plan(&paths.default_dir, &paths.default_json, &dst, &spec, &rw, false).unwrap();
         // settings.json, skills/, skills/one/, skills/one/SKILL.md, agents/, agents/a.md, plugins/cache/
@@ -566,14 +599,15 @@ mod tests {
 
         let settings = std::fs::read_to_string(dst.join("settings.json")).unwrap();
         assert!(settings.contains(&format!("{}/hooks/h.sh", dst.display())));
-        assert!(settings.contains("~/.mcc/profiles/work/x"));
+        assert!(settings.contains("~/.mcc/profiles/work/agents/x"));
+        assert!(settings.contains("\"ext\":\"~/.claude/statusline/run.sh\""), "{settings}");
         assert!(settings.contains("\"keep\":\"~/.claude.json\""));
         assert!(settings.contains("$HOME/.mcc/profiles/work"));
 
         let json: Value = serde_json::from_str(&std::fs::read_to_string(dst.join(".claude.json")).unwrap()).unwrap();
         assert!(json.get("oauthAccount").is_none());
         assert!(json.get("userID").is_none());
-        assert_eq!(json["mcpServers"]["fs"]["command"], "~/.mcc/profiles/work/bin/fs");
+        assert_eq!(json["mcpServers"]["fs"]["command"], "~/.claude/bin/fs"); // bin/ is not copied
 
         // Second plan is a no-op.
         let p2 = plan(&paths.default_dir, &paths.default_json, &dst, &spec, &rw, false).unwrap();
@@ -583,7 +617,7 @@ mod tests {
     #[test]
     fn prune_and_extras() {
         let (_d, paths, dst) = setup();
-        let rw = Rewriter::new(&paths, &dst);
+        let rw = Rewriter::new(&paths, &dst, &SyncConfig::default());
         let sp = spec(Some(&["agents".to_string()]), &SyncConfig::default()).unwrap();
         assert!(!sp.mcp);
         std::fs::create_dir_all(dst.join("agents/sub")).unwrap();
@@ -615,7 +649,7 @@ mod tests {
         std::os::unix::fs::symlink("../../.agents/skills/shared", src.join("skills/rel-out")).unwrap();
         std::os::unix::fs::symlink("one", src.join("skills/rel-in")).unwrap();
         std::fs::create_dir_all(src.join("skills/.trash/old")).unwrap();
-        let rw = Rewriter::new(&paths, &dst);
+        let rw = Rewriter::new(&paths, &dst, &SyncConfig::default());
         let sp = spec(Some(&["skills".to_string()]), &SyncConfig::default()).unwrap();
         let p = plan(src, &paths.default_json, &dst, &sp, &rw, false).unwrap();
         apply(&p, src, &dst, &rw, false).unwrap();

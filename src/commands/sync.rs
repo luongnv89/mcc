@@ -76,7 +76,7 @@ fn sync_one(paths: &Paths, cfg: &mut Config, alias: &str, spec: &Spec, args: &Sy
             .hint(format!("remove the stale entry with `mcc delete {alias} --yes`"))
             .into());
     }
-    let rw = Rewriter::new(paths, &dir);
+    let rw = Rewriter::new(paths, &dir, &cfg.sync);
     let mut steps = ui::Steps::new(if args.dry_run { 1 } else { 3 });
 
     let step = steps.start("Compare with the default profile");

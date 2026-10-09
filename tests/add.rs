@@ -63,7 +63,9 @@ fn clone_profile_end_to_end() {
     let home = sb.home().display().to_string();
     let settings = sb.read(&format!("{p}/settings.json"));
     assert!(settings.contains(&format!("{home}/.mcc/profiles/work/hooks/notify.sh")), "{settings}");
-    assert!(settings.contains("~/.mcc/profiles/work/statusline.sh"), "{settings}");
+    // statusline.sh is not a copied item, so it keeps pointing at the default
+    // (rewriting it would leave a dangling reference in the profile).
+    assert!(settings.contains("\"command\":\"~/.claude/statusline.sh\""), "{settings}");
     let plugins = sb.read(&format!("{p}/plugins/installed_plugins.json"));
     assert!(plugins.contains(&format!("{home}/.mcc/profiles/work/plugins/cache")), "{plugins}");
 

@@ -2,16 +2,17 @@
 
 Run several Claude Code accounts side by side, each with its own login, its own command, and the same setup as your main one.
 
+Output captured from a sandbox run (small demo setup; `claude` login shown with a test account):
+
 ```console
 $ mcc add work --clone
-
 ◆ Add Claude Code profile "work"
   [1/8] Validate alias
         ✓ done — "work" is available (1ms)
   [2/8] Create ~/.mcc/profiles/work
         ✓ done (0ms)
   [3/8] Copy setup from the default profile
-        ✓ done — 7180 items (settings 2, claude-md 1, agents 9, skills 92, hooks 2, statusline 1, plugins 7073), 1 MCP servers; no credentials copied (1.9s)
+        ✓ done — 7 items (settings 1, claude-md 1, agents 2, skills 3), 1 MCP servers; no credentials copied (4ms)
   [4/8] Install launcher ~/.local/bin/work
         ✓ done (0ms)
   [5/8] Add shell alias
@@ -19,14 +20,20 @@ $ mcc add work --clone
   [6/8] Register profile
         ✓ done — ~/.mcc/config.toml (0ms)
   [7/8] Log in (complete the sign-in in your browser)
-        ✓ done
+Login successful.
+        ✓ done (12ms)
   [8/8] Verify login
-        ✓ done — you@work.com
+        ✓ done — fake@example.com (23ms)
 
   Result: profile "work" is ready — start it with `work`
+    Command:           work
+    Directory:         ~/.mcc/profiles/work
+    Setup:             cloned from default (sync later with `mcc sync`)
+    Launcher:          ~/.local/bin/work
+    Shell alias:       ~/.zshrc
 
-$ work          # Claude Code, logged in as you@work.com
-$ claude        # Claude Code, your default account, unchanged
+$ work          # Claude Code with the "work" account
+$ claude        # Claude Code with your default account, unchanged
 ```
 
 Claude Code reads its config from `CLAUDE_CONFIG_DIR`, which defaults to `~/.claude`. mcc gives each extra account its own directory and a command that sets the variable for you. It also keeps these profiles in sync with your default setup.
@@ -130,7 +137,7 @@ mcc completions fish > ~/.config/fish/completions/mcc.fish
 
 **Never copied:** credentials, account identity (`oauthAccount`, `userID`), history, projects/sessions, todos, telemetry, caches, file history.
 
-**Paths are rewritten** so each profile is self-contained. `~/.claude/…`, `$HOME/.claude/…`, and `/Users/you/.claude/…` in settings and plugin manifests are rewritten to point at the profile directory. Symlinks stay symlinks: a link into the default profile is re-pointed into the copy, and a relative link elsewhere (such as `skills/x -> ../../.agents/skills/x`) is resolved so it still works from the new location.
+**Paths are rewritten** so each profile uses its own copies. In settings, plugin manifests, and MCP server entries, any `~/.claude/…`, `$HOME/.claude/…`, or `/Users/you/.claude/…` path that points at a *copied* item (for example `~/.claude/hooks/notify.sh`) is rewritten to the profile directory. Paths to things that aren't copied, such as `~/.claude/statusline/run.sh`, keep pointing at the default profile, so nothing dangles. Symlinks stay symlinks: a link into the default profile is re-pointed into the copy, and a relative link elsewhere (such as `skills/x -> ../../.agents/skills/x`) is resolved so it still works from the new location.
 
 **`sync` is one-way** (default → profile), because most tools assume the default config path. Before writing, `sync` backs up the profile's `settings.json`, `settings.local.json`, and `.claude.json` to `<profile>/.mcc-backup/<timestamp>/`. Files that exist only in the profile are kept unless you pass `--prune`, and pruning asks for confirmation (or needs `--yes`).
 

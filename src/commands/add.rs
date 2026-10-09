@@ -213,6 +213,7 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
         }
         _ => {
             steps.start("Log in").skip("--no-login");
+            steps.start("Verify login").skip("--no-login");
             false
         }
     };
@@ -227,7 +228,7 @@ fn now() -> String {
 
 fn clone_setup(paths: &Paths, sync_cfg: &SyncConfig, profile_dir: &Path) -> Result<String> {
     let spec = copy::spec(None, sync_cfg)?;
-    let rw = Rewriter::new(paths, profile_dir);
+    let rw = Rewriter::new(paths, profile_dir, sync_cfg);
     let plan = copy::plan(&paths.default_dir, &paths.default_json, profile_dir, &spec, &rw, false)?;
     copy::apply(&plan, &paths.default_dir, profile_dir, &rw, ui::is_interactive() && !ui::settings().quiet)?;
     let groups: Vec<String> = plan.by_group().iter().map(|(g, a, ..)| format!("{g} {a}")).collect();
