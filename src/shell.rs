@@ -99,14 +99,21 @@ fn read_or_empty(rc: &Path) -> Result<String> {
     }
 }
 
-/// Copy the rc file to `~/.mcc/backups/` before modifying it.
+/// Copy the rc file to `~/.mcc/backups/` before modifying it. Never overwrites
+/// an earlier backup (several edits can land in the same millisecond).
 fn backup(paths: &Paths, rc: &Path, content: &str) -> Result<()> {
     if content.is_empty() {
         return Ok(());
     }
     let name = rc.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "rc".into());
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S%.3f");
-    let dest = paths.backups_dir.join(format!("{}.{stamp}", name.trim_start_matches('.')));
+    let base = format!("{}.{stamp}", name.trim_start_matches('.'));
+    let mut dest = paths.backups_dir.join(&base);
+    let mut n = 1;
+    while dest.exists() {
+        dest = paths.backups_dir.join(format!("{base}.{n}"));
+        n += 1;
+    }
     fsutil::write_atomic(&dest, content.as_bytes())
 }
 
@@ -161,7 +168,10 @@ mod tests {
         assert!(remove_block(&paths, &rc, "work").unwrap());
         assert_eq!(std::fs::read_to_string(&rc).unwrap(), "export A=1\nalias x=y\n");
         assert!(!remove_block(&paths, &rc, "work").unwrap());
-        assert!(paths.backups_dir.read_dir().unwrap().count() >= 2);
+        // One backup per modification, none overwritten, the original kept.
+        let backups: Vec<_> = paths.backups_dir.read_dir().unwrap().map(|e| e.unwrap().path()).collect();
+        assert_eq!(backups.len(), 3, "{backups:?}");
+        assert!(backups.iter().any(|p| std::fs::read_to_string(p).unwrap() == "export A=1\nalias x=y\n"));
     }
 
     #[test]
