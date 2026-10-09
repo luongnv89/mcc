@@ -97,6 +97,7 @@ pub struct Rewriter {
     abs_to: String,
     home_rel_to: Option<String>,
     from_dir: PathBuf,
+    from_dir_real: PathBuf,
     to_dir: PathBuf,
 }
 
@@ -114,6 +115,7 @@ impl Rewriter {
             abs_to: to_dir.to_string_lossy().to_string(),
             home_rel_to,
             from_dir: paths.default_dir.clone(),
+            from_dir_real: std::fs::canonicalize(&paths.default_dir).unwrap_or_else(|_| paths.default_dir.clone()),
             to_dir: to_dir.to_path_buf(),
         }
     }
@@ -131,13 +133,40 @@ impl Rewriter {
             .into_owned()
     }
 
-    /// Absolute symlink targets inside the default dir point into the profile instead.
-    fn link_target(&self, target: &Path) -> PathBuf {
-        match target.strip_prefix(&self.from_dir) {
-            Ok(rest) if target.is_absolute() => self.to_dir.join(rest),
-            _ => target.to_path_buf(),
+    /// Where a copy of the symlink `link` (pointing at `target`) should point.
+    /// Relative targets are resolved from the link's real location, since the
+    /// copy lives at a different depth (`../../.agents/skills/x` would break).
+    /// Targets inside the default dir are mapped into the profile.
+    fn link_target(&self, link: &Path, target: &Path) -> PathBuf {
+        let resolved = if target.is_absolute() {
+            target.to_path_buf()
+        } else {
+            let parent = link.parent().unwrap_or(Path::new("/"));
+            let base = std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+            normalize(&base.join(target))
+        };
+        for from in [&self.from_dir, &self.from_dir_real] {
+            if let Ok(rest) = resolved.strip_prefix(from) {
+                return self.to_dir.join(rest);
+            }
+        }
+        resolved
+    }
+}
+
+/// Lexically resolve `.` and `..` (the target may not exist, so no canonicalize).
+fn normalize(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other),
         }
     }
+    out
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,6 +238,7 @@ impl Plan {
 
 fn is_noise(name: &str) -> bool {
     name == ".DS_Store"
+        || name == ".trash"
         || name.starts_with("temp_git_")
         || name.starts_with("temp_subdir_")
         || name.contains(".mcc-tmp-")
@@ -234,7 +264,7 @@ fn kind(p: &Path) -> Kind {
 /// Does `dst` already match what copying `src` would produce?
 fn same(src: &Path, dst: &Path, rewrite: bool, rw: &Rewriter) -> Result<bool> {
     match (kind(src), kind(dst)) {
-        (Kind::Link(a), Kind::Link(b)) => Ok(rw.link_target(&a) == b),
+        (Kind::Link(a), Kind::Link(b)) => Ok(rw.link_target(src, &a) == b),
         (Kind::File, Kind::File) => {
             if !rewrite {
                 let (a, b) = (std::fs::metadata(src)?.len(), std::fs::metadata(dst)?.len());
@@ -290,17 +320,25 @@ pub fn plan(
                 }
             }
             Kind::Dir => {
+                if kind(&dst) == Kind::Missing {
+                    push(Action::Add, item.rel.clone());
+                }
                 let mut seen = BTreeSet::new();
                 let walker = WalkDir::new(&src).min_depth(1).follow_links(false).sort_by_file_name();
                 for entry in walker.into_iter().filter_entry(|e| !is_noise(&e.file_name().to_string_lossy())) {
                     let entry = entry.with_context(|| format!("walking {}", src.display()))?;
                     let rel_in = entry.path().strip_prefix(&src).expect("walk prefix").to_path_buf();
                     seen.insert(rel_in.clone());
-                    if entry.file_type().is_dir() {
-                        continue;
-                    }
                     let rel = item.rel.join(&rel_in);
                     let d = dst_dir.join(&rel);
+                    if entry.file_type().is_dir() {
+                        match kind(&d) {
+                            Kind::Dir => {}
+                            Kind::Missing => push(Action::Add, rel),
+                            _ => push(Action::Update, rel),
+                        }
+                        continue;
+                    }
                     if matches!(kind(&d), Kind::Missing) {
                         push(Action::Add, rel);
                     } else if same(entry.path(), &d, false, rw)? {
@@ -389,7 +427,7 @@ pub fn apply(plan: &Plan, src_dir: &Path, dst_dir: &Path, rw: &Rewriter, progres
     let bar = if progress && !todo.is_empty() {
         let pb = ProgressBar::new(todo.len() as u64);
         pb.set_style(
-            ProgressStyle::with_template("        {bar:30.cyan/blue} {pos}/{len} files {wide_msg:.dim}")
+            ProgressStyle::with_template("        {bar:30.cyan/blue} {pos}/{len} items {wide_msg:.dim}")
                 .expect("template")
                 .progress_chars("█▉▊▋▌▍▎▏ "),
         );
@@ -434,7 +472,7 @@ fn copy_one(src: &Path, dst: &Path, rewrite: bool, rw: &Rewriter) -> Result<()> 
     match kind(src) {
         Kind::Link(target) => {
             fsutil::remove_any(dst)?;
-            std::os::unix::fs::symlink(rw.link_target(&target), dst)
+            std::os::unix::fs::symlink(rw.link_target(src, &target), dst)
                 .with_context(|| format!("linking {}", dst.display()))?;
         }
         Kind::File => {
@@ -452,7 +490,12 @@ fn copy_one(src: &Path, dst: &Path, rewrite: bool, rw: &Rewriter) -> Result<()> 
                     .with_context(|| format!("copying {} → {}", src.display(), dst.display()))?;
             }
         }
-        Kind::Dir => std::fs::create_dir_all(dst)?,
+        Kind::Dir => {
+            if !matches!(kind(dst), Kind::Dir | Kind::Missing) {
+                fsutil::remove_any(dst)?;
+            }
+            std::fs::create_dir_all(dst).with_context(|| format!("creating {}", dst.display()))?;
+        }
         Kind::Missing => {}
     }
     Ok(())
@@ -511,7 +554,8 @@ mod tests {
         let rw = Rewriter::new(&paths, &dst);
         let spec = spec(None, &SyncConfig::default()).unwrap();
         let p = plan(&paths.default_dir, &paths.default_json, &dst, &spec, &rw, false).unwrap();
-        assert_eq!(p.count(Action::Add), 3); // settings.json, skills/one/SKILL.md, agents/a.md
+        // settings.json, skills/, skills/one/, skills/one/SKILL.md, agents/, agents/a.md, plugins/cache/
+        assert_eq!(p.count(Action::Add), 7, "{:?}", p.changes);
         apply(&p, &paths.default_dir, &dst, &rw, false).unwrap();
 
         assert!(dst.join("skills/one/SKILL.md").exists());
@@ -566,12 +610,21 @@ mod tests {
         let src = &paths.default_dir;
         std::os::unix::fs::symlink(src.join("skills/one"), src.join("skills/abs-link")).unwrap();
         std::os::unix::fs::symlink("/opt/elsewhere", src.join("skills/ext-link")).unwrap();
+        // Relative links: one leaving the config dir, one staying inside it.
+        std::fs::create_dir_all(paths.home.join(".agents/skills/shared")).unwrap();
+        std::os::unix::fs::symlink("../../.agents/skills/shared", src.join("skills/rel-out")).unwrap();
+        std::os::unix::fs::symlink("one", src.join("skills/rel-in")).unwrap();
+        std::fs::create_dir_all(src.join("skills/.trash/old")).unwrap();
         let rw = Rewriter::new(&paths, &dst);
         let sp = spec(Some(&["skills".to_string()]), &SyncConfig::default()).unwrap();
         let p = plan(src, &paths.default_json, &dst, &sp, &rw, false).unwrap();
         apply(&p, src, &dst, &rw, false).unwrap();
         assert_eq!(std::fs::read_link(dst.join("skills/abs-link")).unwrap(), dst.join("skills/one"));
         assert_eq!(std::fs::read_link(dst.join("skills/ext-link")).unwrap(), PathBuf::from("/opt/elsewhere"));
+        let shared = std::fs::canonicalize(paths.home.join(".agents/skills/shared")).unwrap();
+        assert_eq!(std::fs::canonicalize(dst.join("skills/rel-out")).unwrap(), shared);
+        assert_eq!(std::fs::read_link(dst.join("skills/rel-in")).unwrap(), dst.join("skills/one"));
+        assert!(!dst.join("skills/.trash").exists());
         let p2 = plan(src, &paths.default_json, &dst, &sp, &rw, false).unwrap();
         assert_eq!(p2.actionable(), 0);
     }

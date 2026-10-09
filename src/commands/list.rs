@@ -94,7 +94,7 @@ fn table(out: &mut impl Write, all: &[ProfileMetrics]) -> Result<()> {
 }
 
 fn card(out: &mut impl Write, m: &ProfileMetrics) -> Result<()> {
-    let title = if m.is_default { format!("{} (default)", m.name) } else { m.name.clone() };
+    let title = if m.is_default { format!("{} ★ (~/.claude)", m.name) } else { m.name.clone() };
     writeln!(out, "{} {}", style("◆").cyan().bold(), style(title).bold())?;
     let row = |out: &mut dyn Write, k: &str, v: String| writeln!(out, "    {:<16} {v}", format!("{k}:"));
     row(out, "Command", m.command.clone())?;
@@ -105,7 +105,7 @@ fn card(out: &mut impl Write, m: &ProfileMetrics) -> Result<()> {
         match (&m.account, &m.organization) {
             (Some(a), Some(o)) => format!("{a} ({o})"),
             (Some(a), None) => a.clone(),
-            _ => "not logged in".into(),
+            _ => "— (no account info yet; log in by running the command)".into(),
         },
     )?;
     if let Some(model) = &m.model {

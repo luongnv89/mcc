@@ -233,7 +233,7 @@ fn clone_setup(paths: &Paths, sync_cfg: &SyncConfig, profile_dir: &Path) -> Resu
     let groups: Vec<String> = plan.by_group().iter().map(|(g, a, ..)| format!("{g} {a}")).collect();
     let mcp = plan.mcp.as_ref().map_or(0, |m| m.added.len());
     Ok(format!(
-        "{} files ({}), {mcp} MCP servers; no credentials copied",
+        "{} items ({}), {mcp} MCP servers; no credentials copied",
         plan.count(copy::Action::Add),
         if groups.is_empty() { "nothing to copy".into() } else { groups.join(", ") }
     ))
