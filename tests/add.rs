@@ -72,7 +72,7 @@ fn clone_profile_end_to_end() {
     // Launcher + rc block + registry.
     let wrapper = sb.read(".local/bin/work");
     assert!(wrapper.contains("# managed-by: mcc"));
-    assert!(wrapper.contains("CLAUDE_CONFIG_DIR=\"$HOME/.mcc/profiles/work\" exec claude"));
+    assert!(wrapper.contains("export CLAUDE_CONFIG_DIR=\"$HOME/.mcc/profiles/work\""));
     let rc = sb.read(".zshrc");
     assert!(rc.starts_with("export EDITOR=vim\n"), "{rc}");
     assert!(rc.contains("# >>> mcc:work >>>\n"));
@@ -88,6 +88,15 @@ fn clone_profile_end_to_end() {
         .output()
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "fake claude hello");
+
+    // …and still works when `claude` is not on PATH (cron, IDE tasks, trimmed PATH).
+    let out = std::process::Command::new(sb.path(".local/bin/work"))
+        .args(["auth", "status"])
+        .env("HOME", sb.home())
+        .env("PATH", "/usr/bin:/bin")
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("\"loggedIn\": true"), "{out:?}");
 }
 
 #[test]

@@ -244,6 +244,19 @@ fn delete_guardrails() {
 }
 
 #[test]
+fn delete_reports_not_logged_in_truthfully() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    sb.mcc().args(["add", "lab", "--fresh", "--no-login"]).assert().success();
+    sb.mcc()
+        .args(["delete", "lab", "--yes"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("skipped — was not logged in"))
+        .stderr(predicate::str::contains("credentials removed").not());
+}
+
+#[test]
 fn delete_cleans_unregistered_leftover_dir() {
     let sb = Sandbox::new();
     sb.seed_default();

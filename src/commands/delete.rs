@@ -53,10 +53,17 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &DeleteArgs) -> Result<()> {
             step.warn("`claude` not found — stored credentials may remain in your keychain");
         }
         (Some(bin), ..) => {
+            // `claude auth logout` exits 0 even when nothing was logged in,
+            // so ask for the status first to report what really happened.
             let c = Claude { bin, paths, config_dir: Some(&dir) };
-            match c.logout() {
+            let logged_in = c.status().map(|s| s.logged_in).unwrap_or(true);
+            match if logged_in { c.logout() } else { Ok(false) } {
                 Ok(true) => step.ok("credentials removed"),
-                Ok(false) => step.skip("was not logged in"),
+                Ok(false) if !logged_in => step.skip("was not logged in"),
+                Ok(false) => {
+                    warnings += 1;
+                    step.warn("`claude auth logout` failed — stored credentials may remain");
+                }
                 Err(e) => {
                     warnings += 1;
                     step.warn(&format!("{e:#}"));

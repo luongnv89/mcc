@@ -146,7 +146,7 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
         }
 
         let step = steps.start(&format!("Install launcher {}", paths.display(&paths.wrapper(&alias))));
-        let wrapper = shell::write_wrapper(paths, &alias, &profile_dir)?;
+        let wrapper = shell::write_wrapper(paths, &alias, &profile_dir, claude::find_binary(env.claude_bin.as_deref()).as_deref())?;
         undo.push(Undo::Wrapper(wrapper.clone()));
         if dir_on_path(&paths.local_bin) {
             step.ok("");

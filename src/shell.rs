@@ -21,18 +21,31 @@ fn end(id: &str) -> String {
     format!("# <<< mcc:{id} <<<")
 }
 
-/// Wrapper script that launches claude with the profile's config dir.
-pub fn wrapper_script(paths: &Paths, alias: &str, profile_dir: &Path) -> String {
+/// Wrapper script that launches claude with the profile's config dir. Uses
+/// `claude` from PATH when available, else the binary found at `add` time
+/// (so it also works from cron, IDE tasks, or shells with a trimmed PATH).
+pub fn wrapper_script(paths: &Paths, alias: &str, profile_dir: &Path, claude_bin: Option<&Path>) -> String {
+    let fallback = match claude_bin {
+        Some(bin) => format!("exec {} \"$@\"", sh_quote(&bin.to_string_lossy())),
+        None => "echo \"claude not found on PATH\" >&2\nexit 127".to_string(),
+    };
     format!(
         "#!/bin/sh\n{WRAPPER_MARKER}\n# Claude Code profile \"{alias}\". Remove with: mcc delete {alias}\n\
-         CLAUDE_CONFIG_DIR=\"{dir}\" exec claude \"$@\"\n",
+         export CLAUDE_CONFIG_DIR=\"{dir}\"\n\
+         if command -v claude >/dev/null 2>&1; then exec claude \"$@\"; fi\n\
+         {fallback}\n",
         dir = paths.shell_expr(profile_dir)
     )
 }
 
-pub fn write_wrapper(paths: &Paths, alias: &str, profile_dir: &Path) -> Result<PathBuf> {
+/// Single-quote a string for POSIX sh.
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+pub fn write_wrapper(paths: &Paths, alias: &str, profile_dir: &Path, claude_bin: Option<&Path>) -> Result<PathBuf> {
     let path = paths.wrapper(alias);
-    fsutil::write_atomic(&path, wrapper_script(paths, alias, profile_dir).as_bytes())?;
+    fsutil::write_atomic(&path, wrapper_script(paths, alias, profile_dir, claude_bin).as_bytes())?;
     fsutil::set_executable(&path)?;
     Ok(path)
 }
@@ -190,8 +203,11 @@ mod tests {
             .contains("alias work='CLAUDE_CONFIG_DIR=\"$HOME/.mcc/profiles/work\" claude'"));
         assert!(alias_block(&paths, Shell::Fish, "work", &dir)
             .contains("alias work 'env CLAUDE_CONFIG_DIR=\"$HOME/.mcc/profiles/work\" claude'"));
-        let w = wrapper_script(&paths, "work", &dir);
+        let w = wrapper_script(&paths, "work", &dir, Some(Path::new("/opt/it's/claude")));
         assert!(w.starts_with("#!/bin/sh\n# managed-by: mcc\n"));
-        assert!(w.contains("CLAUDE_CONFIG_DIR=\"$HOME/.mcc/profiles/work\" exec claude \"$@\""));
+        assert!(w.contains("export CLAUDE_CONFIG_DIR=\"$HOME/.mcc/profiles/work\"\n"));
+        assert!(w.contains("if command -v claude >/dev/null 2>&1; then exec claude \"$@\"; fi\n"));
+        assert!(w.contains("exec '/opt/it'\\''s/claude' \"$@\"\n"), "{w}");
+        assert!(wrapper_script(&paths, "work", &dir, None).contains("exit 127"));
     }
 }

@@ -24,7 +24,8 @@ case "$1 $2" in
       echo '{"loggedIn": false, "authMethod": "none"}'
     fi ;;
   "auth logout")
-    if [ -f "$dir/.credentials.json" ]; then rm "$dir/.credentials.json"; echo "Logged out"; else exit 1; fi ;;
+    # Like the real claude (2.1.x): exits 0 even when nothing was logged in.
+    rm -f "$dir/.credentials.json"; echo "Successfully logged out." ;;
   *) echo "fake claude $*" ;;
 esac
 "#;
