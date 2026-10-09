@@ -16,12 +16,12 @@ mod validate;
 use std::process::ExitCode;
 use std::sync::atomic::Ordering;
 
-use clap::Parser;
+use clap::{ColorChoice, CommandFactory, FromArgMatches};
 
 use crate::cli::{Cli, Command};
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let cli = parse_args();
     ui::init(cli.global.verbose, cli.global.quiet, cli.global.no_color);
     install_ctrlc_handler();
 
@@ -36,11 +36,34 @@ fn main() -> ExitCode {
                 for cause in err.chain().skip(1) {
                     msg.push_str(&format!(": {cause}"));
                 }
-                ui::error(&msg, hint.as_deref());
+                let hint = hint.unwrap_or_else(fallback_hint);
+                ui::error(&msg, Some(&hint));
             }
             ExitCode::from(code as u8)
         }
     }
+}
+
+/// Parse argv, turning off clap's own colors (help, usage errors) when
+/// `--no-color` or `NO_COLOR` is set. The flag has to be spotted before
+/// parsing because clap renders its output while it parses.
+fn parse_args() -> Cli {
+    let no_color = std::env::args_os().skip(1).any(|a| a == "--no-color")
+        || std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
+    let mut cmd = Cli::command();
+    if no_color {
+        cmd = cmd.color(ColorChoice::Never);
+    }
+    let matches = cmd.get_matches_mut();
+    Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.format(&mut cmd).exit())
+}
+
+/// Hint for failures that carry no specific one (I/O errors, failed spawns).
+fn fallback_hint() -> String {
+    let log = paths::Paths::from_env()
+        .map(|p| p.display(&p.log_file))
+        .unwrap_or_else(|_| "~/.mcc/logs/mcc.log".into());
+    format!("re-run with --verbose for more detail; the full log is in {log}")
 }
 
 fn run(cli: Cli) -> anyhow::Result<()> {

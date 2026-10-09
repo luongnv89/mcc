@@ -73,7 +73,9 @@ fn add_default(paths: &Paths, env: &EnvInfo, args: &AddArgs) -> Result<()> {
         && !args.yes
         && !ui::confirm("Create the default profile now?", true, "")?
     {
-        return Err(CliError::runtime("cancelled").into());
+        return Err(CliError::runtime("cancelled")
+            .hint("nothing was created; run `mcc add` again when ready")
+            .into());
     }
 
     let mut steps = ui::Steps::new(3);
@@ -238,7 +240,20 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
                 paths,
                 config_dir: Some(&profile_dir),
             };
-            let ok = login_steps(&mut steps, &c)?;
+            let ok = match login_steps(&mut steps, &c) {
+                Ok(ok) => ok,
+                Err(e) => {
+                    rollback(paths, cfg, undo);
+                    return Err(CliError::runtime(format!(
+                        "{e:#} — profile \"{alias}\" was removed"
+                    ))
+                    .hint(format!(
+                        "check that {} is a working Claude Code binary (or set MCC_CLAUDE_BIN), then retry `mcc add {alias}`",
+                        bin.display()
+                    ))
+                    .into());
+                }
+            };
             if !ok {
                 let keep = !ui::is_interactive()
                     || ui::confirm(

@@ -94,6 +94,7 @@ pub fn spec(only: Option<&[String]>, cfg: &SyncConfig) -> Result<Spec> {
                 return Err(CliError::input(format!(
                     "sync.extra entry \"{extra}\" must be a relative path inside the config dir"
                 ))
+                .hint("edit [sync] extra in ~/.mcc/config.toml, e.g. extra = [\"rules\"]")
                 .into());
             }
             items.push(Item {
@@ -397,9 +398,19 @@ pub fn plan(
                 }
             }
             Kind::Dir => {
-                if kind(&dst) == Kind::Missing {
+                let dst_kind = kind(&dst);
+                // A file or symlink where the directory belongs is removed
+                // *before* anything is written, so nothing lands through a
+                // symlink; the whole subtree is then copied fresh.
+                let fresh = !matches!(dst_kind, Kind::Dir | Kind::Missing);
+                if fresh {
+                    push(Action::Remove, item.rel.clone());
+                }
+                if fresh || dst_kind == Kind::Missing {
                     push(Action::Add, item.rel.clone());
                 }
+                // Nested dirs replaced the same way; their contents are fresh.
+                let mut replaced: Vec<PathBuf> = Vec::new();
                 let mut seen = BTreeSet::new();
                 let walker = WalkDir::new(&src)
                     .min_depth(1)
@@ -417,12 +428,19 @@ pub fn plan(
                         .to_path_buf();
                     seen.insert(rel_in.clone());
                     let rel = item.rel.join(&rel_in);
+                    if fresh || replaced.iter().any(|r| rel_in.starts_with(r)) {
+                        push(Action::Add, rel);
+                        continue;
+                    }
                     let d = dst_dir.join(&rel);
                     if entry.file_type().is_dir() {
                         match kind(&d) {
                             Kind::Dir => {}
                             Kind::Missing => push(Action::Add, rel),
-                            _ => push(Action::Update, rel),
+                            _ => {
+                                replaced.push(rel_in);
+                                push(Action::Update, rel);
+                            }
                         }
                         continue;
                     }
@@ -434,7 +452,7 @@ pub fn plan(
                         push(Action::Update, rel);
                     }
                 }
-                if kind(&dst) == Kind::Dir {
+                if dst_kind == Kind::Dir {
                     let mut walker = WalkDir::new(&dst)
                         .min_depth(1)
                         .follow_links(false)
@@ -455,9 +473,6 @@ pub fn plan(
                         }
                         push(extra_action, item.rel.join(rel_in));
                     }
-                } else if kind(&dst) != Kind::Missing {
-                    // A file where a directory belongs: replace it.
-                    push(Action::Remove, item.rel.clone());
                 }
             }
         }
@@ -840,6 +855,87 @@ mod tests {
         assert!(!dst.join("skills/.trash").exists());
         let p2 = plan(src, &paths.default_json, &dst, &sp, &rw, false).unwrap();
         assert_eq!(p2.actionable(), 0);
+    }
+
+    fn skills_only(paths: &Paths, dst: &Path) -> Plan {
+        let rw = Rewriter::new(paths, dst, &SyncConfig::default());
+        let sp = spec(Some(&["skills".to_string()]), &SyncConfig::default()).unwrap();
+        let p = plan(
+            &paths.default_dir,
+            &paths.default_json,
+            dst,
+            &sp,
+            &rw,
+            false,
+        )
+        .unwrap();
+        apply(&p, &paths.default_dir, dst, &rw, false).unwrap();
+        p
+    }
+
+    #[test]
+    fn symlink_in_place_of_dir_is_replaced_without_writing_through_it() {
+        let (_d, paths, dst) = setup();
+        let outside = paths.home.join("outside");
+        std::fs::create_dir_all(outside.join("one")).unwrap();
+        std::fs::write(outside.join("one/SKILL.md"), "skill").unwrap();
+        std::os::unix::fs::symlink(&outside, dst.join("skills")).unwrap();
+
+        let p = skills_only(&paths, &dst);
+        assert_eq!(p.changes[0].action, Action::Remove, "{:?}", p.changes);
+        let skills = std::fs::symlink_metadata(dst.join("skills")).unwrap();
+        assert!(skills.is_dir() && !skills.file_type().is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(dst.join("skills/one/SKILL.md")).unwrap(),
+            "skill"
+        );
+        // The symlink's target is left exactly as it was.
+        assert!(outside.join("one/SKILL.md").exists());
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 1);
+
+        let rw = Rewriter::new(&paths, &dst, &SyncConfig::default());
+        let sp = spec(Some(&["skills".to_string()]), &SyncConfig::default()).unwrap();
+        let p2 = plan(
+            &paths.default_dir,
+            &paths.default_json,
+            &dst,
+            &sp,
+            &rw,
+            false,
+        )
+        .unwrap();
+        assert_eq!(p2.actionable(), 0, "{:?}", p2.changes);
+    }
+
+    #[test]
+    fn file_in_place_of_dir_is_replaced() {
+        let (_d, paths, dst) = setup();
+        std::fs::write(dst.join("skills"), "not a dir").unwrap();
+        skills_only(&paths, &dst);
+        assert!(dst.join("skills").is_dir());
+        assert_eq!(
+            std::fs::read_to_string(dst.join("skills/one/SKILL.md")).unwrap(),
+            "skill"
+        );
+    }
+
+    #[test]
+    fn nested_symlink_in_place_of_dir_is_replaced() {
+        let (_d, paths, dst) = setup();
+        let outside = paths.home.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("SKILL.md"), "skill").unwrap();
+        std::fs::create_dir_all(dst.join("skills")).unwrap();
+        std::os::unix::fs::symlink(&outside, dst.join("skills/one")).unwrap();
+
+        skills_only(&paths, &dst);
+        let one = std::fs::symlink_metadata(dst.join("skills/one")).unwrap();
+        assert!(one.is_dir() && !one.file_type().is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(dst.join("skills/one/SKILL.md")).unwrap(),
+            "skill"
+        );
+        assert!(outside.join("SKILL.md").exists());
     }
 
     #[test]

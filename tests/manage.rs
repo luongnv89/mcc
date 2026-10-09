@@ -400,3 +400,82 @@ fn ctrl_c_exits_130() {
     let status = child.wait().unwrap();
     assert_eq!(status.code(), Some(130));
 }
+
+#[test]
+fn delete_refuses_paths_outside_profiles_dir() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    with_profile(&sb, "work", "--fresh");
+    sb.write("elsewhere/keep.txt", "keep");
+    let abs = sb.path("elsewhere").display().to_string();
+    for alias in ["..", "../..", "../x", ".", abs.as_str(), "work/../.."] {
+        sb.mcc()
+            .args(["delete", alias, "--yes"])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("not a valid alias"));
+    }
+    assert!(sb.exists(".mcc/config.toml"));
+    assert!(sb.exists(".mcc/profiles/work"));
+    assert!(sb.exists(".claude/settings.json"));
+    assert!(sb.exists("elsewhere/keep.txt"));
+    assert!(sb.read(".zshrc").contains("mcc:work"));
+}
+
+#[test]
+fn delete_refuses_registered_dir_outside_profiles_dir() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    with_profile(&sb, "work", "--fresh");
+    sb.write("elsewhere/keep.txt", "keep");
+    let cfg = sb.read(".mcc/config.toml");
+    let tampered = cfg.replace(
+        &sb.path(".mcc/profiles/work").display().to_string(),
+        &sb.path("elsewhere").display().to_string(),
+    );
+    assert_ne!(cfg, tampered);
+    sb.write(".mcc/config.toml", &tampered);
+    sb.mcc()
+        .args(["delete", "work", "--yes"])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("refusing to delete"))
+        .stderr(predicate::str::contains("hint:"));
+    assert!(sb.exists("elsewhere/keep.txt"));
+    assert!(sb.exists(".local/bin/work"));
+}
+
+#[test]
+fn back_to_back_syncs_keep_every_backup() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    with_profile(&sb, "work", "--clone");
+    sb.write(".claude/settings.json", r#"{"model":"one"}"#);
+    sb.mcc().args(["sync", "work"]).assert().success();
+    sb.write(".claude/settings.json", r#"{"model":"two"}"#);
+    sb.mcc().args(["sync", "work"]).assert().success();
+    let mut kept: Vec<String> = std::fs::read_dir(sb.path(".mcc/profiles/work/.mcc-backup"))
+        .unwrap()
+        .map(|e| std::fs::read_to_string(e.unwrap().path().join("settings.json")).unwrap())
+        .collect();
+    kept.sort();
+    assert_eq!(kept.len(), 2, "{kept:?}");
+    assert_eq!(kept[0], r#"{"model":"one"}"#);
+    assert!(kept[1].contains("opus"), "{kept:?}");
+}
+
+#[test]
+fn errors_without_a_specific_hint_get_a_fallback_hint() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    // A directory where the rc file belongs makes the alias step fail with a plain I/O error.
+    std::fs::remove_file(sb.path(".zshrc")).unwrap();
+    std::fs::create_dir_all(sb.path(".zshrc")).unwrap();
+    sb.mcc()
+        .args(["add", "work", "--fresh", "--no-login"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("✗ error:"))
+        .stderr(predicate::str::contains("hint:"))
+        .stderr(predicate::str::contains("~/.mcc/logs/mcc.log"));
+}

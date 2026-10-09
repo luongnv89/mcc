@@ -251,3 +251,34 @@ fn missing_claude_binary_blocks_login() {
         .stderr(predicate::str::contains("hint:"));
     assert!(!sb.exists(".mcc/profiles/work"));
 }
+
+#[test]
+fn path_is_reserved_for_the_path_block() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    sb.mcc()
+        .args(["add", "path", "--fresh", "--no-login"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("reserved by mcc"));
+    assert!(!sb.exists(".mcc/profiles/path"));
+    assert!(!sb.read(".zshrc").contains("mcc:path"));
+}
+
+#[test]
+fn login_spawn_failure_rolls_back() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    let rc_before = sb.read(".zshrc");
+    sb.mcc()
+        .env("MCC_CLAUDE_BIN", sb.path("fakebin/does-not-exist"))
+        .args(["add", "work", "--clone"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("Rolling back"))
+        .stderr(predicate::str::contains("hint:"));
+    assert!(!sb.exists(".mcc/profiles/work"));
+    assert!(!sb.exists(".local/bin/work"));
+    assert_eq!(sb.read(".zshrc"), rc_before);
+    assert!(!sb.read(".mcc/config.toml").contains("[profiles.work]"));
+}

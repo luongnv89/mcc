@@ -133,7 +133,7 @@ fn ensure_local_bin_on_path(paths: &Paths, env: &EnvInfo) -> Result<()> {
         ));
         return Ok(());
     };
-    if shell::has_block(rc, "path") {
+    if shell::has_block(rc, shell::PATH_BLOCK) {
         ui::info(&format!(
             "{} already adds it to PATH — open a new terminal to pick it up",
             paths.display(rc)
@@ -151,7 +151,7 @@ fn ensure_local_bin_on_path(paths: &Paths, env: &EnvInfo) -> Result<()> {
             "",
         )?;
     if add {
-        shell::upsert_block(paths, rc, "path", &shell::path_block(sh))?;
+        shell::upsert_block(paths, rc, shell::PATH_BLOCK, &shell::path_block(sh))?;
         ui::success(&format!(
             "added PATH entry to {} (open a new terminal or `source` it)",
             paths.display(rc)

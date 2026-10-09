@@ -9,7 +9,14 @@ use regex::Regex;
 use crate::config::Config;
 use crate::paths::Paths;
 
-const RESERVED_NAMES: &[&str] = &["claude", "mcc", "default", "help", "all"];
+const RESERVED_NAMES: &[&str] = &[
+    "claude",
+    "mcc",
+    "default",
+    "help",
+    "all",
+    crate::shell::PATH_BLOCK,
+];
 
 /// Shell reserved words and builtins across sh/bash/zsh/fish.
 const SHELL_WORDS: &[&str] = &[
@@ -346,6 +353,7 @@ mod tests {
             },
         );
         assert!(!conflicts("claude", &paths, &cfg, None).is_empty());
+        assert!(!conflicts("path", &paths, &cfg, None).is_empty());
         assert!(!conflicts("export", &paths, &cfg, None).is_empty());
         assert!(!conflicts("taken", &paths, &cfg, None).is_empty());
         assert!(conflicts("zz-unused-name-xyz", &paths, &cfg, None).is_empty());

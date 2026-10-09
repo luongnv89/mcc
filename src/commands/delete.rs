@@ -1,5 +1,7 @@
 //! `mcc delete` — log out and remove everything belonging to a profile.
 
+use std::path::{Component, Path};
+
 use anyhow::Result;
 
 use crate::claude::{self, Claude};
@@ -7,7 +9,16 @@ use crate::cli::DeleteArgs;
 use crate::config::Config;
 use crate::error::CliError;
 use crate::paths::Paths;
-use crate::{fsutil, shell, ui};
+use crate::{fsutil, shell, ui, validate};
+
+/// Only a direct, named child of `profiles_dir` may be removed. The check is
+/// lexical, so `..` or an absolute path in the alias or registry never matches.
+fn is_profile_dir(paths: &Paths, dir: &Path) -> bool {
+    dir.parent() == Some(paths.profiles_dir.as_path())
+        && dir
+            .components()
+            .all(|c| !matches!(c, Component::ParentDir | Component::CurDir))
+}
 
 pub fn run(paths: &Paths, cfg: &mut Config, args: &DeleteArgs) -> Result<()> {
     let alias = args.alias.as_str();
@@ -19,9 +30,28 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &DeleteArgs) -> Result<()> {
         );
     }
     let registered = cfg.profiles.get(alias).cloned();
+    if registered.is_none()
+        && let Err(msg) = validate::check_syntax(alias)
+    {
+        return Err(CliError::usage(msg)
+            .hint("run `mcc list` to see your profiles")
+            .into());
+    }
     let dir = registered
         .as_ref()
         .map_or_else(|| paths.profile_dir(alias), |p| p.dir.clone());
+    if !is_profile_dir(paths, &dir) {
+        return Err(CliError::input(format!(
+            "refusing to delete {}: it is not a profile directory inside {}",
+            paths.display(&dir),
+            paths.display(&paths.profiles_dir)
+        ))
+        .hint(format!(
+            "fix or remove the [profiles.{alias}] entry in {}",
+            paths.display(&paths.config_file)
+        ))
+        .into());
+    }
     if registered.is_none() && !dir.exists() {
         return Err(CliError::usage(format!("no profile named \"{alias}\""))
             .hint("run `mcc list` to see your profiles")
@@ -51,7 +81,11 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &DeleteArgs) -> Result<()> {
         )?;
         if typed != alias {
             return Err(
-                CliError::runtime("confirmation did not match — nothing was deleted").into(),
+                CliError::runtime("confirmation did not match — nothing was deleted")
+                    .hint(format!(
+                        "type \"{alias}\" exactly, or pass --yes to skip the prompt"
+                    ))
+                    .into(),
             );
         }
     }
@@ -122,6 +156,10 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &DeleteArgs) -> Result<()> {
         rc_files.push(rc);
     }
     let mut removed = Vec::new();
+    // The PATH entry shares the block namespace; never strip it as an alias.
+    if alias == shell::PATH_BLOCK {
+        rc_files.clear();
+    }
     for rc in &rc_files {
         if shell::remove_block(paths, rc, alias)? {
             removed.push(paths.display(rc));

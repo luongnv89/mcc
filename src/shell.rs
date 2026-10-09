@@ -13,6 +13,10 @@ use crate::paths::Paths;
 
 pub const WRAPPER_MARKER: &str = "# managed-by: mcc";
 
+/// Block id of the `~/.local/bin` PATH entry. Profile blocks use the alias as
+/// their id, so this name is reserved and can never be an alias.
+pub const PATH_BLOCK: &str = "path";
+
 fn begin(id: &str) -> String {
     format!("# >>> mcc:{id} >>>")
 }

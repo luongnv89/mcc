@@ -82,7 +82,11 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &SyncArgs) -> Result<()> {
             ),
         );
         if !failed.is_empty() {
-            return Err(CliError::runtime(format!("sync failed for {}", failed.join(", "))).into());
+            return Err(
+                CliError::runtime(format!("sync failed for {}", failed.join(", ")))
+                    .hint("fix the errors shown above, then re-run `mcc sync --all`")
+                    .into(),
+            );
         }
     }
     Ok(())
@@ -152,7 +156,11 @@ fn sync_one(
             false,
             "",
         )? {
-            return Err(CliError::runtime("cancelled — nothing was written").into());
+            return Err(CliError::runtime("cancelled — nothing was written")
+                .hint(format!(
+                    "re-run `mcc sync {alias}` and confirm, or pass --yes to allow the removals"
+                ))
+                .into());
         }
     }
 
@@ -246,14 +254,20 @@ fn print_plan(plan: &Plan, dry_run: bool) {
 }
 
 /// Copy the profile's config files to `<profile>/.mcc-backup/<timestamp>/`.
+/// Never reuses an earlier backup folder (two syncs can land in one millisecond).
 fn backup(dir: &Path) -> Result<Option<std::path::PathBuf>> {
     let existing: Vec<&&str> = BACKED_UP.iter().filter(|f| dir.join(f).is_file()).collect();
     if existing.is_empty() {
         return Ok(None);
     }
-    let dest = dir
-        .join(".mcc-backup")
-        .join(chrono::Local::now().format("%Y%m%d-%H%M%S").to_string());
+    let root = dir.join(".mcc-backup");
+    let base = chrono::Local::now().format("%Y%m%d-%H%M%S%.3f").to_string();
+    let mut dest = root.join(&base);
+    let mut n = 1;
+    while dest.exists() {
+        dest = root.join(format!("{base}.{n}"));
+        n += 1;
+    }
     for f in existing {
         fsutil::write_atomic(&dest.join(f), &std::fs::read(dir.join(f))?)?;
     }

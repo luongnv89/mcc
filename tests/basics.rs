@@ -178,3 +178,38 @@ fn invalid_config_is_input_error() {
         .stderr(predicate::str::contains("not valid mcc config"))
         .stderr(predicate::str::contains("hint:"));
 }
+
+#[test]
+fn no_color_also_disables_clap_colors() {
+    let sb = Sandbox::new();
+    let run = |args: &[&str]| {
+        let out = sb
+            .mcc()
+            .env_remove("NO_COLOR")
+            .env("CLICOLOR_FORCE", "1")
+            .args(args)
+            .assert()
+            .code(2)
+            .get_output()
+            .stderr
+            .clone();
+        String::from_utf8(out).unwrap()
+    };
+    // CLICOLOR_FORCE makes clap color even without a TTY…
+    assert!(run(&["bogus"]).contains('\x1b'));
+    // …but --no-color wins, for usage errors and help alike.
+    let err = run(&["--no-color", "bogus"]);
+    assert!(!err.contains('\x1b'), "{err:?}");
+    assert!(err.contains("unrecognized subcommand"));
+    let help = sb
+        .mcc()
+        .env_remove("NO_COLOR")
+        .env("CLICOLOR_FORCE", "1")
+        .args(["--no-color", "--help"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert!(!String::from_utf8(help).unwrap().contains('\x1b'));
+}
