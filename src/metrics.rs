@@ -10,6 +10,7 @@ use walkdir::WalkDir;
 use crate::config::Profile;
 use crate::fsutil;
 use crate::paths::Paths;
+use crate::usage::Usage;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ProfileMetrics {
@@ -36,6 +37,11 @@ pub struct ProfileMetrics {
     pub last_used: Option<String>,
     pub created_at: Option<String>,
     pub last_sync: Option<String>,
+    /// 5-hour/weekly usage; filled in by `mcc list` (network), not by `collect`.
+    pub usage: Usage,
+    /// The config dir as Claude Code sees it (`CLAUDE_CONFIG_DIR`).
+    #[serde(skip)]
+    pub config_dir: PathBuf,
     #[serde(skip)]
     pub last_used_time: Option<SystemTime>,
     #[serde(skip)]
@@ -150,6 +156,8 @@ fn collect(
         }),
         created_at: reg.map(|r| r.created_at.clone()),
         last_sync: reg.and_then(|r| r.last_sync.clone()),
+        usage: Usage::default(),
+        config_dir: dir.to_path_buf(),
         last_used_time,
         warnings,
     }

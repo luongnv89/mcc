@@ -1,5 +1,7 @@
 //! Test sandbox: a temp HOME, a fake `claude` binary, and an `mcc` command
-//! wired to them. Nothing here touches the real ~/.claude, rc files, or keychain.
+//! wired to them. Nothing here touches the real ~/.claude, rc files, or keychain,
+//! and nothing reaches the network: the keychain is a fake `security` script and
+//! the usage endpoint is a refused loopback port unless a test starts a stub.
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
@@ -30,6 +32,24 @@ case "$1 $2" in
 esac
 "#;
 
+const FAKE_SECURITY: &str = r#"#!/bin/sh
+# Fake macOS `security`: serves $HOME/fake-keychain/<service> for account
+# mcc-test, else "item not found" (exit 44) like the real one.
+echo "$*" >> "$HOME/security.log"
+svc=""; acct=""
+while [ $# -gt 0 ]; do
+  case "$1" in -s) svc="$2"; shift ;; -a) acct="$2"; shift ;; esac
+  shift
+done
+f="$HOME/fake-keychain/$svc"
+if [ "$acct" = "mcc-test" ] && [ -f "$f" ]; then cat "$f"; exit 0; fi
+echo "security: The specified item could not be found in the keychain." >&2
+exit 44
+"#;
+
+/// Nothing listens on the discard port: connections are refused at once.
+pub const REFUSED_URL: &str = "http://127.0.0.1:9/api/oauth/usage";
+
 pub struct Sandbox {
     pub tmp: TempDir,
 }
@@ -43,6 +63,9 @@ impl Sandbox {
         let claude = bin.join("claude");
         std::fs::write(&claude, FAKE_CLAUDE).unwrap();
         chmod_x(&claude);
+        let security = bin.join("security");
+        std::fs::write(&security, FAKE_SECURITY).unwrap();
+        chmod_x(&security);
         Self { tmp }
     }
 
@@ -84,6 +107,9 @@ impl Sandbox {
             .env("SHELL", "/bin/zsh")
             .env("TERM_PROGRAM", "TestTerm")
             .env("MCC_CLAUDE_BIN", home.join("fakebin/claude"))
+            .env("MCC_SECURITY_BIN", home.join("fakebin/security"))
+            .env("MCC_USAGE_URL", REFUSED_URL)
+            .env("USER", "mcc-test")
             .env("MCC_NO_SHELL_PROBE", "1")
             .env("MCC_NON_INTERACTIVE", "1")
             .env("NO_COLOR", "1")

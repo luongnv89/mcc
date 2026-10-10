@@ -68,7 +68,10 @@ fn list_table_and_long() {
         .arg("ls")
         .assert()
         .success()
-        .stdout(predicate::str::is_match(r"(?m)^NAME\s+COMMAND\s+ACCOUNT\s+SKILLS").unwrap())
+        .stdout(
+            predicate::str::is_match(r"(?m)^NAME\s+COMMAND\s+ACCOUNT\s+5H\s+WEEK\s+SKILLS")
+                .unwrap(),
+        )
         .stdout(predicate::str::is_match(r"(?m)^default ★\s+claude\s+me@example.com").unwrap())
         .stdout(predicate::str::is_match(r"(?m)^work\s+work\s+").unwrap())
         .stderr(predicate::str::contains("2 profiles"));
@@ -432,6 +435,7 @@ fn ctrl_c_exits_130() {
         .env("HOME", sb.home())
         .env("MCC_HOME", sb.home())
         .env("MCC_CLAUDE_BIN", sb.path("fakebin/slow-claude"))
+        .env("MCC_NO_USAGE", "1")
         .env("NO_COLOR", "1")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

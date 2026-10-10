@@ -11,6 +11,7 @@ mod metrics;
 mod paths;
 mod shell;
 mod ui;
+mod usage;
 mod validate;
 
 use std::process::ExitCode;
