@@ -117,7 +117,7 @@
         <p><code>mcc add</code> runs <code>claude auth login</code>, and <code>mcc delete</code> runs <code>claude auth logout</code>. Those are Claude Code's own commands. They talk to Anthropic under Anthropic's terms, and mcc does not see your password or the sign-in exchange.</p>
 
         <h3>Installing mcc</h3>
-        <p>The install script and <code>cargo install</code> download mcc's source from GitHub and its dependencies from crates.io. Those services see the request like any other download.</p>
+        <p>The install script, <code>cargo install</code> and <code>brew install</code> download mcc's source from GitHub and its dependencies from crates.io. Homebrew also downloads its own Rust to build mcc. Those services see the request like any other download.</p>
         <p>mcc makes no other network requests.</p>
       </section>
 
@@ -127,6 +127,7 @@
           <li><strong>Anthropic</strong> receives the usage requests described above and handles Claude Code sign-in. See <a href="https://www.anthropic.com/legal/privacy">Anthropic's privacy policy</a>.</li>
           <li><strong>GitHub</strong> hosts the source code, the install script and this website. See the <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub General Privacy Statement</a>.</li>
           <li><strong>crates.io</strong> serves Rust dependencies when you build mcc. See the <a href="https://foundation.rust-lang.org/policies/privacy-policy/">Rust Foundation privacy policy</a>.</li>
+          <li><strong>Homebrew</strong>, if you install mcc with it, serves the Rust used to build mcc and has its own analytics. See <a href="https://docs.brew.sh/Analytics">Homebrew's analytics page</a>.</li>
         </ul>
         <p>mcc is an independent project and is not affiliated with Anthropic.</p>
       </section>

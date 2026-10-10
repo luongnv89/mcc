@@ -89,7 +89,11 @@
 
       <section id="install">
         <h2>Install <a class="anchor" href="#install" aria-label="Link to Install">#</a></h2>
-        <p>You need Rust (<code>cargo</code>, Rust 1.88 or newer) and <a href="https://docs.claude.com/en/docs/claude-code">Claude Code</a>. If you don't have Rust, install it from <a href="https://rustup.rs">rustup.rs</a>.</p>
+        <p>You need <a href="https://docs.claude.com/en/docs/claude-code">Claude Code</a>.</p>
+        <p class="label">Homebrew (macOS and Linux)</p>
+        <div class="code"><pre><span class="p">$ </span>brew install luongnv89/tap/mcc</pre></div>
+        <p>Homebrew builds mcc from source with its own Rust, so you don't need Rust installed. It also installs bash, zsh and fish completions. Update with <code>brew upgrade mcc</code>.</p>
+        <p>To build from source yourself you need Rust (<code>cargo</code>, Rust 1.88 or newer). If you don't have Rust, install it from <a href="https://rustup.rs">rustup.rs</a>.</p>
         <p class="label">One-liner</p>
         <div class="code"><pre><span class="p">$ </span>curl -fsSL https://raw.githubusercontent.com/luongnv89/mcc/main/install.sh | sh</pre></div>
         <p class="label">From a clone</p>
@@ -254,7 +258,7 @@ lab        lab      —               <span class="d">unavailable            una
 
         <h3 id="cmd-completions"><code>mcc completions</code> <a class="anchor" href="#cmd-completions" aria-label="Link to mcc completions">#</a></h3>
         <p class="synopsis">mcc completions bash|zsh|fish|elvish|powershell</p>
-        <p>Prints a completion script to stdout. It has no first-run side effects.</p>
+        <p>Prints a completion script to stdout. It has no first-run side effects. Homebrew installs the bash, zsh and fish scripts for you; otherwise write the one for your shell:</p>
         <div class="code"><pre><span class="p">$ </span>mcc completions zsh  &gt; ~/.zfunc/_mcc        <span class="cm"># with fpath+=~/.zfunc in ~/.zshrc</span>
 <span class="p">$ </span>mcc completions bash &gt; ~/.local/share/bash-completion/completions/mcc
 <span class="p">$ </span>mcc completions fish &gt; ~/.config/fish/completions/mcc.fish</pre></div>
@@ -441,7 +445,8 @@ extra = ["my-tool/config.yml"] <span class="cm"># additional paths (relative to 
         <h2>Uninstall <a class="anchor" href="#uninstall" aria-label="Link to Uninstall">#</a></h2>
         <p>Delete every mcc profile (this logs each one out), remove the binary, then remove mcc's state. Your default <code>~/.claude</code> profile is left alone.</p>
         <div class="code"><pre><span class="p">$ </span>for p in $(mcc list --json | jq -r '.[] | select(.is_default | not) | .name'); do mcc delete "$p" --yes; done
-<span class="p">$ </span>cargo uninstall mcc
+<span class="p">$ </span>brew uninstall mcc    <span class="cm"># if you installed with Homebrew</span>
+<span class="p">$ </span>cargo uninstall mcc   <span class="cm"># if you installed from source</span>
 <span class="p">$ </span>rm -rf ~/.mcc</pre></div>
       </section>
 

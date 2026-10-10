@@ -229,8 +229,8 @@
       <div class="steps">
         <div class="card step">
           <span class="step-num">Install</span>
-          <p>Build and install mcc with Cargo. It needs Rust and Claude Code.</p>
-          <div class="code"><pre><span class="p">$ </span>curl -fsSL https://raw.githubusercontent.com/luongnv89/mcc/main/install.sh | sh</pre></div>
+          <p>Install mcc with Homebrew on macOS or Linux. It needs Claude Code.</p>
+          <div class="code"><pre><span class="p">$ </span>brew install luongnv89/tap/mcc</pre></div>
         </div>
         <div class="card step">
           <span class="step-num">Add a profile</span>
@@ -292,7 +292,7 @@
         </details>
         <details>
           <summary>Do I need Rust?</summary>
-          <div><p>Yes, for now. The install script builds mcc from source with <code>cargo</code> (Rust 1.88 or newer). Get Rust from <a href="https://rustup.rs">rustup.rs</a>.</p></div>
+          <div><p>Not with Homebrew: <code>brew install luongnv89/tap/mcc</code> builds mcc with Homebrew's own Rust. The install script and <code>cargo install</code> build from source with your <code>cargo</code> (Rust 1.88 or newer). Get Rust from <a href="https://rustup.rs">rustup.rs</a>.</p></div>
         </details>
         <details>
           <summary>How do I remove a profile, or mcc itself?</summary>
@@ -309,13 +309,15 @@
         <div>
           <span class="eyebrow">Install</span>
           <h2 id="install-title">Give your next account its own command.</h2>
-          <p class="lede" style="margin-bottom:22px">Free and open source under Apache-2.0. You need Rust (<code>cargo</code>) and Claude Code.</p>
+          <p class="lede" style="margin-bottom:22px">Free and open source under Apache-2.0. You need Claude Code. Building from source also needs Rust (<code>cargo</code>).</p>
           <div class="cta-row" style="margin-bottom:0">
             <a class="btn btn-primary" href="docs.html#quick-start">Start the quick start</a>
             <a class="btn btn-ghost" href="https://github.com/luongnv89/mcc">View the source</a>
           </div>
         </div>
         <div>
+          <p class="label">Homebrew (macOS and Linux)</p>
+          <div class="code"><pre><span class="p">$ </span>brew install luongnv89/tap/mcc</pre></div>
           <p class="label">One-liner</p>
           <div class="code"><pre><span class="p">$ </span>curl -fsSL https://raw.githubusercontent.com/luongnv89/mcc/main/install.sh | sh</pre></div>
           <p class="label">With Cargo</p>

@@ -10,6 +10,7 @@ The first version of mcc. Everything below is on `main`; no release tag has been
 
 ### Added
 
+- Homebrew formula for macOS and Linux: `brew install luongnv89/tap/mcc` builds mcc from source and installs bash, zsh and fish completions. `brew upgrade mcc` and `brew uninstall mcc` work as usual. The formula lives in `packaging/homebrew/mcc.rb`. ([#14](https://github.com/luongnv89/mcc/issues/14))
 - `mcc usage [PROFILE] [--json]`: every profile's 5-hour and weekly usage in detail, with a bar, percent used and left, time until reset, and the reset time in local time. `default` or `claude` selects `~/.claude`; an unknown name exits 2. ([#16](https://github.com/luongnv89/mcc/issues/16), [#20](https://github.com/luongnv89/mcc/pull/20))
 - Usage meters in `mcc list`: a coloured bar (green, yellow at 80%+, red at 95%+) and colour-independent `!` / `!!` markers, sized to the terminal width. ([#17](https://github.com/luongnv89/mcc/issues/17), [#20](https://github.com/luongnv89/mcc/pull/20))
 - 5-hour and weekly usage in `mcc list`: new `5H` and `WEEK` columns, lines in `--long` cards, and a `usage` object in `--json`, for every profile including the default. Each profile's own login is used; failures show `unavailable` with a reason and never change the exit status. ([#13](https://github.com/luongnv89/mcc/issues/13), [#15](https://github.com/luongnv89/mcc/pull/15))
