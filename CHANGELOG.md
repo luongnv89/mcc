@@ -4,9 +4,9 @@ All notable changes to mcc are recorded here. The format follows [Keep a Changel
 
 ## [Unreleased]
 
-## [0.1.0] - not yet tagged
+## [0.1.0] - 2026-10-10
 
-The first version of mcc. Everything below is on `main`; no release tag has been cut yet.
+The first version of mcc.
 
 ### Added
 
@@ -30,5 +30,5 @@ The first version of mcc. Everything below is on `main`; no release tag has been
 - Access tokens are kept in memory only, sent only to the usage endpoint for their own profile, and never printed, logged or written to disk. Expired tokens are never sent. ([#15](https://github.com/luongnv89/mcc/pull/15))
 - GitHub private vulnerability reporting is enabled, and `contact@luongnv.com` is listed as the security contact. ([#21](https://github.com/luongnv89/mcc/pull/21))
 
-[Unreleased]: https://github.com/luongnv89/mcc/commits/main
-[0.1.0]: https://github.com/luongnv89/mcc/commits/main
+[Unreleased]: https://github.com/luongnv89/mcc/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/luongnv89/mcc/releases/tag/v0.1.0
