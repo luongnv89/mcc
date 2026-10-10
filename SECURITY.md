@@ -16,7 +16,7 @@ mcc is pre-1.0 (currently 0.1.0). Security fixes are made on `main` and shipped 
 Report it privately instead:
 
 1. **Preferred:** use GitHub private vulnerability reporting at <https://github.com/luongnv89/mcc/security/advisories/new>.
-2. **If that form is unavailable:** email the maintainer at luongnv89@gmail.com with the subject prefix `[mcc security]`.
+2. **Alternatively:** email the maintainer at contact@luongnv.com with the subject prefix `[mcc security]`.
 
 ### What to include
 
