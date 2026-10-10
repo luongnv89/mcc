@@ -10,14 +10,11 @@
 #      Formula/mcc.rb in luongnv89/homebrew-tap and push it.
 #   4. Check it: brew audit --strict --online luongnv89/tap/mcc
 #                brew install --build-from-source luongnv89/tap/mcc && brew test mcc
-#
-# Until v0.1.0 is tagged, `sha256` is a placeholder of zeros and only
-# `brew install --HEAD luongnv89/tap/mcc` works.
 class Mcc < Formula
   desc "Manage multiple Claude Code profiles (accounts) from one CLI"
   homepage "https://github.com/luongnv89/mcc"
   url "https://github.com/luongnv89/mcc/archive/refs/tags/v0.1.0.tar.gz"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 "21c663ae7ea5a34142571310dd408c9e81ef5e93e3cc9d92f68164e2bade2229"
   license "Apache-2.0"
   head "https://github.com/luongnv89/mcc.git", branch: "main"
 

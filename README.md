@@ -63,8 +63,6 @@ You need [Claude Code](https://docs.claude.com/en/docs/claude-code).
 brew install luongnv89/tap/mcc
 ```
 
-The Homebrew tap is available from the first tagged release (v0.1.0). Until then, install from source (below).
-
 Homebrew builds mcc from source with its own Rust, so you don't need Rust installed. It also installs bash, zsh and fish completions. Update with `brew upgrade mcc`.
 
 ### From source
