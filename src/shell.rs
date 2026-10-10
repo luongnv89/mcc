@@ -115,7 +115,7 @@ pub fn upsert_block(paths: &Paths, rc: &Path, id: &str, body: &str) -> Result<()
         end(id)
     ));
     backup(paths, rc, &original)?;
-    fsutil::write_atomic(rc, out.as_bytes())
+    fsutil::write_atomic(&write_target(rc), out.as_bytes())
 }
 
 /// Remove the block `id` from `rc`. Returns false when there was no block.
@@ -127,9 +127,35 @@ pub fn remove_block(paths: &Paths, rc: &Path, id: &str) -> Result<bool> {
     let (stripped, found) = strip_block(&original, id);
     if found {
         backup(paths, rc, &original)?;
-        fsutil::write_atomic(rc, stripped.as_bytes())?;
+        fsutil::write_atomic(&write_target(rc), stripped.as_bytes())?;
     }
     Ok(found)
+}
+
+/// The real file behind `rc`. rc files are often symlinks into a dotfiles repo
+/// (GNU stow, yadm, ...); writing through the link (temp file + rename next to
+/// the target) keeps the link intact instead of replacing it with a plain file.
+/// Dangling links resolve to their target, which is then created. Regular and
+/// missing files resolve to themselves.
+fn write_target(rc: &Path) -> PathBuf {
+    let mut path = rc.to_path_buf();
+    // Bounded like the kernel's ELOOP limit so a link cycle cannot spin forever.
+    for _ in 0..40 {
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            break;
+        };
+        if !meta.file_type().is_symlink() {
+            break;
+        }
+        let Ok(target) = std::fs::read_link(&path) else {
+            break;
+        };
+        path = match path.parent() {
+            Some(dir) if target.is_relative() => dir.join(target),
+            _ => target,
+        };
+    }
+    path
 }
 
 fn read_or_empty(rc: &Path) -> Result<String> {
@@ -231,6 +257,40 @@ mod tests {
                 .iter()
                 .any(|p| std::fs::read_to_string(p).unwrap() == "export A=1\nalias x=y\n")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writes_through_symlink_chain() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths::new(d.path().to_path_buf());
+        let real = d.path().join("dotfiles/zshrc");
+        std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+        std::fs::write(&real, "export A=1\n").unwrap();
+        let mid = d.path().join("mid");
+        let rc = d.path().join(".zshrc");
+        std::os::unix::fs::symlink(&real, &mid).unwrap();
+        std::os::unix::fs::symlink(&mid, &rc).unwrap();
+
+        upsert_block(&paths, &rc, "work", "alias work='true'").unwrap();
+        for link in [&rc, &mid] {
+            assert!(
+                std::fs::symlink_metadata(link)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+        }
+        assert!(std::fs::read_to_string(&real).unwrap().contains("mcc:work"));
+
+        assert!(remove_block(&paths, &rc, "work").unwrap());
+        assert!(
+            std::fs::symlink_metadata(&rc)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "export A=1\n");
     }
 
     #[test]

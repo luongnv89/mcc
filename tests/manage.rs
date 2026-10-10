@@ -318,6 +318,51 @@ fn delete_reports_not_logged_in_truthfully() {
         .stderr(predicate::str::contains("credentials removed").not());
 }
 
+/// rc files symlinked into a dotfiles repo (GNU stow, yadm) must stay links:
+/// the alias block is written to the link's target, never over the link.
+#[cfg(unix)]
+#[test]
+fn add_and_delete_keep_symlinked_rc_file() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    let original = sb.read(".zshrc");
+    std::fs::remove_file(sb.path(".zshrc")).unwrap();
+    sb.write("dotfiles/zsh/.zshrc", &original);
+    // Relative link, as stow creates them.
+    std::os::unix::fs::symlink("dotfiles/zsh/.zshrc", sb.path(".zshrc")).unwrap();
+    let is_link = || {
+        std::fs::symlink_metadata(sb.path(".zshrc"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    };
+
+    sb.mcc()
+        .args(["add", "work", "--fresh", "--no-login"])
+        .assert()
+        .success();
+    assert!(is_link(), ".zshrc was replaced by a regular file");
+    let target = sb.read("dotfiles/zsh/.zshrc");
+    assert!(target.contains("# >>> mcc:work >>>"), "{target}");
+    assert!(target.starts_with(&original), "{target}");
+
+    sb.mcc()
+        .args(["delete", "work", "--yes"])
+        .assert()
+        .success();
+    assert!(is_link(), ".zshrc was replaced by a regular file");
+    let target = sb.read("dotfiles/zsh/.zshrc");
+    assert!(!target.contains("mcc:work"), "{target}");
+    assert!(target.contains("alias cus_luong="), "{target}");
+    // No temp files left behind next to the link or the target.
+    for dir in [sb.home().to_path_buf(), sb.path("dotfiles/zsh")] {
+        for e in std::fs::read_dir(dir).unwrap() {
+            let name = e.unwrap().file_name().to_string_lossy().to_string();
+            assert!(!name.contains("mcc-tmp"), "leftover {name}");
+        }
+    }
+}
+
 #[test]
 fn delete_cleans_unregistered_leftover_dir() {
     let sb = Sandbox::new();
