@@ -1,4 +1,4 @@
-//! 5-hour and weekly usage for `mcc list`.
+//! 5-hour and weekly usage for `mcc list` and `mcc usage`.
 //!
 //! Each profile's own OAuth access token — from `<config dir>/.credentials.json`,
 //! or the macOS login Keychain — is sent to Anthropic's OAuth usage endpoint,
@@ -34,7 +34,7 @@ pub enum Status {
     Unavailable,
 }
 
-/// Why usage is unavailable. Serialized as snake_case in `mcc list --json`.
+/// Why usage is unavailable. Serialized as snake_case in the `--json` output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Reason {
@@ -71,7 +71,7 @@ impl Reason {
         }
     }
 
-    /// Human-readable explanation for `mcc list --long`.
+    /// Human-readable explanation for `mcc list --long` and `mcc usage`.
     pub fn describe(self) -> &'static str {
         match self {
             Reason::NotLoggedIn => "not logged in",
@@ -81,7 +81,7 @@ impl Reason {
             Reason::Network => "offline or the usage API timed out",
             Reason::HttpError => "unexpected response from the usage API",
             Reason::ParseError => "unrecognized response from the usage API",
-            Reason::Disabled => "not fetched: --no-usage",
+            Reason::Disabled => "not fetched: --no-usage or MCC_NO_USAGE",
         }
     }
 }
@@ -122,7 +122,7 @@ impl Usage {
     }
 }
 
-/// Not fetched until `mcc list` asks for it.
+/// Not fetched until a command asks for it.
 impl Default for Usage {
     fn default() -> Self {
         Self::unavailable(Reason::Disabled)
@@ -424,6 +424,13 @@ pub fn until(t: DateTime<Utc>, now: DateTime<Utc>) -> String {
     }
 }
 
+/// `t` in local time, e.g. "Sat Oct 10 16:00".
+pub fn local_time(t: DateTime<Utc>) -> String {
+    t.with_timezone(&chrono::Local)
+        .format("%a %b %-d %H:%M")
+        .to_string()
+}
+
 /// The largest unit of [`until`]: "35m", "2h", "3d", "now".
 pub fn until_short(t: DateTime<Utc>, now: DateTime<Utc>) -> String {
     until(t, now)
@@ -682,6 +689,13 @@ mod tests {
         assert_eq!(until_short(plus(3 * 86400 + 4 * 3600), now), "3d");
         assert_eq!(until_short(plus(2 * 3600 + 14 * 60), now), "2h");
         assert_eq!(percent(41.6), "42%");
+        assert!(
+            regex::Regex::new(r"^[A-Z][a-z]{2} [A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}$")
+                .unwrap()
+                .is_match(&local_time(now)),
+            "{}",
+            local_time(now)
+        );
         assert_eq!(percent(0.0), "0%");
     }
 

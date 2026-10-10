@@ -35,9 +35,7 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &SyncArgs) -> Result<()> {
             .into());
         }
         if !cfg.profiles.contains_key(&alias) {
-            return Err(CliError::usage(format!("no profile named \"{alias}\""))
-                .hint("run `mcc list` to see your profiles")
-                .into());
+            return Err(super::unknown_profile(&alias));
         }
         vec![alias]
     };

@@ -370,7 +370,7 @@ fn list_no_usage_skips_the_fetch() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "Usage:           — (not fetched: --no-usage)",
+            "Usage:           — (not fetched: --no-usage or MCC_NO_USAGE)",
         ));
     assert!(stub.requests().is_empty());
     // MCC_NO_USAGE=0 does not disable it.

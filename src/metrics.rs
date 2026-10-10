@@ -1,4 +1,4 @@
-//! Per-profile metrics for `mcc list`.
+//! Per-profile metrics for `mcc list` (and the account email for `mcc usage`).
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -46,6 +46,16 @@ pub struct ProfileMetrics {
     pub last_used_time: Option<SystemTime>,
     #[serde(skip)]
     pub warnings: Vec<String>,
+}
+
+/// Where Claude Code's state file keeps the logged-in account's email.
+const ACCOUNT_EMAIL: &str = "/oauthAccount/emailAddress";
+
+/// The account email in a Claude Code state file (`~/.claude.json`, or
+/// `<profile>/.claude.json`); `None` when logged out or unreadable.
+pub fn account_email(state_json: &Path) -> Option<String> {
+    let state: Value = serde_json::from_slice(&std::fs::read(state_json).ok()?).ok()?;
+    state.pointer(ACCOUNT_EMAIL)?.as_str().map(str::to_string)
 }
 
 pub fn default_profile(paths: &Paths) -> ProfileMetrics {
@@ -125,7 +135,7 @@ fn collect(
         dir: paths.display(dir),
         exists,
         mode: reg.map(|r| r.mode.clone()),
-        account: s(&state, "/oauthAccount/emailAddress"),
+        account: s(&state, ACCOUNT_EMAIL),
         organization: s(&state, "/oauthAccount/organizationName"),
         model: s(&settings, "/model"),
         skills: count_skills(&dir.join("skills")),
@@ -298,6 +308,19 @@ mod tests {
         assert_eq!(m.account.as_deref(), Some("me@x.io"));
         assert_eq!(m.model.as_deref(), Some("opus"));
         assert!(m.warnings.is_empty());
+    }
+
+    #[test]
+    fn account_email_reads_the_state_file() {
+        let d = tempfile::tempdir().unwrap();
+        let state = d.path().join(".claude.json");
+        assert_eq!(account_email(&state), None);
+        std::fs::write(&state, "{nope").unwrap();
+        assert_eq!(account_email(&state), None);
+        std::fs::write(&state, r#"{"oauthAccount":{}}"#).unwrap();
+        assert_eq!(account_email(&state), None);
+        std::fs::write(&state, r#"{"oauthAccount":{"emailAddress":"me@x.io"}}"#).unwrap();
+        assert_eq!(account_email(&state).as_deref(), Some("me@x.io"));
     }
 
     #[test]
