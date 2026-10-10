@@ -68,18 +68,17 @@ fn fallback_hint() -> String {
 
 fn run(cli: Cli) -> anyhow::Result<()> {
     if let Command::Completions(args) = &cli.command {
+        // Log only into an existing ~/.mcc/logs: completions never create
+        // state, and any logging failure stays silent.
+        if let Ok(paths) = paths::Paths::from_env() {
+            log::init_if_present(paths.log_file);
+            log_invocation();
+        }
         return commands::completions::run(args);
     }
     let paths = paths::Paths::from_env()?;
     log::init(paths.log_file.clone());
-    log::write(
-        "INFO",
-        &format!(
-            "mcc {} — {:?}",
-            env!("CARGO_PKG_VERSION"),
-            std::env::args().skip(1).collect::<Vec<_>>()
-        ),
-    );
+    log_invocation();
 
     let explicit_init = matches!(cli.command, Command::Init(_));
     let mut cfg = config::Config::load(&paths.config_file)?;
@@ -96,6 +95,17 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Sync(args) => commands::sync::run(&paths, &mut cfg, &args),
         Command::Completions(_) => unreachable!("handled above"),
     }
+}
+
+fn log_invocation() {
+    log::write(
+        "INFO",
+        &format!(
+            "mcc {} — {:?}",
+            env!("CARGO_PKG_VERSION"),
+            std::env::args().skip(1).collect::<Vec<_>>()
+        ),
+    );
 }
 
 /// Ctrl+C exits with 130, except while `claude auth login` owns the terminal

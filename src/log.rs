@@ -18,6 +18,16 @@ pub fn init(path: PathBuf) {
     }
 }
 
+/// Enable file logging only if the log directory already exists. Used by
+/// commands that must never create mcc state (`mcc completions`).
+pub fn init_if_present(path: PathBuf) {
+    if path.parent().is_some_and(|dir| dir.is_dir())
+        && let Ok(mut p) = LOG_PATH.lock()
+    {
+        *p = Some(path);
+    }
+}
+
 pub fn write(level: &str, msg: &str) {
     let Ok(guard) = LOG_PATH.lock() else { return };
     let Some(path) = guard.as_ref() else { return };

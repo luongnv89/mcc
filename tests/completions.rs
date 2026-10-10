@@ -26,6 +26,24 @@ fn generates_for_supported_shells() {
 }
 
 #[test]
+fn logs_only_when_the_log_dir_exists() {
+    let sb = Sandbox::new();
+    sb.mcc().args(["list"]).assert().success();
+    let before = sb.read(".mcc/logs/mcc.log");
+    sb.mcc()
+        .args(["completions", "zsh"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("#compdef mcc"))
+        .stderr(predicate::str::is_empty());
+    let after = sb.read(".mcc/logs/mcc.log");
+    assert!(after.starts_with(&before), "{after}");
+    let added = &after[before.len()..];
+    assert_eq!(added.lines().count(), 1, "{added}");
+    assert!(added.contains("[\"completions\", \"zsh\"]"), "{added}");
+}
+
+#[test]
 fn rejects_unsupported_shell() {
     let sb = Sandbox::new();
     sb.mcc()
