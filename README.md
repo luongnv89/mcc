@@ -1,5 +1,7 @@
 # mcc — multiple Claude Code profiles
 
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+
 Run several Claude Code accounts side by side, each with its own login, its own command, and the same setup as your main one.
 
 Output captured from a sandbox run (small demo setup; `claude` login shown with a test account):
@@ -243,3 +245,13 @@ cargo clippy --all-targets
 ```
 
 The tests never touch your real `~/.claude`, rc files, or keychain, and never reach the network. The integration suite sets `MCC_HOME` to a temp dir, puts a fake `claude` script on `PATH`, points `MCC_SECURITY_BIN` at a fake `security` script, and points `MCC_USAGE_URL` at a refused loopback port or a local stub server.
+
+## Contributing
+
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for the development setup, checks, and pull request process, and follow the [Code of Conduct](CODE_OF_CONDUCT.md). Please report security vulnerabilities privately as described in [SECURITY.md](SECURITY.md), not in a public issue.
+
+## License
+
+mcc is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in mcc by you, as defined in the Apache-2.0 license, shall be licensed as above, without any additional terms or conditions.
