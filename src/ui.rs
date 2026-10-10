@@ -2,6 +2,8 @@
 //!
 //! Everything here writes to **stderr** so stdout stays clean for data
 //! (`mcc list --json | jq`). Every line is also mirrored to the log file.
+//! The exception is the usage meter helpers at the end, which only build
+//! strings for the data commands (`mcc list`, `mcc usage`) to print.
 
 use std::io::{IsTerminal, Write};
 use std::sync::OnceLock;
@@ -317,9 +319,117 @@ pub fn human_size(bytes: u64) -> String {
     }
 }
 
+// ---- usage meters (strings for stdout) --------------------------------------
+
+/// Usage at or above this percent is near the limit (`!`, yellow).
+pub const HIGH_PERCENT: f64 = 80.0;
+/// Usage at or above this percent is at the limit (`!!`, red).
+pub const CRITICAL_PERCENT: f64 = 95.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Level {
+    Normal,
+    High,
+    Critical,
+}
+
+/// How close a usage percent is to its limit, judged on the percent as shown
+/// (rounded), so "80%" always carries the `!` marker. NaN is [`Level::Normal`].
+pub fn level(percent: f64) -> Level {
+    let shown = percent.round();
+    if shown >= CRITICAL_PERCENT {
+        Level::Critical
+    } else if shown >= HIGH_PERCENT {
+        Level::High
+    } else {
+        Level::Normal
+    }
+}
+
+/// Colour-independent near-limit marker: "" / "!" / "!!".
+pub fn level_marker(percent: f64) -> &'static str {
+    match level(percent) {
+        Level::Normal => "",
+        Level::High => "!",
+        Level::Critical => "!!",
+    }
+}
+
+/// Percent used with its near-limit marker: "42%", "85%!", "96%!!".
+pub fn percent_text(percent: f64) -> String {
+    format!(
+        "{}{}",
+        crate::usage::percent(percent),
+        level_marker(percent)
+    )
+}
+
+/// A btop-style bar of `width` cells, `█` used and `░` left, e.g.
+/// `████░░░░░░` for 42%. The percent is clamped to 0–100 (NaN = 0). Colour
+/// (green / yellow / red by [`level`]) comes only from `console::style`, so
+/// the bar is plain text when colours are off.
+pub fn meter(percent: f64, width: usize) -> String {
+    let p = if percent.is_nan() {
+        0.0
+    } else {
+        percent.clamp(0.0, 100.0)
+    };
+    let filled = ((p / 100.0 * width as f64).round() as usize).min(width);
+    let used = "█".repeat(filled);
+    let left = "░".repeat(width - filled);
+    let used = match level(percent) {
+        Level::Normal => style(used).green(),
+        Level::High => style(used).yellow(),
+        Level::Critical => style(used).red(),
+    };
+    format!("{used}{}", style(left).dim())
+}
+
+/// [`meter`] followed by [`percent_text`]: "████░░░░░░ 42%"; only the percent
+/// when `width` is 0 (narrow terminals).
+pub fn gauge(percent: f64, width: usize) -> String {
+    if width == 0 {
+        percent_text(percent)
+    } else {
+        format!("{} {}", meter(percent, width), percent_text(percent))
+    }
+}
+
+/// Columns available on stdout: `COLUMNS` when set to a positive integer,
+/// else the terminal's width; `None` when stdout is not a terminal (piped
+/// output is not width-limited, so it stays the same everywhere).
+pub fn terminal_width() -> Option<usize> {
+    if let Some(cols) = parse_columns(std::env::var("COLUMNS").ok().as_deref()) {
+        return Some(cols);
+    }
+    let term = console::Term::stdout();
+    if !term.is_term() {
+        return None;
+    }
+    term.size_checked().map(|(_, cols)| cols as usize)
+}
+
+fn parse_columns(v: Option<&str>) -> Option<usize> {
+    v?.trim().parse::<usize>().ok().filter(|&n| n > 0)
+}
+
+/// The first bar width in `candidates` whose output, `need(width)` columns
+/// wide, fits [`terminal_width`]: the first when the width is unknown, 0 (no
+/// bar) when none fits.
+pub fn fit_bar(candidates: &[usize], need: impl Fn(usize) -> usize) -> usize {
+    match terminal_width() {
+        None => candidates.first().copied().unwrap_or(0),
+        Some(cols) => candidates
+            .iter()
+            .copied()
+            .find(|&w| need(w) <= cols)
+            .unwrap_or(0),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::human_size;
+    use super::*;
 
     #[test]
     fn sizes() {
@@ -327,5 +437,56 @@ mod tests {
         assert_eq!(human_size(1023), "1023 B");
         assert_eq!(human_size(1536), "1.5 KB");
         assert_eq!(human_size(5 * 1024 * 1024), "5.0 MB");
+    }
+
+    fn plain(s: &str) -> String {
+        console::strip_ansi_codes(s).into_owned()
+    }
+
+    #[test]
+    fn meter_fills_and_clamps() {
+        assert_eq!(plain(&meter(42.0, 10)), "████░░░░░░");
+        assert_eq!(plain(&meter(0.0, 4)), "░░░░");
+        assert_eq!(plain(&meter(-5.0, 4)), "░░░░");
+        assert_eq!(plain(&meter(150.0, 4)), "████");
+        assert_eq!(plain(&meter(f64::NAN, 4)), "░░░░");
+        assert_eq!(plain(&meter(42.4, 20)), "████████░░░░░░░░░░░░");
+        assert_eq!(plain(&meter(50.0, 0)), "");
+        for w in [1, 5, 10, 20] {
+            assert_eq!(console::measure_text_width(&meter(33.0, w)), w);
+        }
+    }
+
+    #[test]
+    fn levels_and_markers() {
+        assert_eq!(level(0.0), Level::Normal);
+        assert_eq!(level(79.4), Level::Normal);
+        assert_eq!(level(79.5), Level::High);
+        assert_eq!(level(80.0), Level::High);
+        assert_eq!(level(94.4), Level::High);
+        assert_eq!(level(95.0), Level::Critical);
+        assert_eq!(level(130.0), Level::Critical);
+        assert_eq!(level(f64::NAN), Level::Normal);
+        assert_eq!(percent_text(42.4), "42%");
+        assert_eq!(percent_text(79.5), "80%!");
+        assert_eq!(percent_text(88.0), "88%!");
+        assert_eq!(percent_text(96.0), "96%!!");
+        assert_eq!(percent_text(f64::NAN), "0%");
+    }
+
+    #[test]
+    fn gauge_drops_the_bar_at_width_zero() {
+        assert_eq!(plain(&gauge(42.0, 10)), "████░░░░░░ 42%");
+        assert_eq!(plain(&gauge(96.0, 5)), "█████ 96%!!");
+        assert_eq!(gauge(85.0, 0), "85%!");
+    }
+
+    #[test]
+    fn columns_override() {
+        assert_eq!(parse_columns(Some("120")), Some(120));
+        assert_eq!(parse_columns(Some(" 40 ")), Some(40));
+        for bad in [None, Some(""), Some("0"), Some("-3"), Some("wide")] {
+            assert_eq!(parse_columns(bad), None, "{bad:?}");
+        }
     }
 }

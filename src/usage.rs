@@ -270,14 +270,38 @@ fn url_allowed(url: &str) -> bool {
     matches!(host, "127.0.0.1" | "localhost" | "::1")
 }
 
+/// `MCC_NO_USAGE` set to anything but "" / "0": usage is not fetched.
+pub fn disabled_by_env() -> bool {
+    std::env::var_os("MCC_NO_USAGE").is_some_and(|v| !v.is_empty() && v != "0")
+}
+
 /// One profile to fetch usage for.
 pub struct Target {
+    /// Profile name, for the log.
+    pub name: String,
     pub config_dir: PathBuf,
     pub is_default: bool,
 }
 
 /// Fetch usage for every target in parallel; results are in target order.
+/// Each outcome is logged (reason codes only, never token material).
 pub fn fetch_all(targets: &[Target]) -> Vec<Usage> {
+    crate::log::write(
+        "INFO",
+        &format!("fetching 5h/weekly usage for {} profiles", targets.len()),
+    );
+    let all = fetch_parallel(targets);
+    for (t, u) in targets.iter().zip(&all) {
+        let outcome = match u.reason {
+            Some(r) => format!("unavailable ({})", r.code()),
+            None => "ok".into(),
+        };
+        crate::log::write("INFO", &format!("usage {}: {outcome}", t.name));
+    }
+    all
+}
+
+fn fetch_parallel(targets: &[Target]) -> Vec<Usage> {
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(2))
         .timeout(Duration::from_secs(4))

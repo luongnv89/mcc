@@ -202,8 +202,10 @@ fn list_shows_usage_for_every_profile() {
         )
     };
     has(r"(?m)^NAME\s+COMMAND\s+ACCOUNT\s+5H\s+WEEK\s+SKILLS");
-    has(r"(?m)^default ★\s+claude\s+me@example\.com\s+42% \(2h\)\s+18% \(3d\)\s+2\s");
-    has(r"(?m)^work\s+work\s+—\s+7% \(2h\)\s+64% \(3d\)\s");
+    has(
+        r"(?m)^default ★\s+claude\s+me@example\.com\s+████░░░░░░ 42% \(2h\)\s+██░░░░░░░░ 18% \(3d\)\s+2\s",
+    );
+    has(r"(?m)^work\s+work\s+—\s+█░░░░░░░░░ 7% \(2h\)\s+██████░░░░ 64% \(3d\)\s");
     has(r"(?m)^lab\s+lab\s+—\s+unavailable\s+unavailable\s");
 
     let long = stdout_of(
@@ -212,15 +214,15 @@ fn list_shows_usage_for_every_profile() {
             .args(["list", "--long"]),
     );
     assert!(
-        long.contains("5h usage:        42% (resets in 2h 14m)"),
+        long.contains("5h usage:        ████████░░░░░░░░░░░░ 42% (resets in 2h 14m)"),
         "{long}"
     );
     assert!(
-        long.contains("Weekly usage:    18% (resets in 3d 4h)"),
+        long.contains("Weekly usage:    ████░░░░░░░░░░░░░░░░ 18% (resets in 3d 4h)"),
         "{long}"
     );
     assert!(
-        long.contains("5h usage:        7% (resets in 2h 14m)"),
+        long.contains("5h usage:        █░░░░░░░░░░░░░░░░░░░ 7% (resets in 2h 14m)"),
         "{long}"
     );
     assert!(

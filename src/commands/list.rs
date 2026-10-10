@@ -8,7 +8,6 @@ use console::{measure_text_width, style};
 
 use crate::cli::ListArgs;
 use crate::config::Config;
-use crate::log;
 use crate::metrics::{self, ProfileMetrics};
 use crate::paths::Paths;
 use crate::ui;
@@ -30,8 +29,10 @@ pub fn run(paths: &Paths, cfg: &Config, args: &ListArgs) -> Result<()> {
         serde_json::to_writer_pretty(&mut out, &all)?;
         writeln!(out)?;
     } else if args.long {
+        let now = Utc::now();
+        let bar = card_bar(&all, now);
         for m in &all {
-            card(&mut out, m)?;
+            card(&mut out, m, bar, now)?;
         }
     } else {
         table(&mut out, &all)?;
@@ -57,7 +58,7 @@ pub fn run(paths: &Paths, cfg: &Config, args: &ListArgs) -> Result<()> {
 
 /// `--no-usage`, or `MCC_NO_USAGE` set to anything but "" / "0".
 fn usage_disabled(args: &ListArgs) -> bool {
-    args.no_usage || std::env::var_os("MCC_NO_USAGE").is_some_and(|v| !v.is_empty() && v != "0")
+    args.no_usage || usage::disabled_by_env()
 }
 
 /// Fetch every profile's usage (default included), in parallel. Failures
@@ -66,34 +67,34 @@ fn attach_usage(all: &mut [ProfileMetrics]) {
     let targets: Vec<usage::Target> = all
         .iter()
         .map(|m| usage::Target {
+            name: m.name.clone(),
             config_dir: m.config_dir.clone(),
             is_default: m.is_default,
         })
         .collect();
-    log::write(
-        "INFO",
-        &format!("fetching 5h/weekly usage for {} profiles", targets.len()),
-    );
     for (m, u) in all.iter_mut().zip(usage::fetch_all(&targets)) {
-        let outcome = match u.reason {
-            Some(r) => format!("unavailable ({})", r.code()),
-            None => "ok".into(),
-        };
-        log::write("INFO", &format!("usage {}: {outcome}", m.name));
         m.usage = u;
     }
 }
 
-/// Table cell for one window: "42% (2h)", "—" (no data / not fetched), or "unavailable".
-fn usage_cell(u: &Usage, w: Option<&Window>, now: DateTime<Utc>) -> String {
+/// Bar widths tried for the table's usage cells, widest first.
+const TABLE_BARS: [usize; 3] = [10, 5, 0];
+/// Bar widths tried for the `--long` usage rows, widest first.
+const CARD_BARS: [usize; 3] = [20, 10, 0];
+/// Width of a card row's `    Key:            ` prefix.
+const CARD_KEY_WIDTH: usize = 21;
+
+/// Table cell for one window: "████░░░░░░ 42% (2h)" (just "42% (2h)" with a
+/// zero-width bar), "—" (no data / not fetched), or "unavailable".
+fn usage_cell(u: &Usage, w: Option<&Window>, bar: usize, now: DateTime<Utc>) -> String {
     match (u.status, w) {
         (Status::Ok, Some(w)) => match w.resets_at {
             Some(t) => format!(
                 "{} ({})",
-                usage::percent(w.percent),
+                ui::gauge(w.percent, bar),
                 usage::until_short(t, now)
             ),
-            None => usage::percent(w.percent),
+            None => ui::gauge(w.percent, bar),
         },
         (Status::Ok, None) => "—".into(),
         _ if u.reason == Some(Reason::Disabled) => "—".into(),
@@ -101,23 +102,69 @@ fn usage_cell(u: &Usage, w: Option<&Window>, now: DateTime<Utc>) -> String {
     }
 }
 
-/// Card value for one window: "42% (resets in 2h 14m)" or "—".
-fn usage_line(w: Option<&Window>, now: DateTime<Utc>) -> String {
+/// Card value for one window: "████████░░░░░░░░░░░░ 42% (resets in 2h 14m)" or "—".
+fn usage_line(w: Option<&Window>, bar: usize, now: DateTime<Utc>) -> String {
     match w {
         Some(w) => match w.resets_at {
             Some(t) => format!(
                 "{} (resets in {})",
-                usage::percent(w.percent),
+                ui::gauge(w.percent, bar),
                 usage::until(t, now)
             ),
-            None => usage::percent(w.percent),
+            None => ui::gauge(w.percent, bar),
         },
         None => "—".into(),
     }
 }
 
+/// The card's usage rows: one per window, or a single "Usage" row saying why
+/// there is none.
+fn usage_rows(u: &Usage, bar: usize, now: DateTime<Utc>) -> Vec<(&'static str, String)> {
+    match (u.status, u.reason) {
+        (Status::Ok, _) => vec![
+            ("5h usage", usage_line(u.five_hour.as_ref(), bar, now)),
+            ("Weekly usage", usage_line(u.weekly.as_ref(), bar, now)),
+        ],
+        (_, Some(Reason::Disabled)) => {
+            vec![("Usage", format!("— ({})", Reason::Disabled.describe()))]
+        }
+        (_, reason) => vec![(
+            "Usage",
+            format!(
+                "unavailable ({})",
+                reason.map_or("unknown", Reason::describe)
+            ),
+        )],
+    }
+}
+
+/// The widest bar that keeps every card's usage rows within the terminal.
+fn card_bar(all: &[ProfileMetrics], now: DateTime<Utc>) -> usize {
+    ui::fit_bar(&CARD_BARS, |bar| {
+        all.iter()
+            .flat_map(|m| usage_rows(&m.usage, bar, now))
+            .map(|(_, v)| CARD_KEY_WIDTH + measure_text_width(&v))
+            .max()
+            .unwrap_or(0)
+    })
+}
+
+/// The table, as printed: the widest usage bar that fits the terminal, or
+/// none (plain "42% (2h)") when even that is too wide.
 fn table(out: &mut impl Write, all: &[ProfileMetrics]) -> Result<()> {
     let now = Utc::now();
+    let width = |lines: &[String]| lines.iter().map(|l| measure_text_width(l)).max();
+    let bar = ui::fit_bar(&TABLE_BARS, |bar| {
+        width(&table_lines(all, bar, now)).unwrap_or(0)
+    });
+    for line in table_lines(all, bar, now) {
+        writeln!(out, "{line}")?;
+    }
+    Ok(())
+}
+
+/// Header and rows, with usage bars `bar` cells wide.
+fn table_lines(all: &[ProfileMetrics], bar: usize, now: DateTime<Utc>) -> Vec<String> {
     let headers = [
         "NAME",
         "COMMAND",
@@ -151,8 +198,8 @@ fn table(out: &mut impl Write, all: &[ProfileMetrics]) -> Result<()> {
                 name,
                 m.command.clone(),
                 m.account.clone().unwrap_or_else(|| "—".into()),
-                usage_cell(&m.usage, m.usage.five_hour.as_ref(), now),
-                usage_cell(&m.usage, m.usage.weekly.as_ref(), now),
+                usage_cell(&m.usage, m.usage.five_hour.as_ref(), bar, now),
+                usage_cell(&m.usage, m.usage.weekly.as_ref(), bar, now),
                 m.skills.to_string(),
                 m.agents.to_string(),
                 m.commands.to_string(),
@@ -197,14 +244,12 @@ fn table(out: &mut impl Write, all: &[ProfileMetrics]) -> Result<()> {
             .to_string()
     };
     let head = fmt_row(headers.iter().map(|h| h.to_string()).collect());
-    writeln!(out, "{}", style(head).bold())?;
-    for r in rows {
-        writeln!(out, "{}", fmt_row(r))?;
-    }
-    Ok(())
+    std::iter::once(style(head).bold().to_string())
+        .chain(rows.into_iter().map(fmt_row))
+        .collect()
 }
 
-fn card(out: &mut impl Write, m: &ProfileMetrics) -> Result<()> {
+fn card(out: &mut impl Write, m: &ProfileMetrics, bar: usize, now: DateTime<Utc>) -> Result<()> {
     let title = if m.is_default {
         format!("{} ★ (~/.claude)", m.name)
     } else {
@@ -228,27 +273,8 @@ fn card(out: &mut impl Write, m: &ProfileMetrics) -> Result<()> {
             _ => "— (no account info yet; log in by running the command)".into(),
         },
     )?;
-    let now = Utc::now();
-    match (m.usage.status, m.usage.reason) {
-        (Status::Ok, _) => {
-            row(out, "5h usage", usage_line(m.usage.five_hour.as_ref(), now))?;
-            row(
-                out,
-                "Weekly usage",
-                usage_line(m.usage.weekly.as_ref(), now),
-            )?;
-        }
-        (_, Some(Reason::Disabled)) => {
-            row(out, "Usage", format!("— ({})", Reason::Disabled.describe()))?
-        }
-        (_, reason) => row(
-            out,
-            "Usage",
-            format!(
-                "unavailable ({})",
-                reason.map_or("unknown", Reason::describe)
-            ),
-        )?,
+    for (k, v) in usage_rows(&m.usage, bar, now) {
+        row(out, k, v)?;
     }
     if let Some(model) = &m.model {
         row(out, "Model", model.clone())?;
