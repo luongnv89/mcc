@@ -23,7 +23,11 @@ fn help_and_version() {
         .arg("help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Commands:"));
+        .stdout(predicate::str::contains("Commands:"))
+        .stdout(
+            predicate::str::is_match(r"(?m)^  usage\s+Show each profile's 5-hour and weekly usage")
+                .unwrap(),
+        );
 }
 
 #[test]
@@ -37,6 +41,7 @@ fn every_subcommand_has_help() {
         "delete",
         "rm",
         "sync",
+        "usage",
         "completions",
     ] {
         sb.mcc()
