@@ -275,3 +275,60 @@ pub fn json(bytes: &[u8]) -> serde_json::Value {
     serde_json::from_slice(bytes)
         .unwrap_or_else(|e| panic!("invalid JSON ({e}): {}", String::from_utf8_lossy(bytes)))
 }
+
+// ---- usage fixtures shared by the `mcc list` and `mcc usage` tests ----------
+
+pub fn with_profile(sb: &Sandbox, alias: &str, mode: &str) {
+    sb.mcc().args(["add", alias, mode]).assert().success();
+}
+
+pub const HOUR_MS: i64 = 3_600_000;
+
+pub fn rfc3339_in(secs: i64) -> String {
+    (chrono::Utc::now() + chrono::Duration::seconds(secs))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+pub fn stdout_of(cmd: &mut assert_cmd::Command) -> String {
+    String::from_utf8(cmd.assert().success().get_output().stdout.clone()).unwrap()
+}
+
+pub fn by_name<'a>(arr: &'a [serde_json::Value], name: &str) -> &'a serde_json::Value {
+    arr.iter()
+        .find(|p| p["name"] == name)
+        .unwrap_or_else(|| panic!("no profile {name}"))
+}
+
+/// default + `work` logged in (each with its own token), `lab` logged out.
+pub fn usage_sandbox() -> Sandbox {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    with_profile(&sb, "work", "--clone");
+    with_profile(&sb, "lab", "--fresh");
+    sb.seed_oauth(".claude", "test-token-default", now_ms() + HOUR_MS);
+    sb.seed_oauth(".mcc/profiles/work", "test-token-work", now_ms() + HOUR_MS);
+    sb
+}
+
+/// Default answers with the flat keys, work with the `limits[]` shape.
+pub fn usage_stub() -> UsageStub {
+    let (five, week) = (
+        rfc3339_in(2 * 3600 + 14 * 60),
+        rfc3339_in(3 * 86400 + 4 * 3600),
+    );
+    UsageStub::start(move |req| match req.authorization.as_deref() {
+        Some("Bearer test-token-default") => (
+            200,
+            format!(
+                r#"{{"five_hour":{{"utilization":42.4,"resets_at":"{five}"}},"seven_day":{{"utilization":18,"resets_at":"{week}"}},"seven_day_opus":null}}"#
+            ),
+        ),
+        Some("Bearer test-token-work") => (
+            200,
+            format!(
+                r#"{{"five_hour":null,"seven_day":null,"limits":[{{"kind":"session","percent":7,"resets_at":"{five}"}},{{"kind":"weekly_all","percent":64,"resets_at":"{week}"}}]}}"#
+            ),
+        ),
+        _ => (401, r#"{"error":"unknown token"}"#.into()),
+    })
+}
