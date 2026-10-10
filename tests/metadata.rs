@@ -51,3 +51,63 @@ fn readme_links_license_and_contributing() {
         assert!(readme.contains(needle), "README.md is missing {needle:?}");
     }
 }
+
+const FORMULA: &str = "packaging/homebrew/mcc.rb";
+
+#[test]
+fn homebrew_formula_builds_the_tagged_release_from_source() {
+    let formula = repo_file(FORMULA);
+    let url = format!(
+        "url \"{}/archive/refs/tags/v{}.tar.gz\"",
+        env!("CARGO_PKG_REPOSITORY"),
+        env!("CARGO_PKG_VERSION")
+    );
+    for needle in [
+        "class Mcc < Formula".to_string(),
+        format!("homepage \"{}\"", env!("CARGO_PKG_REPOSITORY")),
+        url,
+        format!("license \"{}\"", env!("CARGO_PKG_LICENSE")),
+        format!(
+            "head \"{}.git\", branch: \"main\"",
+            env!("CARGO_PKG_REPOSITORY")
+        ),
+        "depends_on \"rust\" => :build".to_string(),
+        "system \"cargo\", \"install\", *std_cargo_args".to_string(),
+    ] {
+        assert!(formula.contains(&needle), "{FORMULA} is missing {needle:?}");
+    }
+    let sha = formula
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("sha256 \""))
+        .and_then(|rest| rest.strip_suffix('"'))
+        .unwrap_or_else(|| panic!("{FORMULA} has no sha256 line"));
+    assert!(
+        sha.len() == 64 && sha.chars().all(|c| c.is_ascii_hexdigit()),
+        "sha256 is not 64 hex chars: {sha:?}"
+    );
+}
+
+#[test]
+fn homebrew_formula_installs_completions_and_tests_the_binary() {
+    let formula = repo_file(FORMULA);
+    for needle in [
+        "generate_completions_from_executable(bin/\"mcc\", \"completions\")",
+        "test do",
+        "shell_output(\"#{bin}/mcc --version\")",
+        "assert_match version.to_s",
+    ] {
+        assert!(formula.contains(needle), "{FORMULA} is missing {needle:?}");
+    }
+}
+
+#[test]
+fn readme_documents_homebrew_install_upgrade_and_uninstall() {
+    let readme = repo_file("README.md");
+    for needle in [
+        "brew install luongnv89/tap/mcc",
+        "brew upgrade mcc",
+        "brew uninstall mcc",
+    ] {
+        assert!(readme.contains(needle), "README.md is missing {needle:?}");
+    }
+}
