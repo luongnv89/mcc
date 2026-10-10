@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Privacy — mcc</title>
+  <meta name="description" content="What the mcc CLI and this website read, store and send. No telemetry, no analytics, no cookies.">
+  <link rel="canonical" href="https://luongnv89.github.io/mcc/privacy.html">
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="mcc privacy policy">
+  <meta property="og:description" content="What mcc reads, stores and sends. No telemetry, no analytics, no cookies.">
+  <meta property="og:url" content="https://luongnv89.github.io/mcc/privacy.html">
+  <meta name="theme-color" content="#f6f5f1" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0d0f12" media="(prefers-color-scheme: dark)">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="./" aria-label="mcc home">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="9" y="3" width="20" height="16" rx="4" fill="#6fe0b4"/><rect x="3" y="11" width="22" height="18" rx="4" fill="#101317"/><path d="M8.5 17.5l3.5 2.75-3.5 2.75" fill="none" stroke="#6fe0b4" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M14.5 23.5h5" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/></svg>
+      mcc
+    </a>
+    <nav class="nav" aria-label="Main">
+      <a href="docs.html">Docs</a>
+      <a href="changelog.html">Changelog</a>
+      <a class="nav-gh" href="https://github.com/luongnv89/mcc">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub
+      </a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <div class="page-head">
+    <div class="wrap">
+      <span class="eyebrow">Privacy</span>
+      <h1>Privacy policy</h1>
+      <p class="lede">mcc runs on your computer. It has no accounts, no telemetry and no analytics, and the project receives no data from you.</p>
+      <p class="meta">Effective October 10, 2026 · Applies to the mcc command-line tool and this website</p>
+    </div>
+  </div>
+
+  <div class="wrap doc-layout">
+    <aside class="toc" aria-label="On this page">
+      <div class="toc-inner">
+        <p class="toc-title">On this page</p>
+        <ol>
+          <li><a href="#summary">Summary</a></li>
+          <li><a href="#reads">What mcc reads</a></li>
+          <li><a href="#writes">What mcc stores</a></li>
+          <li><a href="#network">Network requests</a></li>
+          <li><a href="#third-parties">Third parties</a></li>
+          <li><a href="#website">This website</a></li>
+          <li><a href="#control">Your control</a></li>
+          <li><a href="#changes">Changes</a></li>
+          <li><a href="#contact">Contact</a></li>
+        </ol>
+      </div>
+    </aside>
+
+    <article class="prose">
+
+      <section id="summary">
+        <h2>Summary <a class="anchor" href="#summary" aria-label="Link to Summary">#</a></h2>
+        <div class="summary-grid">
+          <div class="card"><h3>No telemetry</h3><p>mcc does not report usage, crashes or any other data to the project or anyone else.</p></div>
+          <div class="card"><h3>Local files only</h3><p>Everything mcc stores stays in your home directory, mostly under <code>~/.mcc</code>.</p></div>
+          <div class="card"><h3>One network call, optional</h3><p><code>mcc list</code> and <code>mcc usage</code> ask Anthropic for each account's usage. You can turn this off.</p></div>
+          <div class="card"><h3>No cookies on this site</h3><p>This website sets no cookies and loads no analytics, fonts or scripts from other hosts.</p></div>
+        </div>
+      </section>
+
+      <section id="reads">
+        <h2>What mcc reads <a class="anchor" href="#reads" aria-label="Link to What mcc reads">#</a></h2>
+        <p>To do its job, mcc reads these files and settings on your computer. None of it leaves your machine except as described under <a href="#network">Network requests</a>.</p>
+        <ul>
+          <li><strong>Your Claude Code setup</strong>: <code>~/.claude</code>, <code>~/.claude.json</code> and each profile directory, to copy, sync and count settings, skills, agents, plugins, MCP servers and hooks.</li>
+          <li><strong>Your shell environment</strong>: your OS, terminal, shell, <code>$PATH</code>, and your shell rc files (<code>.zshrc</code>, <code>.bashrc</code>, fish config and similar), to check that a new alias doesn't clash with an existing command and to manage its own alias block.</li>
+          <li><strong>Claude Code logins</strong>, only for the usage feature: each profile's <code>.credentials.json</code>, or on macOS the Keychain item Claude Code created for that profile. The access token is held in memory for the request and then discarded.</li>
+          <li><strong>Account status</strong>: mcc runs <code>claude auth status</code> to show which account each profile is signed in to.</li>
+        </ul>
+      </section>
+
+      <section id="writes">
+        <h2>What mcc stores <a class="anchor" href="#writes" aria-label="Link to What mcc stores">#</a></h2>
+        <p>mcc writes only to your home directory (or to <code>MCC_HOME</code> if you set it):</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Location</th><th>Contents</th></tr></thead>
+          <tbody>
+            <tr><td><code>~/.mcc/config.toml</code></td><td>Detected environment (OS, shell, rc file, <code>claude</code> path) and the list of profiles</td></tr>
+            <tr><td><code>~/.mcc/profiles/&lt;alias&gt;/</code></td><td>Each profile's Claude Code configuration. Claude Code itself stores that profile's login and history here</td></tr>
+            <tr><td><code>~/.mcc/logs/mcc.log</code></td><td>A log of each command's steps and results, which can include file paths and a profile's account email. It never contains access tokens</td></tr>
+            <tr><td><code>~/.mcc/backups/</code>, <code>&lt;profile&gt;/.mcc-backup/</code></td><td>Copies of your rc file and profile settings, taken before mcc changes them</td></tr>
+            <tr><td><code>~/.local/bin/&lt;alias&gt;</code> and your rc file</td><td>The launcher for each profile and a marked alias block</td></tr>
+          </tbody>
+        </table></div>
+        <p>Usage results are shown and discarded; mcc does not save them.</p>
+      </section>
+
+      <section id="network">
+        <h2>Network requests <a class="anchor" href="#network" aria-label="Link to Network requests">#</a></h2>
+        <h3>Usage lookups</h3>
+        <p><code>mcc list</code> and <code>mcc usage</code> send one HTTPS request per signed-in profile to Anthropic's usage endpoint, <code>https://api.anthropic.com/api/oauth/usage</code>. Each request carries:</p>
+        <ul>
+          <li>that profile's own access token, in the <code>Authorization</code> header</li>
+          <li>a <code>User-Agent</code> of <code>mcc/&lt;version&gt;</code></li>
+        </ul>
+        <p>Anthropic returns the percent of the 5-hour and weekly limits used and when they reset. A token is never sent to any other host, never sent for another profile, and never sent once it has expired. mcc never refreshes tokens.</p>
+        <p>The only exception is the <code>MCC_USAGE_URL</code> override, intended for testing. It accepts only <code>https://</code> URLs or <code>http://</code> on your own machine (loopback); any other value is refused and nothing is sent.</p>
+
+        <h3>Claude Code sign-in and sign-out</h3>
+        <p><code>mcc add</code> runs <code>claude auth login</code>, and <code>mcc delete</code> runs <code>claude auth logout</code>. Those are Claude Code's own commands. They talk to Anthropic under Anthropic's terms, and mcc does not see your password or the sign-in exchange.</p>
+
+        <h3>Installing mcc</h3>
+        <p>The install script and <code>cargo install</code> download mcc's source from GitHub and its dependencies from crates.io. Those services see the request like any other download.</p>
+        <p>mcc makes no other network requests.</p>
+      </section>
+
+      <section id="third-parties">
+        <h2>Third parties <a class="anchor" href="#third-parties" aria-label="Link to Third parties">#</a></h2>
+        <ul>
+          <li><strong>Anthropic</strong> receives the usage requests described above and handles Claude Code sign-in. See <a href="https://www.anthropic.com/legal/privacy">Anthropic's privacy policy</a>.</li>
+          <li><strong>GitHub</strong> hosts the source code, the install script and this website. See the <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub General Privacy Statement</a>.</li>
+          <li><strong>crates.io</strong> serves Rust dependencies when you build mcc. See the <a href="https://foundation.rust-lang.org/policies/privacy-policy/">Rust Foundation privacy policy</a>.</li>
+        </ul>
+        <p>mcc is an independent project and is not affiliated with Anthropic.</p>
+      </section>
+
+      <section id="website">
+        <h2>This website <a class="anchor" href="#website" aria-label="Link to This website">#</a></h2>
+        <p>This site is a set of static pages served by GitHub Pages. It sets no cookies, runs no analytics or tracking, and loads no fonts, scripts or images from other hosts. The only script is a small local file that adds copy buttons and highlights the table of contents.</p>
+        <p>GitHub, as the host, may log technical information about visits, such as IP addresses, for security and operation. That is covered by GitHub's privacy statement, linked above. The project has no access to those logs.</p>
+      </section>
+
+      <section id="control">
+        <h2>Your control <a class="anchor" href="#control" aria-label="Link to Your control">#</a></h2>
+        <ul>
+          <li><strong>Turn off usage lookups</strong> with <code>mcc list --no-usage</code> or by setting <code>MCC_NO_USAGE=1</code>. mcc then makes no network requests and doesn't read the keychain.</li>
+          <li><strong>Remove a profile</strong> with <code>mcc delete &lt;alias&gt;</code>. It signs the profile out and deletes its directory, launcher and alias block.</li>
+          <li><strong>Remove everything</strong> by following <a href="docs.html#uninstall">Uninstall</a>, which ends with <code>rm -rf ~/.mcc</code>.</li>
+        </ul>
+        <p>Because the project never receives your data, there is nothing for it to export or delete on your behalf.</p>
+      </section>
+
+      <section id="changes">
+        <h2>Changes <a class="anchor" href="#changes" aria-label="Link to Changes">#</a></h2>
+        <p>If mcc's data handling changes, this page and the <a href="changelog.html">changelog</a> will say so, and the effective date above will change. The full history of this page is in the <a href="https://github.com/luongnv89/mcc/commits/main/docs/privacy.html">repository</a>.</p>
+      </section>
+
+      <section id="contact">
+        <h2>Contact <a class="anchor" href="#contact" aria-label="Link to Contact">#</a></h2>
+        <p>Questions about this policy: email <strong>contact@luongnv.com</strong> or <a href="https://github.com/luongnv89/mcc/issues/new/choose">open an issue</a>. To report a security problem, use <a href="https://github.com/luongnv89/mcc/security/advisories/new">private vulnerability reporting</a> as described in <a href="https://github.com/luongnv89/mcc/blob/main/SECURITY.md">SECURITY.md</a>.</p>
+      </section>
+
+    </article>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <div class="foot-top">
+      <span>mcc · Apache-2.0</span>
+      <nav class="foot-links" aria-label="Footer">
+        <a href="docs.html">Docs</a>
+        <a href="changelog.html">Changelog</a>
+        <a href="privacy.html">Privacy</a>
+        <a href="https://github.com/luongnv89/mcc/blob/main/SECURITY.md">Security</a>
+        <a href="https://github.com/luongnv89/mcc/blob/main/CONTRIBUTING.md">Contributing</a>
+        <a href="https://github.com/luongnv89/mcc">GitHub</a>
+      </nav>
+    </div>
+    <p class="disclaimer">mcc is an independent open-source project. It is not affiliated with, endorsed by, or sponsored by Anthropic. Claude and Claude Code are trademarks of Anthropic, PBC.</p>
+  </div>
+</footer>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

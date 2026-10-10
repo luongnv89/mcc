@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>mcc — run every Claude Code account side by side</title>
+  <meta name="description" content="mcc is an open-source CLI that gives each Claude Code account its own login, its own command, and a copy of your main setup. macOS and Linux.">
+  <link rel="canonical" href="https://luongnv89.github.io/mcc/">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="mcc — run every Claude Code account side by side">
+  <meta property="og:description" content="One command per account, one setup across all of them. Open-source CLI for macOS and Linux.">
+  <meta property="og:url" content="https://luongnv89.github.io/mcc/">
+  <meta name="twitter:card" content="summary">
+  <meta name="theme-color" content="#f6f5f1" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0d0f12" media="(prefers-color-scheme: dark)">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/site.css">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "mcc",
+    "description": "Manage multiple Claude Code profiles (accounts) from one CLI.",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "macOS, Linux",
+    "softwareVersion": "0.1.0",
+    "license": "https://www.apache.org/licenses/LICENSE-2.0",
+    "codeRepository": "https://github.com/luongnv89/mcc",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+  }
+  </script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="./" aria-label="mcc home">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="9" y="3" width="20" height="16" rx="4" fill="#6fe0b4"/><rect x="3" y="11" width="22" height="18" rx="4" fill="#101317"/><path d="M8.5 17.5l3.5 2.75-3.5 2.75" fill="none" stroke="#6fe0b4" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M14.5 23.5h5" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/></svg>
+      mcc
+    </a>
+    <nav class="nav" aria-label="Main">
+      <a href="docs.html">Docs</a>
+      <a href="changelog.html">Changelog</a>
+      <a class="nav-gh" href="https://github.com/luongnv89/mcc">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub
+      </a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+  <!-- HERO -->
+  <section class="hero">
+    <div class="wrap hero-grid">
+      <div>
+        <span class="eyebrow">Open-source CLI · macOS &amp; Linux</span>
+        <h1>Run every Claude Code account <span class="hl">side by side.</span></h1>
+        <p class="lede">mcc gives each account its own login, its own command, and a copy of your main setup. Type <code>work</code> for one account and <code>claude</code> for the other. No logging out in between.</p>
+        <div class="cta-row">
+          <a class="btn btn-primary" href="#install">Install mcc</a>
+          <a class="btn btn-ghost" href="docs.html">Read the docs</a>
+        </div>
+        <ul class="trust" aria-label="Project facts">
+          <li>Apache-2.0</li>
+          <li>Written in Rust</li>
+          <li>Never copies credentials</li>
+          <li>No telemetry</li>
+        </ul>
+      </div>
+
+      <figure class="term" style="margin:0" aria-label="Terminal: adding a work profile with mcc">
+        <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>~ — zsh</span></div>
+<pre><span class="p">$ </span><span class="c">mcc add work --clone</span>
+<span class="a">◆</span> <span class="w">Add Claude Code profile "work"</span>
+  <span class="d">[1/8]</span> Validate alias
+        <span class="g">✓ done</span> <span class="d">— "work" is available</span>
+  <span class="d">[2/8]</span> Create ~/.mcc/profiles/work
+        <span class="g">✓ done</span>
+  <span class="d">[3/8]</span> Copy setup from the default profile
+        <span class="g">✓ done</span> <span class="d">— 7 items, 1 MCP server; no credentials copied</span>
+  <span class="d">[4/8]</span> Install launcher ~/.local/bin/work
+        <span class="g">✓ done</span>
+  <span class="d">[5/8]</span> Add shell alias
+        <span class="g">✓ done</span> <span class="d">— ~/.zshrc</span>
+  <span class="d">[6/8]</span> Register profile
+        <span class="g">✓ done</span> <span class="d">— ~/.mcc/config.toml</span>
+  <span class="d">[7/8]</span> Log in <span class="d">(complete the sign-in in your browser)</span>
+        <span class="g">✓ done</span>
+  <span class="d">[8/8]</span> Verify login
+        <span class="g">✓ done</span> <span class="d">— you@work.example</span>
+
+  <span class="g">Result:</span> profile "work" is ready — start it with <span class="w">`work`</span>
+
+<span class="p">$ </span><span class="c">work</span>     <span class="d"># Claude Code on the work account</span>
+<span class="p">$ </span><span class="c">claude</span>   <span class="d"># your default account, unchanged</span></pre>
+      </figure>
+    </div>
+  </section>
+
+  <!-- PROBLEM -->
+  <section class="section-alt" aria-labelledby="problem-title">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">The problem</span>
+        <h2 id="problem-title">Claude Code has one config directory. You have more than one account.</h2>
+        <p class="lede">Your login, settings, skills, agents and MCP servers all live in <code>~/.claude</code>. That holds up until a second account shows up.</p>
+      </div>
+      <div class="grid grid-3">
+        <article class="card">
+          <span class="tag">Scenario 01</span>
+          <h3>A personal plan and a company plan</h3>
+          <p>You use your own subscription for side projects and your employer's for work, and the two should never share a session.</p>
+        </article>
+        <article class="card">
+          <span class="tag">Scenario 02</span>
+          <h3>A limit hit in the middle of a task</h3>
+          <p>Your 5-hour window runs out halfway through a refactor. The account that still has room is one logout and one login away.</p>
+        </article>
+        <article class="card">
+          <span class="tag">Scenario 03</span>
+          <h3>Client work on the client's seat</h3>
+          <p>A client pays for the account, so the sessions, history and billing for their project belong on their login, not yours.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- AGITATE -->
+  <section aria-labelledby="agitate-title">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">The workarounds</span>
+        <h2 id="agitate-title">Each workaround costs you something.</h2>
+      </div>
+      <ul class="costs">
+        <li><strong>Logging out and back in</strong><span>Every switch breaks your flow, and every new session runs on whichever account you touched last.</span></li>
+        <li><strong>Setting <code>CLAUDE_CONFIG_DIR</code> by hand</strong><span>You get a bare profile. None of your skills, agents, hooks, plugins or MCP servers come with it.</span></li>
+        <li><strong>Copying <code>~/.claude</code> yourself</strong><span>The copy drags credentials along, keeps paths that point back at the original directory, and falls out of date the day you add a skill to your main setup.</span></li>
+        <li><strong>Guessing which account has room</strong><span>Nothing shows the 5-hour and weekly limits of all your accounts in one place, so you find out when a session stops.</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- SOLUTION -->
+  <section class="section-alt" aria-labelledby="solution-title">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">What mcc does</span>
+        <h2 id="solution-title">One command per account. One setup across all of them.</h2>
+      </div>
+      <div class="features">
+        <article class="card feature">
+          <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-5-6-5"/><path d="M12 19h8"/></svg></div>
+          <h3>A command for each account</h3>
+          <p><code>mcc add work</code> creates <code>~/.mcc/profiles/work</code>, a <code>work</code> launcher and a shell alias, then opens the login. <code>claude</code> stays exactly as it was.</p>
+        </article>
+        <article class="card feature">
+          <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 00-2-2H6a2 2 0 00-2 2v8a2 2 0 002 2h2"/></svg></div>
+          <h3>Your setup, without your login</h3>
+          <p>Cloning copies settings, <code>CLAUDE.md</code>, skills, agents, commands, hooks, plugins and MCP servers. Credentials, history and sessions stay behind, and paths to copied items are rewritten to the new profile.</p>
+        </article>
+        <article class="card feature">
+          <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 01-15.5 6.2L3 16"/><path d="M3 12a9 9 0 0115.5-6.2L21 8"/><path d="M21 3v5h-5"/><path d="M3 21v-5h5"/></svg></div>
+          <h3>Sync when your main setup changes</h3>
+          <p><code>mcc sync work</code> pulls new skills, plugins and settings from your default profile. Preview it with <code>--dry-run</code>; the profile's settings are backed up before anything is written.</p>
+        </article>
+        <article class="card feature">
+          <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M22 20H2"/></svg></div>
+          <h3>Every limit on one screen</h3>
+          <p><code>mcc usage</code> shows each account's 5-hour and weekly usage and when it resets. Anything at 80% gets a <code>!</code>, at 95% a <code>!!</code>, so it reads the same without colour.</p>
+        </article>
+        <article class="card feature">
+          <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 00-15-6.7L3 13"/></svg></div>
+          <h3>Every change can be undone</h3>
+          <p>A failed <code>add</code> rolls itself back. Your rc file is backed up before each edit. <code>mcc delete</code> logs the profile out and removes only what mcc created.</p>
+        </article>
+        <article class="card feature feature-wide">
+          <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 015.8 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg></div>
+          <h3>Why not just a shell alias?</h3>
+          <p>An alias sets one variable. mcc also checks the name against every command your shell knows, copies and rewrites your setup, runs and verifies the login, and keeps the profile in sync later.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- USAGE DEMO -->
+  <section aria-labelledby="usage-title">
+    <div class="wrap">
+      <div class="stack-head">
+        <div>
+        <span class="eyebrow">mcc usage</span>
+        <h2 id="usage-title">See which account has room before you start.</h2>
+        <p class="lede" style="margin:0">Each profile is checked with its own login, in parallel, with short timeouts.</p>
+        </div>
+        <ul class="checks">
+          <li>Percent used and left, time until reset, and the reset time in your time zone</li>
+          <li>Bars shrink to fit narrow terminals; <code>--json</code> for scripts</li>
+          <li>A logged-out or offline profile shows <em>unavailable</em> and the reason. The command still exits 0</li>
+          <li>Turn it off with <code>--no-usage</code> or <code>MCC_NO_USAGE=1</code>, and nothing touches the network</li>
+        </ul>
+      </div>
+      <figure class="term" style="margin:0" aria-label="Terminal: mcc usage output for three profiles">
+        <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>~ — zsh</span></div>
+<pre><span class="p">$ </span><span class="c">mcc usage</span>
+<span class="a">◆</span> <span class="w">default ★</span>  <span class="d">claude · me@example.com</span>
+    5-hour   <span class="g">████████</span><span class="d">░░░░░░░░░░░░</span> 42% used · 58% left · resets in 2h 14m <span class="d">(Sat Oct 10 16:00)</span>
+    Weekly   <span class="g">████</span><span class="d">░░░░░░░░░░░░░░░░</span> 18% used · 82% left · resets in 3d 4h <span class="d">(Wed Oct 14 00:00)</span>
+
+<span class="a">◆</span> <span class="w">lab</span>  <span class="d">lab</span>
+    Usage    <span class="d">unavailable (not logged in)</span>
+
+<span class="a">◆</span> <span class="w">work</span>  <span class="d">work · work@corp.com</span>
+    5-hour   <span class="y">█████████████████</span><span class="d">░░░</span> <span class="y">85%!</span> used · 15% left · resets in 35m <span class="d">(Sat Oct 10 14:21)</span>
+    Weekly   <span class="r">███████████████████</span><span class="d">░</span> <span class="r">96%!!</span> used · 4% left · resets in 3d 4h <span class="d">(Wed Oct 14 00:00)</span></pre>
+      </figure>
+    </div>
+  </section>
+
+  <!-- HOW IT WORKS -->
+  <section class="section-alt" aria-labelledby="how-title">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">How it works</span>
+        <h2 id="how-title">Three commands to a second account.</h2>
+      </div>
+      <div class="steps">
+        <div class="card step">
+          <span class="step-num">Install</span>
+          <p>Build and install mcc with Cargo. It needs Rust and Claude Code.</p>
+          <div class="code"><pre><span class="p">$ </span>curl -fsSL https://raw.githubusercontent.com/luongnv89/mcc/main/install.sh | sh</pre></div>
+        </div>
+        <div class="card step">
+          <span class="step-num">Add a profile</span>
+          <p>Clone your default setup into a new profile, then finish the sign-in in your browser.</p>
+          <div class="code"><pre><span class="p">$ </span>mcc add work --clone</pre></div>
+        </div>
+        <div class="card step">
+          <span class="step-num">Run it</span>
+          <p>Start Claude Code on that account by typing its name. Your default <code>claude</code> keeps working.</p>
+          <div class="code"><pre><span class="p">$ </span>work</pre></div>
+        </div>
+      </div>
+
+      <div style="margin-top: clamp(40px, 6vw, 64px)">
+        <h3 style="margin-bottom:6px">Built on the variable Claude Code already reads</h3>
+        <p style="color:var(--ink-2); max-width:70ch">Claude Code takes its config from <code>CLAUDE_CONFIG_DIR</code>, which defaults to <code>~/.claude</code>. An mcc profile is a directory plus a launcher that sets that variable. Nothing is patched or wrapped.</p>
+        <div class="flow" style="margin-top:20px">
+          <div class="flow-node"><span class="k">You type</span><code>work</code><p>Launcher in <code>~/.local/bin</code>, plus a shell alias</p></div>
+          <div class="flow-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg></div>
+          <div class="flow-node"><span class="k">It sets</span><code>CLAUDE_CONFIG_DIR=~/.mcc/profiles/work</code><p>The profile's own login, settings and skills</p></div>
+          <div class="flow-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg></div>
+          <div class="flow-node"><span class="k">And runs</span><code>claude</code><p>The same Claude Code binary you already have</p></div>
+        </div>
+        <div class="cta-row" style="margin-top:28px; margin-bottom:0">
+          <a class="btn btn-primary" href="#install">Install mcc</a>
+          <a class="btn btn-ghost" href="docs.html#commands">See every command</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ -->
+  <section aria-labelledby="faq-title">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">FAQ</span>
+        <h2 id="faq-title">Questions before you install</h2>
+      </div>
+      <div class="faq">
+        <details>
+          <summary>Does mcc copy or share my login between profiles?</summary>
+          <div><p>No. Each profile signs in separately through <code>claude auth login</code>. Clone and sync never copy credentials or account identity (<code>oauthAccount</code>, <code>userID</code>), and never copy history, sessions or projects.</p></div>
+        </details>
+        <details>
+          <summary>Will it change my existing <code>claude</code> setup?</summary>
+          <div><p>No. Your default profile stays in <code>~/.claude</code> and keeps the <code>claude</code> command. Sync is one-way: it copies from the default into a profile, never back.</p></div>
+        </details>
+        <details>
+          <summary>What does mcc send over the network?</summary>
+          <div><p>Only <code>mcc list</code> and <code>mcc usage</code> make requests, to Anthropic's usage endpoint, each profile with its own token. The token is never printed, logged or written to disk. mcc has no telemetry or analytics. Details are on the <a href="privacy.html">privacy page</a>.</p></div>
+        </details>
+        <details>
+          <summary>Is the usage data official?</summary>
+          <div><p>It comes from the same endpoint as Claude Code's <code>/usage</code> screen. That endpoint is undocumented and may change. If it does, mcc shows <em>unavailable</em> instead of failing.</p></div>
+        </details>
+        <details>
+          <summary>Which platforms and shells are supported?</summary>
+          <div><p>macOS and Linux, with zsh, bash or fish. mcc detects your shell and rc file on first run. Windows is not supported.</p></div>
+        </details>
+        <details>
+          <summary>Do I need Rust?</summary>
+          <div><p>Yes, for now. The install script builds mcc from source with <code>cargo</code> (Rust 1.88 or newer). Get Rust from <a href="https://rustup.rs">rustup.rs</a>.</p></div>
+        </details>
+        <details>
+          <summary>How do I remove a profile, or mcc itself?</summary>
+          <div><p><code>mcc delete work</code> logs the profile out, clears its keychain entry, and removes its directory, launcher, shell alias and registry entry. To remove mcc entirely, see <a href="docs.html#uninstall">Uninstall</a>.</p></div>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <!-- FINAL CTA -->
+  <section id="install" class="final" aria-labelledby="install-title" style="padding-top:0">
+    <div class="wrap">
+      <div class="final-box">
+        <div>
+          <span class="eyebrow">Install</span>
+          <h2 id="install-title">Give your next account its own command.</h2>
+          <p class="lede" style="margin-bottom:22px">Free and open source under Apache-2.0. You need Rust (<code>cargo</code>) and Claude Code.</p>
+          <div class="cta-row" style="margin-bottom:0">
+            <a class="btn btn-primary" href="docs.html#quick-start">Start the quick start</a>
+            <a class="btn btn-ghost" href="https://github.com/luongnv89/mcc">View the source</a>
+          </div>
+        </div>
+        <div>
+          <p class="label">One-liner</p>
+          <div class="code"><pre><span class="p">$ </span>curl -fsSL https://raw.githubusercontent.com/luongnv89/mcc/main/install.sh | sh</pre></div>
+          <p class="label">With Cargo</p>
+          <div class="code"><pre><span class="p">$ </span>cargo install --git https://github.com/luongnv89/mcc --locked</pre></div>
+          <p class="label">From a clone</p>
+          <div class="code" style="margin-bottom:0"><pre><span class="p">$ </span>git clone https://github.com/luongnv89/mcc &amp;&amp; cd mcc &amp;&amp; ./install.sh</pre></div>
+          <p class="note">Then run <code>mcc add work --clone</code>. First run detects your OS, shell and rc file automatically.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <div class="foot-top">
+      <span>mcc · Apache-2.0</span>
+      <nav class="foot-links" aria-label="Footer">
+        <a href="docs.html">Docs</a>
+        <a href="changelog.html">Changelog</a>
+        <a href="privacy.html">Privacy</a>
+        <a href="https://github.com/luongnv89/mcc/blob/main/SECURITY.md">Security</a>
+        <a href="https://github.com/luongnv89/mcc/blob/main/CONTRIBUTING.md">Contributing</a>
+        <a href="https://github.com/luongnv89/mcc">GitHub</a>
+      </nav>
+    </div>
+    <p class="disclaimer">mcc is an independent open-source project. It is not affiliated with, endorsed by, or sponsored by Anthropic. Claude and Claude Code are trademarks of Anthropic, PBC.</p>
+  </div>
+</footer>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

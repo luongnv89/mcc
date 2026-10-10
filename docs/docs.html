@@ -1,0 +1,471 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Documentation — mcc</title>
+  <meta name="description" content="How to install and use mcc: commands, options, clone and sync rules, usage limits, configuration, environment variables and exit codes.">
+  <link rel="canonical" href="https://luongnv89.github.io/mcc/docs.html">
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="mcc documentation">
+  <meta property="og:description" content="Install mcc and manage multiple Claude Code profiles: every command, option and file explained.">
+  <meta property="og:url" content="https://luongnv89.github.io/mcc/docs.html">
+  <meta name="theme-color" content="#f6f5f1" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0d0f12" media="(prefers-color-scheme: dark)">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="./" aria-label="mcc home">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="9" y="3" width="20" height="16" rx="4" fill="#6fe0b4"/><rect x="3" y="11" width="22" height="18" rx="4" fill="#101317"/><path d="M8.5 17.5l3.5 2.75-3.5 2.75" fill="none" stroke="#6fe0b4" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M14.5 23.5h5" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/></svg>
+      mcc
+    </a>
+    <nav class="nav" aria-label="Main">
+      <a href="docs.html" aria-current="page">Docs</a>
+      <a href="changelog.html">Changelog</a>
+      <a class="nav-gh" href="https://github.com/luongnv89/mcc">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub
+      </a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <div class="page-head">
+    <div class="wrap">
+      <span class="eyebrow">Documentation · v0.1.0</span>
+      <h1>Using mcc</h1>
+      <p class="lede">Install mcc, add profiles, keep them in sync and check their limits. Every command and option, with examples.</p>
+    </div>
+  </div>
+
+  <div class="wrap doc-layout">
+    <aside class="toc" aria-label="On this page">
+      <div class="toc-inner">
+        <p class="toc-title">On this page</p>
+        <ol>
+          <li><a href="#overview">Overview</a></li>
+          <li><a href="#install">Install</a></li>
+          <li><a href="#quick-start">Quick start</a></li>
+          <li><a href="#concepts">Concepts</a></li>
+          <li><a href="#commands">Commands</a>
+            <ol>
+              <li><a href="#cmd-init">init</a></li>
+              <li><a href="#cmd-add">add</a></li>
+              <li><a href="#cmd-list">list</a></li>
+              <li><a href="#cmd-usage">usage</a></li>
+              <li><a href="#cmd-sync">sync</a></li>
+              <li><a href="#cmd-delete">delete</a></li>
+              <li><a href="#cmd-completions">completions</a></li>
+              <li><a href="#global-flags">Global flags</a></li>
+            </ol>
+          </li>
+          <li><a href="#clone-sync">Clone &amp; sync rules</a></li>
+          <li><a href="#configuration">Configuration</a></li>
+          <li><a href="#usage-limits">Usage limits</a></li>
+          <li><a href="#aliases">Alias rules</a></li>
+          <li><a href="#files">Files &amp; locations</a></li>
+          <li><a href="#env">Environment variables</a></li>
+          <li><a href="#exit-codes">Exit codes</a></li>
+          <li><a href="#troubleshooting">Troubleshooting</a></li>
+          <li><a href="#uninstall">Uninstall</a></li>
+        </ol>
+      </div>
+    </aside>
+
+    <article class="prose">
+
+      <section id="overview">
+        <h2>Overview <a class="anchor" href="#overview" aria-label="Link to Overview">#</a></h2>
+        <p>mcc runs several Claude Code accounts side by side. Each account gets its own login, its own command, and the same setup as your main one.</p>
+        <p>Claude Code reads its configuration from the directory in <code>CLAUDE_CONFIG_DIR</code>, which defaults to <code>~/.claude</code>. mcc gives each extra account its own directory under <code>~/.mcc/profiles/</code> and a command that sets the variable before starting <code>claude</code>. It then keeps those profiles in sync with your default setup.</p>
+        <p>mcc supports <strong>macOS and Linux</strong> with <strong>zsh</strong>, <strong>bash</strong> or <strong>fish</strong>.</p>
+      </section>
+
+      <section id="install">
+        <h2>Install <a class="anchor" href="#install" aria-label="Link to Install">#</a></h2>
+        <p>You need Rust (<code>cargo</code>, Rust 1.88 or newer) and <a href="https://docs.claude.com/en/docs/claude-code">Claude Code</a>. If you don't have Rust, install it from <a href="https://rustup.rs">rustup.rs</a>.</p>
+        <p class="label">One-liner</p>
+        <div class="code"><pre><span class="p">$ </span>curl -fsSL https://raw.githubusercontent.com/luongnv89/mcc/main/install.sh | sh</pre></div>
+        <p class="label">From a clone</p>
+        <div class="code"><pre><span class="p">$ </span>git clone https://github.com/luongnv89/mcc &amp;&amp; cd mcc &amp;&amp; ./install.sh</pre></div>
+        <p class="label">Directly with Cargo</p>
+        <div class="code"><pre><span class="p">$ </span>cargo install --git https://github.com/luongnv89/mcc --locked</pre></div>
+        <p>The install script checks your platform and <code>cargo</code>, builds mcc, and installs the binary into <code>~/.cargo/bin</code> (override with <code>CARGO_INSTALL_ROOT</code>). Check it worked:</p>
+        <div class="code"><pre><span class="p">$ </span>mcc --version</pre></div>
+      </section>
+
+      <section id="quick-start">
+        <h2>Quick start <a class="anchor" href="#quick-start" aria-label="Link to Quick start">#</a></h2>
+        <div class="code"><pre><span class="p">$ </span>mcc init                    <span class="cm"># detect your environment (also runs automatically the first time)</span>
+<span class="p">$ </span>mcc add work --clone        <span class="cm"># new profile with your default setup, then log in</span>
+<span class="p">$ </span>work                        <span class="cm"># start Claude Code as the "work" account</span>
+<span class="p">$ </span>mcc list                    <span class="cm"># see all profiles</span>
+<span class="p">$ </span>mcc usage                   <span class="cm"># how much of each account's limits is used</span>
+<span class="p">$ </span>mcc sync work               <span class="cm"># later: pull new skills/plugins/settings from the default</span>
+<span class="p">$ </span>mcc delete work             <span class="cm"># remove it completely</span></pre></div>
+        <p>After <code>mcc add</code> finishes, the new command works in any shell straight away, because the launcher is written to <code>~/.local/bin</code>. The shell alias takes effect in new terminals.</p>
+      </section>
+
+      <section id="concepts">
+        <h2>Concepts <a class="anchor" href="#concepts" aria-label="Link to Concepts">#</a></h2>
+        <h3>Default profile</h3>
+        <p>Your existing Claude Code setup: <code>~/.claude</code> plus <code>~/.claude.json</code>, started with <code>claude</code>. mcc never writes into it during sync. If <code>~/.claude</code> doesn't exist yet, <code>mcc add</code> creates it as the default profile first.</p>
+        <h3>mcc profiles</h3>
+        <p>Each additional account. A profile is a directory at <code>~/.mcc/profiles/&lt;alias&gt;/</code> used as <code>CLAUDE_CONFIG_DIR</code>, a launcher at <code>~/.local/bin/&lt;alias&gt;</code>, a managed alias block in your shell rc file, and an entry in <code>~/.mcc/config.toml</code>.</p>
+        <h3>Clone or fresh</h3>
+        <p>When you add a profile you choose how it starts:</p>
+        <ul>
+          <li><strong>Clone</strong> (<code>--clone</code>) copies the default profile's setup: settings, <code>CLAUDE.md</code>, skills, agents, commands, hooks, plugins and MCP servers. It never copies credentials. See <a href="#clone-sync">Clone &amp; sync rules</a>.</li>
+          <li><strong>Fresh</strong> (<code>--fresh</code>) starts with an empty profile.</li>
+        </ul>
+        <h3>Sync</h3>
+        <p>A one-way copy from the default profile into a profile. Most tools assume the default config path, so the default stays the source of truth and profiles follow it.</p>
+      </section>
+
+      <section id="commands">
+        <h2>Commands <a class="anchor" href="#commands" aria-label="Link to Commands">#</a></h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Command</th><th>What it does</th><th>Key options</th></tr></thead>
+          <tbody>
+            <tr><td><a href="#cmd-init"><code>mcc init</code></a></td><td>Detect OS, terminal, shell, rc file and the <code>claude</code> binary</td><td><code>--force</code>, <code>--shell</code></td></tr>
+            <tr><td><a href="#cmd-add"><code>mcc add [ALIAS]</code></a></td><td>Create the default profile, or a new profile with its own command</td><td><code>--clone</code>, <code>--fresh</code>, <code>--no-login</code>, <code>-y</code></td></tr>
+            <tr><td><a href="#cmd-list"><code>mcc list</code></a> (<code>ls</code>)</td><td>Show every profile with metrics and usage</td><td><code>--json</code>, <code>-l</code>, <code>--no-usage</code></td></tr>
+            <tr><td><a href="#cmd-usage"><code>mcc usage [PROFILE]</code></a></td><td>Show 5-hour and weekly usage in detail</td><td><code>--json</code></td></tr>
+            <tr><td><a href="#cmd-sync"><code>mcc sync [ALIAS]</code></a></td><td>Copy the default's setup into a profile</td><td><code>--all</code>, <code>--dry-run</code>, <code>--prune</code>, <code>--only</code>, <code>-y</code></td></tr>
+            <tr><td><a href="#cmd-delete"><code>mcc delete ALIAS</code></a> (<code>rm</code>)</td><td>Log out and remove a profile</td><td><code>-y</code>, <code>--keep-auth</code></td></tr>
+            <tr><td><a href="#cmd-completions"><code>mcc completions SHELL</code></a></td><td>Print a shell completion script</td><td><code>bash</code>, <code>zsh</code>, <code>fish</code>, <code>elvish</code>, <code>powershell</code></td></tr>
+            <tr><td><code>mcc help [COMMAND]</code></td><td>Usage and examples for any command</td><td></td></tr>
+          </tbody>
+        </table></div>
+
+        <h3 id="cmd-init"><code>mcc init</code> <a class="anchor" href="#cmd-init" aria-label="Link to mcc init">#</a></h3>
+        <p class="synopsis">mcc init [--force] [--shell zsh|bash|fish]</p>
+        <p>Detects your OS, architecture, terminal, shell, rc file, the <code>claude</code> binary, and whether <code>~/.local/bin</code> is on your <code>PATH</code> (and offers to add it). The result is saved in <code>~/.mcc/config.toml</code>. It runs automatically the first time you use mcc.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Option</th><th>Effect</th></tr></thead>
+          <tbody>
+            <tr><td><code>--force</code></td><td>Re-run detection even if mcc is already initialized</td></tr>
+            <tr><td><code>--shell &lt;SHELL&gt;</code></td><td>Shell whose rc file mcc manages: <code>zsh</code>, <code>bash</code> or <code>fish</code> (default: detected from <code>$SHELL</code>)</td></tr>
+          </tbody>
+        </table></div>
+        <div class="code"><pre><span class="p">$ </span>mcc init
+<span class="p">$ </span>mcc init --force --shell bash</pre></div>
+
+        <h3 id="cmd-add"><code>mcc add</code> <a class="anchor" href="#cmd-add" aria-label="Link to mcc add">#</a></h3>
+        <p class="synopsis">mcc add [ALIAS] [--clone | --fresh] [--no-login] [-y]</p>
+        <p>If <code>~/.claude</code> doesn't exist, <code>add</code> creates your default profile. Otherwise it creates a new profile in eight numbered steps:</p>
+        <ol>
+          <li>Validate the alias (see <a href="#aliases">Alias rules</a>)</li>
+          <li>Create <code>~/.mcc/profiles/&lt;alias&gt;</code></li>
+          <li>Copy the setup from the default profile (clone only)</li>
+          <li>Install the launcher <code>~/.local/bin/&lt;alias&gt;</code></li>
+          <li>Add the shell alias to your rc file (backed up first)</li>
+          <li>Register the profile in <code>~/.mcc/config.toml</code></li>
+          <li>Log in with <code>claude auth login</code>; finish the sign-in in your browser</li>
+          <li>Verify the login and show the account</li>
+        </ol>
+        <p>If a step fails, the changes made so far are rolled back. Without an alias or a <code>--clone</code>/<code>--fresh</code> flag, <code>add</code> asks interactively.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Option</th><th>Effect</th></tr></thead>
+          <tbody>
+            <tr><td><code>ALIAS</code></td><td>Command name for the new profile (prompted if omitted)</td></tr>
+            <tr><td><code>--clone</code></td><td>Copy the default profile's setup (never credentials)</td></tr>
+            <tr><td><code>--fresh</code></td><td>Start with an empty profile</td></tr>
+            <tr><td><code>--no-login</code></td><td>Skip <code>claude auth login</code>; log in later by running the alias</td></tr>
+            <tr><td><code>-y</code>, <code>--yes</code></td><td>Accept defaults without prompting</td></tr>
+          </tbody>
+        </table></div>
+        <div class="code"><pre><span class="p">$ </span>mcc add                         <span class="cm"># interactive: asks for the alias and clone/fresh</span>
+<span class="p">$ </span>mcc add work --clone            <span class="cm"># copy the default's setup, then log in</span>
+<span class="p">$ </span>mcc add lab --fresh --no-login  <span class="cm"># empty profile; log in later by running `lab`</span></pre></div>
+
+        <h3 id="cmd-list"><code>mcc list</code> <a class="anchor" href="#cmd-list" aria-label="Link to mcc list">#</a></h3>
+        <p class="synopsis">mcc list [--json | -l/--long] [--no-usage]   <span style="color:var(--muted)">alias: mcc ls</span></p>
+        <p>One row per profile, the default included: command, account, 5-hour and weekly usage (with a bar), skills, agents, commands, plugins (enabled/installed), MCP servers, hooks, size, last used and last sync.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Option</th><th>Effect</th></tr></thead>
+          <tbody>
+            <tr><td><code>--json</code></td><td>Print JSON to stdout instead of a table</td></tr>
+            <tr><td><code>-l</code>, <code>--long</code></td><td>Show a detailed card per profile</td></tr>
+            <tr><td><code>--no-usage</code></td><td>Skip fetching usage: no network, no keychain (same as <code>MCC_NO_USAGE=1</code>)</td></tr>
+          </tbody>
+        </table></div>
+        <div class="term" style="margin:0 0 1.2em"><pre><span class="p">$ </span><span class="c">mcc list</span>
+NAME       COMMAND  ACCOUNT         5H                     WEEK                   SKILLS  …
+default ★  claude   me@example.com  <span class="g">████</span><span class="d">░░░░░░</span> 42% (2h)    <span class="g">██</span><span class="d">░░░░░░░░</span> 18% (3d)         2  …
+work       work     work@corp.com   <span class="y">█████████</span><span class="d">░</span> <span class="y">85%!</span> (35m)  <span class="r">██████████</span> <span class="r">96%!!</span> (3d)       2  …
+lab        lab      —               <span class="d">unavailable            unavailable</span>                 0  …</pre></div>
+        <div class="code"><pre><span class="p">$ </span>mcc list --long
+<span class="p">$ </span>mcc list --no-usage            <span class="cm"># offline: skip the usage lookup</span>
+<span class="p">$ </span>mcc list --json | jq '.[] | {name, account, skills, plugins_installed}'
+<span class="p">$ </span>mcc list --json | jq '.[] | {name, five_hour: .usage.five_hour.percent, weekly: .usage.weekly.percent}'</pre></div>
+
+        <h3 id="cmd-usage"><code>mcc usage</code> <a class="anchor" href="#cmd-usage" aria-label="Link to mcc usage">#</a></h3>
+        <p class="synopsis">mcc usage [PROFILE] [--json]</p>
+        <p>Shows only usage, in more detail than <code>list</code>: a bar, percent used and left, time until reset, and the reset time in your local time zone. Pass a profile name to see just one; use <code>default</code> or <code>claude</code> for <code>~/.claude</code>. An unknown name is a usage error (exit 2).</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Option</th><th>Effect</th></tr></thead>
+          <tbody>
+            <tr><td><code>PROFILE</code></td><td>Only this profile (<code>default</code> or <code>claude</code> for the default)</td></tr>
+            <tr><td><code>--json</code></td><td>Print one JSON object per profile with <code>name</code>, <code>command</code>, <code>is_default</code>, <code>account</code> and <code>usage</code></td></tr>
+          </tbody>
+        </table></div>
+        <div class="code"><pre><span class="p">$ </span>mcc usage                       <span class="cm"># every profile, the default included</span>
+<span class="p">$ </span>mcc usage work                  <span class="cm"># only the `work` profile</span>
+<span class="p">$ </span>mcc usage --json | jq '.[] | {name, weekly: .usage.weekly.percent}'</pre></div>
+        <p>See <a href="#usage-limits">Usage limits</a> for how to read the output and where the data comes from.</p>
+
+        <h3 id="cmd-sync"><code>mcc sync</code> <a class="anchor" href="#cmd-sync" aria-label="Link to mcc sync">#</a></h3>
+        <p class="synopsis">mcc sync (ALIAS | --all) [--dry-run] [--prune] [--only ITEMS] [-y]</p>
+        <p>Copies the default profile's setup into a profile. It plans the changes, backs up the profile's <code>settings.json</code>, <code>settings.local.json</code> and <code>.claude.json</code> to <code>&lt;profile&gt;/.mcc-backup/&lt;timestamp&gt;/</code>, then applies them with progress.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Option</th><th>Effect</th></tr></thead>
+          <tbody>
+            <tr><td><code>ALIAS</code></td><td>Profile to update (required unless <code>--all</code>)</td></tr>
+            <tr><td><code>--all</code></td><td>Sync every mcc profile</td></tr>
+            <tr><td><code>--dry-run</code></td><td>Show what would change without writing anything</td></tr>
+            <tr><td><code>--prune</code></td><td>Also remove items that exist in the profile but not in the default (asks for confirmation)</td></tr>
+            <tr><td><code>--only ITEMS</code></td><td>Comma-separated list of items to sync: <code>settings</code>, <code>claude-md</code>, <code>keybindings</code>, <code>statusline</code>, <code>agents</code>, <code>skills</code>, <code>commands</code>, <code>hooks</code>, <code>output-styles</code>, <code>plugins</code>, <code>mcp</code></td></tr>
+            <tr><td><code>-y</code>, <code>--yes</code></td><td>Do not ask for confirmation</td></tr>
+          </tbody>
+        </table></div>
+        <div class="code"><pre><span class="p">$ </span>mcc sync work --dry-run               <span class="cm"># preview what would change</span>
+<span class="p">$ </span>mcc sync work --only skills,agents    <span class="cm"># only some items</span>
+<span class="p">$ </span>mcc sync --all --prune --yes          <span class="cm"># make every profile mirror the default exactly</span></pre></div>
+
+        <h3 id="cmd-delete"><code>mcc delete</code> <a class="anchor" href="#cmd-delete" aria-label="Link to mcc delete">#</a></h3>
+        <p class="synopsis">mcc delete ALIAS [-y] [--keep-auth]   <span style="color:var(--muted)">alias: mcc rm</span></p>
+        <p>Logs the profile out with <code>claude auth logout</code> (clearing its keychain entry), then removes its directory, launcher, shell alias block and registry entry. It asks you to type the name to confirm unless you pass <code>--yes</code>. It refuses to delete the default profile, and only removes launchers that mcc created.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Option</th><th>Effect</th></tr></thead>
+          <tbody>
+            <tr><td><code>-y</code>, <code>--yes</code></td><td>Skip the confirmation prompt</td></tr>
+            <tr><td><code>--keep-auth</code></td><td>Do not run <code>claude auth logout</code> before deleting</td></tr>
+          </tbody>
+        </table></div>
+        <div class="code"><pre><span class="p">$ </span>mcc delete lab
+<span class="p">$ </span>mcc delete lab --yes --keep-auth</pre></div>
+
+        <h3 id="cmd-completions"><code>mcc completions</code> <a class="anchor" href="#cmd-completions" aria-label="Link to mcc completions">#</a></h3>
+        <p class="synopsis">mcc completions bash|zsh|fish|elvish|powershell</p>
+        <p>Prints a completion script to stdout. It has no first-run side effects.</p>
+        <div class="code"><pre><span class="p">$ </span>mcc completions zsh  &gt; ~/.zfunc/_mcc        <span class="cm"># with fpath+=~/.zfunc in ~/.zshrc</span>
+<span class="p">$ </span>mcc completions bash &gt; ~/.local/share/bash-completion/completions/mcc
+<span class="p">$ </span>mcc completions fish &gt; ~/.config/fish/completions/mcc.fish</pre></div>
+
+        <h3 id="global-flags">Global flags <a class="anchor" href="#global-flags" aria-label="Link to Global flags">#</a></h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Flag</th><th>Effect</th></tr></thead>
+          <tbody>
+            <tr><td><code>-v</code>, <code>--verbose</code></td><td>Show detailed progress (always written to <code>~/.mcc/logs/mcc.log</code>)</td></tr>
+            <tr><td><code>-q</code>, <code>--quiet</code></td><td>Only print errors and requested data</td></tr>
+            <tr><td><code>--no-color</code></td><td>Disable colored output (mcc also honors <code>NO_COLOR</code>)</td></tr>
+            <tr><td><code>--version</code></td><td>Print the version</td></tr>
+            <tr><td><code>-h</code>, <code>--help</code></td><td>Print help</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section id="clone-sync">
+        <h2>Clone &amp; sync rules <a class="anchor" href="#clone-sync" aria-label="Link to Clone and sync rules">#</a></h2>
+        <h3>What is copied</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Item (<code>--only</code> name)</th><th>Paths</th></tr></thead>
+          <tbody>
+            <tr><td><code>settings</code></td><td><code>settings.json</code>, <code>settings.local.json</code></td></tr>
+            <tr><td><code>claude-md</code></td><td><code>CLAUDE.md</code></td></tr>
+            <tr><td><code>keybindings</code></td><td><code>keybindings.json</code></td></tr>
+            <tr><td><code>statusline</code></td><td><code>statusline.conf</code></td></tr>
+            <tr><td><code>agents</code>, <code>skills</code>, <code>commands</code>, <code>hooks</code>, <code>output-styles</code></td><td>those directories</td></tr>
+            <tr><td><code>plugins</code></td><td><code>plugins/installed_plugins.json</code>, <code>plugins/known_marketplaces.json</code>, <code>plugins/marketplaces/</code>, <code>plugins/cache/</code></td></tr>
+            <tr><td><code>mcp</code></td><td>the <code>mcpServers</code> entry from <code>~/.claude.json</code>, merged; the rest of the profile's state is kept</td></tr>
+          </tbody>
+        </table></div>
+        <div class="callout"><p><strong>Never copied:</strong> credentials, account identity (<code>oauthAccount</code>, <code>userID</code>), history, projects and sessions, todos, telemetry, caches and file history.</p></div>
+
+        <h3>Path rewriting</h3>
+        <p>Each profile uses its own copies. In settings, plugin manifests and MCP server entries, any <code>~/.claude/…</code>, <code>$HOME/.claude/…</code> or <code>/Users/you/.claude/…</code> path that points at a <em>copied</em> item (for example <code>~/.claude/hooks/notify.sh</code>) is rewritten to the profile directory.</p>
+        <p>Paths to things that aren't copied, such as <code>~/.claude/statusline/run.sh</code>, keep pointing at the default profile, so nothing dangles.</p>
+
+        <h3>Symlinks</h3>
+        <p>Symlinks stay symlinks. A link into the default profile is re-pointed into the copy. A relative link elsewhere (such as <code>skills/x -&gt; ../../.agents/skills/x</code>) is resolved so it still works from the new location.</p>
+
+        <h3>One-way sync, backups and pruning</h3>
+        <p><code>sync</code> only copies default → profile, because most tools assume the default config path. Before writing, it backs up the profile's <code>settings.json</code>, <code>settings.local.json</code> and <code>.claude.json</code> to <code>&lt;profile&gt;/.mcc-backup/&lt;timestamp&gt;/</code>. Files that exist only in the profile are kept unless you pass <code>--prune</code>, and pruning asks for confirmation (or needs <code>--yes</code>).</p>
+      </section>
+
+      <section id="configuration">
+        <h2>Configuration <a class="anchor" href="#configuration" aria-label="Link to Configuration">#</a></h2>
+        <p>mcc keeps its environment and profile registry in <code>~/.mcc/config.toml</code>. You can customize what <code>sync</code> and clone copy with a <code>[sync]</code> table:</p>
+        <div class="code"><pre>[sync]
+exclude = ["plugins"]          <span class="cm"># built-in items to skip</span>
+extra = ["my-tool/config.yml"] <span class="cm"># additional paths (relative to the config dir) to copy</span></pre></div>
+        <p>A corrupt <code>config.toml</code> makes mcc exit with code 3 (invalid input) instead of guessing.</p>
+      </section>
+
+      <section id="usage-limits">
+        <h2>Usage limits <a class="anchor" href="#usage-limits" aria-label="Link to Usage limits">#</a></h2>
+        <p><code>mcc list</code> shows 5-hour and weekly usage in its <code>5H</code> and <code>WEEK</code> columns; <code>mcc usage</code> shows it in full.</p>
+        <div class="term" style="margin:0 0 1.4em"><pre><span class="p">$ </span><span class="c">mcc usage</span>
+<span class="a">◆</span> <span class="w">default ★</span>  <span class="d">claude · me@example.com</span>
+    5-hour   <span class="g">████████</span><span class="d">░░░░░░░░░░░░</span> 42% used · 58% left · resets in 2h 14m <span class="d">(Sat Oct 10 16:00)</span>
+    Weekly   <span class="g">████</span><span class="d">░░░░░░░░░░░░░░░░</span> 18% used · 82% left · resets in 3d 4h <span class="d">(Wed Oct 14 00:00)</span>
+
+<span class="a">◆</span> <span class="w">lab</span>  <span class="d">lab</span>
+    Usage    <span class="d">unavailable (not logged in)</span>
+
+<span class="a">◆</span> <span class="w">work</span>  <span class="d">work · work@corp.com</span>
+    5-hour   <span class="y">█████████████████</span><span class="d">░░░</span> <span class="y">85%!</span> used · 15% left · resets in 35m <span class="d">(Sat Oct 10 14:21)</span>
+    Weekly   <span class="r">███████████████████</span><span class="d">░</span> <span class="r">96%!!</span> used · 4% left · resets in 3d 4h <span class="d">(Wed Oct 14 00:00)</span></pre></div>
+
+        <h3>Reading the bars</h3>
+        <p>Each bar is the share of the limit used. <code>!</code> after the percent marks 80% or more and <code>!!</code> marks 95% or more. In a colour terminal the bar is also green, yellow (80%+) or red (95%+), but the markers carry the same meaning, so nothing depends on colour alone (<code>--no-color</code>, <code>NO_COLOR</code> or piped output).</p>
+
+        <h3>Narrow terminals</h3>
+        <p>When the output wouldn't fit the terminal, bars shrink. <code>mcc usage</code> first drops the absolute reset time and keeps the relative "resets in …", then shrinks its bar in the same 20 → 10 → 0 cell steps as <code>mcc list --long</code>. From 80 columns up a compact bar always stays; below 80 columns bars disappear (leaving <code>42% (2h)</code>) when nothing fits. Set <code>COLUMNS</code> to override the detected width. Piped output gets full-size bars unless <code>COLUMNS</code> is set, and <code>--json</code> never has bars or colour.</p>
+
+        <h3>Where the data comes from</h3>
+        <p>mcc reads each profile's own Claude Code login (<code>&lt;config dir&gt;/.credentials.json</code>, or on macOS the login Keychain item Claude Code created for that config dir) and asks Anthropic's usage endpoint, <code>https://api.anthropic.com/api/oauth/usage</code>, the one behind Claude Code's <code>/usage</code> screen.</p>
+        <div class="callout"><p><strong>The endpoint is undocumented</strong> and may change. When it does, mcc shows "unavailable" rather than failing.</p></div>
+        <ul>
+          <li><strong>Never fatal.</strong> If usage can't be determined (logged out, expired login, offline, API error), the profile shows <code>unavailable</code> with the reason, the command still exits 0, and no warning is printed. Requests run in parallel with short timeouts: 2 s to connect, 4 s total.</li>
+          <li><strong>Tokens stay private.</strong> A profile's access token is only sent to that endpoint, for its own profile. It is never printed, logged or written anywhere. mcc never refreshes tokens: if a login has expired, start the profile in Claude Code once (<code>work</code>, <code>claude</code>, …) and it refreshes itself.</li>
+          <li><strong>Turn it off</strong> with <code>mcc list --no-usage</code> or <code>MCC_NO_USAGE=1</code> (which also applies to <code>mcc usage</code>). Usage then shows <code>—</code> and nothing touches the network or the keychain.</li>
+        </ul>
+
+        <h3>JSON format</h3>
+        <p>In <code>mcc list --json</code> every profile has a <code>usage</code> object. <code>mcc usage --json</code> prints one object per profile with <code>name</code>, <code>command</code>, <code>is_default</code>, <code>account</code> (or <code>null</code>) and the same <code>usage</code> object:</p>
+        <div class="code"><pre>"usage": {
+  "status": "ok",
+  "reason": null,
+  "five_hour": { "percent": 42.0, "resets_at": "2026-10-10T16:00:00Z" },
+  "weekly":    { "percent": 18.0, "resets_at": "2026-10-14T00:00:00Z" }
+}</pre></div>
+        <p><code>status</code> is <code>ok</code> or <code>unavailable</code>. <code>five_hour</code> and <code>weekly</code> are <code>null</code> when there is no data (<code>resets_at</code> can be <code>null</code> too). When <code>status</code> is <code>unavailable</code>, <code>reason</code> is one of:</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th><code>reason</code></th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td><code>not_logged_in</code></td><td>No Claude Code OAuth login found for the profile</td></tr>
+            <tr><td><code>token_expired</code></td><td>The stored login has expired, or the API rejected it (HTTP 401); start the profile to refresh it</td></tr>
+            <tr><td><code>unauthorized</code></td><td>The API refused the token (HTTP 403), for example a login without the profile scope</td></tr>
+            <tr><td><code>rate_limited</code></td><td>HTTP 429</td></tr>
+            <tr><td><code>network</code></td><td>Offline, timeout or connection failure</td></tr>
+            <tr><td><code>http_error</code></td><td>Any other HTTP status</td></tr>
+            <tr><td><code>parse_error</code></td><td>The response wasn't the expected JSON</td></tr>
+            <tr><td><code>disabled</code></td><td>Not fetched (<code>--no-usage</code> / <code>MCC_NO_USAGE</code>)</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section id="aliases">
+        <h2>Alias rules <a class="anchor" href="#aliases" aria-label="Link to Alias rules">#</a></h2>
+        <p>An alias must be 1–32 characters: lowercase letters, digits, <code>-</code> or <code>_</code>, starting with a letter. It is rejected if any of these already uses the name:</p>
+        <ul>
+          <li>mcc's reserved names: <code>claude</code>, <code>mcc</code>, <code>default</code>, <code>help</code>, <code>all</code></li>
+          <li>shell keywords and builtins</li>
+          <li>existing mcc profiles</li>
+          <li>executables on <code>$PATH</code></li>
+          <li>aliases and functions in your rc files (<code>.zshrc</code>, <code>.bashrc</code>, <code>.bash_profile</code>, <code>.profile</code>, fish config, …)</li>
+          <li>anything your interactive shell resolves with <code>type &lt;name&gt;</code>, which catches plugin-defined aliases</li>
+        </ul>
+        <p>A rejected alias is a usage error (exit 2).</p>
+      </section>
+
+      <section id="files">
+        <h2>Files &amp; locations <a class="anchor" href="#files" aria-label="Link to Files and locations">#</a></h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>What</th><th>Where</th></tr></thead>
+          <tbody>
+            <tr><td>Default profile</td><td><code>~/.claude</code> + <code>~/.claude.json</code> (command: <code>claude</code>)</td></tr>
+            <tr><td>mcc profiles</td><td><code>~/.mcc/profiles/&lt;alias&gt;/</code>, used as <code>CLAUDE_CONFIG_DIR</code></td></tr>
+            <tr><td>Launcher</td><td><code>~/.local/bin/&lt;alias&gt;</code>; works in any shell as soon as it's written</td></tr>
+            <tr><td>Shell alias</td><td>A managed block in your rc file, between <code># &gt;&gt;&gt; mcc:&lt;alias&gt; &gt;&gt;&gt;</code> and <code># &lt;&lt;&lt; mcc:&lt;alias&gt; &lt;&lt;&lt;</code></td></tr>
+            <tr><td>Config &amp; registry</td><td><code>~/.mcc/config.toml</code></td></tr>
+            <tr><td>Log</td><td><code>~/.mcc/logs/mcc.log</code>; every run is appended here</td></tr>
+            <tr><td>rc file backups</td><td><code>~/.mcc/backups/</code></td></tr>
+            <tr><td>Sync backups</td><td><code>&lt;profile&gt;/.mcc-backup/&lt;timestamp&gt;/</code></td></tr>
+          </tbody>
+        </table></div>
+        <p>Set <code>MCC_HOME</code> to make mcc use another directory instead of <code>$HOME</code> for everything it reads and writes.</p>
+      </section>
+
+      <section id="env">
+        <h2>Environment variables <a class="anchor" href="#env" aria-label="Link to Environment variables">#</a></h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Variable</th><th>Effect</th></tr></thead>
+          <tbody>
+            <tr><td><code>MCC_HOME</code></td><td>Use this directory instead of <code>$HOME</code> for everything mcc reads and writes (useful for testing)</td></tr>
+            <tr><td><code>MCC_CLAUDE_BIN</code></td><td>Path to the <code>claude</code> binary</td></tr>
+            <tr><td><code>MCC_NO_USAGE</code></td><td>Any value except empty or <code>0</code>: same as <code>mcc list --no-usage</code>; <code>mcc usage</code> shows usage as not fetched</td></tr>
+            <tr><td><code>COLUMNS</code></td><td>Terminal width used to size usage bars (default: detected width; unlimited when piped)</td></tr>
+            <tr><td><code>MCC_USAGE_URL</code></td><td>Test/debug override for the usage endpoint. It receives bearer tokens, so only <code>https://</code> URLs and <code>http://</code> on loopback (<code>127.0.0.1</code>, <code>localhost</code>, <code>[::1]</code>) are accepted; any other value is refused and usage is not fetched at all</td></tr>
+            <tr><td><code>MCC_SECURITY_BIN</code></td><td>Test/debug override for the macOS <code>security</code> binary used to read Keychain logins (default <code>/usr/bin/security</code>)</td></tr>
+            <tr><td><code>NO_COLOR</code></td><td>Disable colors</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section id="exit-codes">
+        <h2>Exit codes <a class="anchor" href="#exit-codes" aria-label="Link to Exit codes">#</a></h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Code</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td><code>0</code></td><td>Success</td></tr>
+            <tr><td><code>1</code></td><td>Runtime error (I/O failure, <code>claude</code> missing, …)</td></tr>
+            <tr><td><code>2</code></td><td>Usage error (bad arguments, invalid or taken alias, confirmation needed without a terminal)</td></tr>
+            <tr><td><code>3</code></td><td>Invalid input (corrupt <code>config.toml</code> or JSON)</td></tr>
+            <tr><td><code>130</code></td><td>Interrupted (Ctrl+C)</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section id="troubleshooting">
+        <h2>Troubleshooting <a class="anchor" href="#troubleshooting" aria-label="Link to Troubleshooting">#</a></h2>
+        <h3>The new command isn't found</h3>
+        <p>The launcher lives in <code>~/.local/bin</code>. If that directory isn't on your <code>PATH</code>, run <code>mcc init --force</code>; it checks and offers to add it. The shell alias only applies to terminals opened after <code>mcc add</code>.</p>
+        <h3>Usage shows <code>unavailable</code></h3>
+        <p>Run <code>mcc list --long</code> or <code>mcc usage</code> to see the reason. For <code>token_expired</code>, start that profile in Claude Code once (for example <code>work</code>) so it refreshes its own login; mcc never refreshes tokens itself. For <code>not_logged_in</code>, run the profile's command and sign in.</p>
+        <h3><code>claude</code> isn't detected</h3>
+        <p>Point mcc at the binary with <code>MCC_CLAUDE_BIN=/path/to/claude</code>, or put it on your <code>PATH</code> and run <code>mcc init --force</code>.</p>
+        <h3>Something went wrong</h3>
+        <p>Every run is logged to <code>~/.mcc/logs/mcc.log</code>; add <code>--verbose</code> to see the same detail in the terminal. Your rc file backups are in <code>~/.mcc/backups/</code>. If you think you've found a bug, <a href="https://github.com/luongnv89/mcc/issues/new/choose">open an issue</a>. Report security problems privately as described in <a href="https://github.com/luongnv89/mcc/blob/main/SECURITY.md">SECURITY.md</a>.</p>
+      </section>
+
+      <section id="uninstall">
+        <h2>Uninstall <a class="anchor" href="#uninstall" aria-label="Link to Uninstall">#</a></h2>
+        <p>Delete every mcc profile (this logs each one out), remove the binary, then remove mcc's state. Your default <code>~/.claude</code> profile is left alone.</p>
+        <div class="code"><pre><span class="p">$ </span>for p in $(mcc list --json | jq -r '.[] | select(.is_default | not) | .name'); do mcc delete "$p" --yes; done
+<span class="p">$ </span>cargo uninstall mcc
+<span class="p">$ </span>rm -rf ~/.mcc</pre></div>
+      </section>
+
+    </article>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <div class="foot-top">
+      <span>mcc · Apache-2.0</span>
+      <nav class="foot-links" aria-label="Footer">
+        <a href="docs.html">Docs</a>
+        <a href="changelog.html">Changelog</a>
+        <a href="privacy.html">Privacy</a>
+        <a href="https://github.com/luongnv89/mcc/blob/main/SECURITY.md">Security</a>
+        <a href="https://github.com/luongnv89/mcc/blob/main/CONTRIBUTING.md">Contributing</a>
+        <a href="https://github.com/luongnv89/mcc">GitHub</a>
+      </nav>
+    </div>
+    <p class="disclaimer">mcc is an independent open-source project. It is not affiliated with, endorsed by, or sponsored by Anthropic. Claude and Claude Code are trademarks of Anthropic, PBC.</p>
+  </div>
+</footer>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>
