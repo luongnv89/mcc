@@ -55,7 +55,21 @@ Supports **macOS and Linux**.
 
 ## Install
 
-You need Rust (`cargo`) and [Claude Code](https://docs.claude.com/en/docs/claude-code).
+You need [Claude Code](https://docs.claude.com/en/docs/claude-code).
+
+### Homebrew (macOS and Linux)
+
+```sh
+brew install luongnv89/tap/mcc
+```
+
+The Homebrew tap is available from the first tagged release (v0.1.0). Until then, install from source (below).
+
+Homebrew builds mcc from source with its own Rust, so you don't need Rust installed. It also installs bash, zsh and fish completions. Update with `brew upgrade mcc`.
+
+### From source
+
+You need Rust (`cargo`).
 
 ```sh
 # one-liner
@@ -114,6 +128,8 @@ mcc delete lab --yes
 ```
 
 ### Shell completions
+
+Homebrew installs completions for you. Otherwise, write the script for your shell:
 
 ```sh
 mcc completions zsh  > ~/.zfunc/_mcc        # with fpath+=~/.zfunc in ~/.zshrc
@@ -258,7 +274,8 @@ An alias must be 1–32 characters: lowercase letters, digits, `-` or `_`, start
 
 ```sh
 for p in $(mcc list --json | jq -r '.[] | select(.is_default | not) | .name'); do mcc delete "$p" --yes; done
-cargo uninstall mcc
+brew uninstall mcc    # if you installed with Homebrew
+cargo uninstall mcc   # if you installed from source
 rm -rf ~/.mcc
 ```
 
