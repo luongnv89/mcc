@@ -2,6 +2,8 @@
 //!
 //! Everything here writes to **stderr** so stdout stays clean for data
 //! (`mcc list --json | jq`). Every line is also mirrored to the log file.
+//! The exception is the usage meter helpers at the end, which only build
+//! strings for the data commands (`mcc list`, `mcc usage`) to print.
 
 use std::io::{IsTerminal, Write};
 use std::sync::OnceLock;
@@ -317,9 +319,156 @@ pub fn human_size(bytes: u64) -> String {
     }
 }
 
+// ---- usage meters (strings for stdout) --------------------------------------
+
+/// Usage at or above this percent is near the limit (`!`, yellow).
+pub const HIGH_PERCENT: f64 = 80.0;
+/// Usage at or above this percent is at the limit (`!!`, red).
+pub const CRITICAL_PERCENT: f64 = 95.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Level {
+    Normal,
+    High,
+    Critical,
+}
+
+/// How close a usage percent is to its limit, judged on the percent as shown
+/// (rounded), so "80%" always carries the `!` marker. NaN is [`Level::Normal`].
+pub fn level(percent: f64) -> Level {
+    let shown = percent.round();
+    if shown >= CRITICAL_PERCENT {
+        Level::Critical
+    } else if shown >= HIGH_PERCENT {
+        Level::High
+    } else {
+        Level::Normal
+    }
+}
+
+/// Colour-independent near-limit marker: "" / "!" / "!!".
+pub fn level_marker(percent: f64) -> &'static str {
+    match level(percent) {
+        Level::Normal => "",
+        Level::High => "!",
+        Level::Critical => "!!",
+    }
+}
+
+/// Percent used with its near-limit marker: "42%", "85%!", "96%!!".
+pub fn percent_text(percent: f64) -> String {
+    format!(
+        "{}{}",
+        crate::usage::percent(percent),
+        level_marker(percent)
+    )
+}
+
+/// A btop-style bar of `width` cells, `█` used and `░` left, e.g.
+/// `████░░░░░░` for 42%. The percent is clamped to 0–100 (NaN = 0). Colour
+/// (green / yellow / red by [`level`]) comes only from `console::style`, so
+/// the bar is plain text when colours are off.
+pub fn meter(percent: f64, width: usize) -> String {
+    let p = if percent.is_nan() {
+        0.0
+    } else {
+        percent.clamp(0.0, 100.0)
+    };
+    let filled = ((p / 100.0 * width as f64).round() as usize).min(width);
+    let used = "█".repeat(filled);
+    let left = "░".repeat(width - filled);
+    let used = match level(percent) {
+        Level::Normal => style(used).green(),
+        Level::High => style(used).yellow(),
+        Level::Critical => style(used).red(),
+    };
+    format!("{used}{}", style(left).dim())
+}
+
+/// [`meter`] followed by [`percent_text`]: "████░░░░░░ 42%"; only the percent
+/// when `width` is 0 (narrow terminals).
+pub fn gauge(percent: f64, width: usize) -> String {
+    if width == 0 {
+        percent_text(percent)
+    } else {
+        format!("{} {}", meter(percent, width), percent_text(percent))
+    }
+}
+
+/// Columns available on stdout: `COLUMNS` when set to a positive integer,
+/// else the terminal's width; `None` when stdout is not a terminal (piped
+/// output is not width-limited, so it stays the same everywhere).
+pub fn terminal_width() -> Option<usize> {
+    if let Some(cols) = parse_columns(std::env::var("COLUMNS").ok().as_deref()) {
+        return Some(cols);
+    }
+    let term = console::Term::stdout();
+    if !term.is_term() {
+        return None;
+    }
+    term.size_checked().map(|(_, cols)| cols as usize)
+}
+
+fn parse_columns(v: Option<&str>) -> Option<usize> {
+    v?.trim().parse::<usize>().ok().filter(|&n| n > 0)
+}
+
+/// Below this many columns a layout that overflows the terminal drops its
+/// bar entirely; at or above it the most compact bar is kept, since the
+/// output wraps either way and a small meter still reads at a glance.
+pub const MIN_BAR_COLUMNS: usize = 80;
+
+/// The first bar width in `candidates` (widest first) whose output,
+/// `need(width)` columns wide, fits [`terminal_width`]; see [`fit_layout`]
+/// for what happens when none fits or the width is unknown.
+pub fn fit_bar(candidates: &[usize], need: impl Fn(usize) -> usize) -> usize {
+    fit_layout(candidates, |w| w, need)
+}
+
+/// The first of `layouts` (most generous first) whose output, `need(layout)`
+/// columns wide, fits [`terminal_width`]. `bar(layout)` is its bar width.
+/// When the width is unknown (piped) the first layout; when none fits, the
+/// one with the smallest non-zero bar on terminals of at least
+/// [`MIN_BAR_COLUMNS`] columns, and the one with no bar below that.
+pub fn fit_layout<L: Copy>(
+    layouts: &[L],
+    bar: impl Fn(L) -> usize,
+    need: impl Fn(L) -> usize,
+) -> L {
+    choose_layout(terminal_width(), layouts, bar, need)
+}
+
+fn choose_layout<L: Copy>(
+    cols: Option<usize>,
+    layouts: &[L],
+    bar: impl Fn(L) -> usize,
+    need: impl Fn(L) -> usize,
+) -> L {
+    let first = *layouts.first().expect("at least one layout");
+    let Some(cols) = cols else {
+        return first;
+    };
+    if let Some(l) = layouts.iter().copied().find(|&l| need(l) <= cols) {
+        return l;
+    }
+    let smallest = |nonzero: bool| {
+        layouts
+            .iter()
+            .copied()
+            .filter(|&l| (bar(l) > 0) == nonzero)
+            .min_by_key(|&l| bar(l))
+    };
+    let fallback = if cols >= MIN_BAR_COLUMNS {
+        smallest(true).or_else(|| smallest(false))
+    } else {
+        smallest(false).or_else(|| smallest(true))
+    };
+    fallback.unwrap_or(first)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::human_size;
+    use super::*;
 
     #[test]
     fn sizes() {
@@ -327,5 +476,81 @@ mod tests {
         assert_eq!(human_size(1023), "1023 B");
         assert_eq!(human_size(1536), "1.5 KB");
         assert_eq!(human_size(5 * 1024 * 1024), "5.0 MB");
+    }
+
+    fn plain(s: &str) -> String {
+        console::strip_ansi_codes(s).into_owned()
+    }
+
+    #[test]
+    fn meter_fills_and_clamps() {
+        assert_eq!(plain(&meter(42.0, 10)), "████░░░░░░");
+        assert_eq!(plain(&meter(0.0, 4)), "░░░░");
+        assert_eq!(plain(&meter(-5.0, 4)), "░░░░");
+        assert_eq!(plain(&meter(150.0, 4)), "████");
+        assert_eq!(plain(&meter(f64::NAN, 4)), "░░░░");
+        assert_eq!(plain(&meter(42.4, 20)), "████████░░░░░░░░░░░░");
+        assert_eq!(plain(&meter(50.0, 0)), "");
+        for w in [1, 5, 10, 20] {
+            assert_eq!(console::measure_text_width(&meter(33.0, w)), w);
+        }
+    }
+
+    #[test]
+    fn levels_and_markers() {
+        assert_eq!(level(0.0), Level::Normal);
+        assert_eq!(level(79.4), Level::Normal);
+        assert_eq!(level(79.5), Level::High);
+        assert_eq!(level(80.0), Level::High);
+        assert_eq!(level(94.4), Level::High);
+        assert_eq!(level(95.0), Level::Critical);
+        assert_eq!(level(130.0), Level::Critical);
+        assert_eq!(level(f64::NAN), Level::Normal);
+        assert_eq!(percent_text(42.4), "42%");
+        assert_eq!(percent_text(79.5), "80%!");
+        assert_eq!(percent_text(88.0), "88%!");
+        assert_eq!(percent_text(96.0), "96%!!");
+        assert_eq!(percent_text(f64::NAN), "0%");
+    }
+
+    #[test]
+    fn gauge_drops_the_bar_at_width_zero() {
+        assert_eq!(plain(&gauge(42.0, 10)), "████░░░░░░ 42%");
+        assert_eq!(plain(&gauge(96.0, 5)), "█████ 96%!!");
+        assert_eq!(gauge(85.0, 0), "85%!");
+    }
+
+    #[test]
+    fn columns_override() {
+        assert_eq!(parse_columns(Some("120")), Some(120));
+        assert_eq!(parse_columns(Some(" 40 ")), Some(40));
+        for bad in [None, Some(""), Some("0"), Some("-3"), Some("wide")] {
+            assert_eq!(parse_columns(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn layout_fallbacks() {
+        let bars = [10, 5, 0];
+        // Each cell of bar costs one column on top of a 100-column row.
+        let need = |w: usize| 100 + w;
+        let pick = |cols| choose_layout(cols, &bars, |w| w, need);
+        assert_eq!(pick(None), 10);
+        assert_eq!(pick(Some(500)), 10);
+        assert_eq!(pick(Some(107)), 5);
+        assert_eq!(pick(Some(102)), 0);
+        // Nothing fits: keep the compact bar from 80 columns up, none below.
+        assert_eq!(pick(Some(99)), 5);
+        assert_eq!(pick(Some(MIN_BAR_COLUMNS)), 5);
+        assert_eq!(pick(Some(MIN_BAR_COLUMNS - 1)), 0);
+        assert_eq!(pick(Some(40)), 0);
+        // Layouts carrying more than a bar width.
+        let layouts = [(20, true), (10, true), (10, false), (5, false), (0, false)];
+        let need = |(w, abs): (usize, bool)| 60 + w + if abs { 20 } else { 0 };
+        let pick = |cols| choose_layout(cols, &layouts, |l| l.0, need);
+        assert_eq!(pick(None), (20, true));
+        assert_eq!(pick(Some(80)), (10, false));
+        assert_eq!(pick(Some(65)), (5, false));
+        assert_eq!(pick(Some(40)), (0, false));
     }
 }

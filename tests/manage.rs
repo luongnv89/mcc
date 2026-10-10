@@ -4,12 +4,11 @@ mod common;
 
 use std::time::Duration;
 
-use common::{REFUSED_URL, Sandbox, UsageStub, json, now_ms};
+use common::{
+    HOUR_MS, REFUSED_URL, Sandbox, UsageStub, by_name, json, now_ms, rfc3339_in, stdout_of,
+    usage_sandbox, usage_stub, with_profile,
+};
 use predicates::prelude::*;
-
-fn with_profile(sb: &Sandbox, alias: &str, mode: &str) {
-    sb.mcc().args(["add", alias, mode]).assert().success();
-}
 
 // ---- list -------------------------------------------------------------------
 
@@ -101,17 +100,6 @@ fn list_warns_about_missing_dirs() {
 
 // ---- list: 5-hour / weekly usage ---------------------------------------------
 
-const HOUR_MS: i64 = 3_600_000;
-
-fn rfc3339_in(secs: i64) -> String {
-    (chrono::Utc::now() + chrono::Duration::seconds(secs))
-        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-}
-
-fn stdout_of(cmd: &mut assert_cmd::Command) -> String {
-    String::from_utf8(cmd.assert().success().get_output().stdout.clone()).unwrap()
-}
-
 fn list_json(sb: &Sandbox, url: &str) -> Vec<serde_json::Value> {
     let out = sb
         .mcc()
@@ -123,46 +111,6 @@ fn list_json(sb: &Sandbox, url: &str) -> Vec<serde_json::Value> {
         .stdout
         .clone();
     json(&out).as_array().unwrap().clone()
-}
-
-fn by_name<'a>(arr: &'a [serde_json::Value], name: &str) -> &'a serde_json::Value {
-    arr.iter()
-        .find(|p| p["name"] == name)
-        .unwrap_or_else(|| panic!("no profile {name}"))
-}
-
-/// default + `work` logged in (each with its own token), `lab` logged out.
-fn usage_sandbox() -> Sandbox {
-    let sb = Sandbox::new();
-    sb.seed_default();
-    with_profile(&sb, "work", "--clone");
-    with_profile(&sb, "lab", "--fresh");
-    sb.seed_oauth(".claude", "test-token-default", now_ms() + HOUR_MS);
-    sb.seed_oauth(".mcc/profiles/work", "test-token-work", now_ms() + HOUR_MS);
-    sb
-}
-
-/// Default answers with the flat keys, work with the `limits[]` shape.
-fn usage_stub() -> UsageStub {
-    let (five, week) = (
-        rfc3339_in(2 * 3600 + 14 * 60),
-        rfc3339_in(3 * 86400 + 4 * 3600),
-    );
-    UsageStub::start(move |req| match req.authorization.as_deref() {
-        Some("Bearer test-token-default") => (
-            200,
-            format!(
-                r#"{{"five_hour":{{"utilization":42.4,"resets_at":"{five}"}},"seven_day":{{"utilization":18,"resets_at":"{week}"}},"seven_day_opus":null}}"#
-            ),
-        ),
-        Some("Bearer test-token-work") => (
-            200,
-            format!(
-                r#"{{"five_hour":null,"seven_day":null,"limits":[{{"kind":"session","percent":7,"resets_at":"{five}"}},{{"kind":"weekly_all","percent":64,"resets_at":"{week}"}}]}}"#
-            ),
-        ),
-        _ => (401, r#"{"error":"unknown token"}"#.into()),
-    })
 }
 
 #[test]
@@ -202,8 +150,10 @@ fn list_shows_usage_for_every_profile() {
         )
     };
     has(r"(?m)^NAME\s+COMMAND\s+ACCOUNT\s+5H\s+WEEK\s+SKILLS");
-    has(r"(?m)^default ★\s+claude\s+me@example\.com\s+42% \(2h\)\s+18% \(3d\)\s+2\s");
-    has(r"(?m)^work\s+work\s+—\s+7% \(2h\)\s+64% \(3d\)\s");
+    has(
+        r"(?m)^default ★\s+claude\s+me@example\.com\s+████░░░░░░ 42% \(2h\)\s+██░░░░░░░░ 18% \(3d\)\s+2\s",
+    );
+    has(r"(?m)^work\s+work\s+—\s+█░░░░░░░░░ 7% \(2h\)\s+██████░░░░ 64% \(3d\)\s");
     has(r"(?m)^lab\s+lab\s+—\s+unavailable\s+unavailable\s");
 
     let long = stdout_of(
@@ -212,15 +162,15 @@ fn list_shows_usage_for_every_profile() {
             .args(["list", "--long"]),
     );
     assert!(
-        long.contains("5h usage:        42% (resets in 2h 14m)"),
+        long.contains("5h usage:        ████████░░░░░░░░░░░░ 42% (resets in 2h 14m)"),
         "{long}"
     );
     assert!(
-        long.contains("Weekly usage:    18% (resets in 3d 4h)"),
+        long.contains("Weekly usage:    ████░░░░░░░░░░░░░░░░ 18% (resets in 3d 4h)"),
         "{long}"
     );
     assert!(
-        long.contains("5h usage:        7% (resets in 2h 14m)"),
+        long.contains("5h usage:        █░░░░░░░░░░░░░░░░░░░ 7% (resets in 2h 14m)"),
         "{long}"
     );
     assert!(
@@ -368,7 +318,7 @@ fn list_no_usage_skips_the_fetch() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "Usage:           — (not fetched: --no-usage)",
+            "Usage:           — (not fetched: --no-usage or MCC_NO_USAGE)",
         ));
     assert!(stub.requests().is_empty());
     // MCC_NO_USAGE=0 does not disable it.
@@ -489,6 +439,135 @@ fn list_never_leaks_tokens() {
     assert!(!seen.contains("Bearer"), "authorization header leaked");
     // A non-loopback http override is refused: nothing is sent anywhere.
     assert!(seen.contains("MCC_USAGE_URL refused"));
+}
+
+// ---- list: usage meters -----------------------------------------------------
+
+/// Only the default profile, logged in; the stub reports 85% / 96% used.
+fn near_limit() -> (Sandbox, UsageStub) {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    sb.seed_oauth(".claude", "test-token-default", now_ms() + HOUR_MS);
+    let (five, week) = (
+        rfc3339_in(2 * 3600 + 14 * 60),
+        rfc3339_in(3 * 86400 + 4 * 3600),
+    );
+    let stub = UsageStub::start(move |_| {
+        (
+            200,
+            format!(
+                r#"{{"five_hour":{{"utilization":85,"resets_at":"{five}"}},"seven_day":{{"utilization":96,"resets_at":"{week}"}}}}"#
+            ),
+        )
+    });
+    (sb, stub)
+}
+
+#[test]
+fn list_marks_near_limit_usage() {
+    let (sb, stub) = near_limit();
+    let table = stdout_of(sb.mcc().env("MCC_USAGE_URL", &stub.url).arg("list"));
+    assert!(
+        regex::Regex::new(r"(?m)^default ★\s+claude\s+me@example\.com\s+█████████░ 85%! \(2h\)\s+██████████ 96%!! \(3d\)\s")
+            .unwrap()
+            .is_match(&table),
+        "{table}"
+    );
+    let long = stdout_of(
+        sb.mcc()
+            .env("MCC_USAGE_URL", &stub.url)
+            .args(["list", "--long"]),
+    );
+    assert!(
+        long.contains("5h usage:        █████████████████░░░ 85%! (resets in 2h 14m)"),
+        "{long}"
+    );
+    assert!(
+        long.contains("Weekly usage:    ███████████████████░ 96%!! (resets in 3d 4h)"),
+        "{long}"
+    );
+}
+
+#[test]
+fn list_drops_bars_in_narrow_terminals() {
+    let sb = usage_sandbox();
+    let stub = usage_stub();
+    let list = |columns: &str, args: &[&str]| {
+        stdout_of(
+            sb.mcc()
+                .env("MCC_USAGE_URL", &stub.url)
+                .env("COLUMNS", columns)
+                .args(args),
+        )
+    };
+    let narrow = list("40", &["list"]);
+    assert!(
+        regex::Regex::new(
+            r"(?m)^default ★\s+claude\s+me@example\.com\s+42% \(2h\)\s+18% \(3d\)\s+2\s"
+        )
+        .unwrap()
+        .is_match(&narrow),
+        "{narrow}"
+    );
+    let long = list("40", &["list", "--long"]);
+    assert!(
+        long.contains("5h usage:        42% (resets in 2h 14m)"),
+        "{long}"
+    );
+    for out in [&narrow, &long] {
+        assert!(!out.contains('█') && !out.contains('░'), "{out}");
+    }
+    // From 80 columns the table keeps a compact bar even when it wraps.
+    let medium = list("120", &["list"]);
+    assert!(
+        regex::Regex::new(
+            r"(?m)^default ★\s+claude\s+me@example\.com\s+██░░░ 42% \(2h\)\s+█░░░░ 18% \(3d\)\s"
+        )
+        .unwrap()
+        .is_match(&medium),
+        "{medium}"
+    );
+    // A wide terminal gets the full bars.
+    assert!(list("500", &["list"]).contains("████░░░░░░ 42% (2h)"));
+    assert!(list("500", &["list", "--long"]).contains("████████░░░░░░░░░░░░ 42% (resets"));
+}
+
+#[test]
+fn list_meters_are_plain_text_without_colour() {
+    let (sb, stub) = near_limit();
+    for args in [&["list"][..], &["list", "--long"], &["--no-color", "list"]] {
+        // Piped (no TTY), even without NO_COLOR: no escape codes, the bar
+        // and the `!` markers carry the meaning.
+        let out = stdout_of(
+            sb.mcc()
+                .env_remove("NO_COLOR")
+                .env("CLICOLOR_FORCE", "1")
+                .env("MCC_USAGE_URL", &stub.url)
+                .args(args),
+        );
+        assert!(out.contains('█') && out.contains("96%!!"), "{out}");
+        assert!(!out.contains('\x1b'), "{out:?}");
+    }
+}
+
+#[test]
+fn list_json_is_unchanged_by_meters() {
+    let (sb, stub) = near_limit();
+    let out = stdout_of(
+        sb.mcc()
+            .env_remove("NO_COLOR")
+            .env("MCC_USAGE_URL", &stub.url)
+            .args(["list", "--json"]),
+    );
+    for glyph in ['█', '░', '!', '\x1b'] {
+        assert!(!out.contains(glyph), "{glyph:?} in {out}");
+    }
+    let v = json(out.as_bytes());
+    let u = &v[0]["usage"];
+    let keys: Vec<&str> = u.as_object().unwrap().keys().map(String::as_str).collect();
+    assert_eq!(keys, ["status", "reason", "five_hour", "weekly"]);
+    assert_eq!(u["five_hour"]["percent"], 85.0);
+    assert_eq!(u["weekly"]["percent"], 96.0);
 }
 
 // ---- sync -------------------------------------------------------------------

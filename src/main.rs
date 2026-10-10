@@ -92,6 +92,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Init(args) => commands::init::run(&paths, &mut cfg, &args),
         Command::Add(args) => commands::add::run(&paths, &mut cfg, &args),
         Command::List(args) => commands::list::run(&paths, &cfg, &args),
+        Command::Usage(args) => commands::usage::run(&paths, &cfg, &args),
         Command::Delete(args) => commands::delete::run(&paths, &mut cfg, &args),
         Command::Sync(args) => commands::sync::run(&paths, &mut cfg, &args),
         Command::Completions(_) => unreachable!("handled above"),

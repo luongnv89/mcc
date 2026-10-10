@@ -1,4 +1,4 @@
-//! 5-hour and weekly usage for `mcc list`.
+//! 5-hour and weekly usage for `mcc list` and `mcc usage`.
 //!
 //! Each profile's own OAuth access token — from `<config dir>/.credentials.json`,
 //! or the macOS login Keychain — is sent to Anthropic's OAuth usage endpoint,
@@ -34,7 +34,7 @@ pub enum Status {
     Unavailable,
 }
 
-/// Why usage is unavailable. Serialized as snake_case in `mcc list --json`.
+/// Why usage is unavailable. Serialized as snake_case in the `--json` output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Reason {
@@ -71,7 +71,7 @@ impl Reason {
         }
     }
 
-    /// Human-readable explanation for `mcc list --long`.
+    /// Human-readable explanation for `mcc list --long` and `mcc usage`.
     pub fn describe(self) -> &'static str {
         match self {
             Reason::NotLoggedIn => "not logged in",
@@ -81,7 +81,7 @@ impl Reason {
             Reason::Network => "offline or the usage API timed out",
             Reason::HttpError => "unexpected response from the usage API",
             Reason::ParseError => "unrecognized response from the usage API",
-            Reason::Disabled => "not fetched: --no-usage",
+            Reason::Disabled => "not fetched: --no-usage or MCC_NO_USAGE",
         }
     }
 }
@@ -122,7 +122,7 @@ impl Usage {
     }
 }
 
-/// Not fetched until `mcc list` asks for it.
+/// Not fetched until a command asks for it.
 impl Default for Usage {
     fn default() -> Self {
         Self::unavailable(Reason::Disabled)
@@ -270,14 +270,38 @@ fn url_allowed(url: &str) -> bool {
     matches!(host, "127.0.0.1" | "localhost" | "::1")
 }
 
+/// `MCC_NO_USAGE` set to anything but "" / "0": usage is not fetched.
+pub fn disabled_by_env() -> bool {
+    std::env::var_os("MCC_NO_USAGE").is_some_and(|v| !v.is_empty() && v != "0")
+}
+
 /// One profile to fetch usage for.
 pub struct Target {
+    /// Profile name, for the log.
+    pub name: String,
     pub config_dir: PathBuf,
     pub is_default: bool,
 }
 
 /// Fetch usage for every target in parallel; results are in target order.
+/// Each outcome is logged (reason codes only, never token material).
 pub fn fetch_all(targets: &[Target]) -> Vec<Usage> {
+    crate::log::write(
+        "INFO",
+        &format!("fetching 5h/weekly usage for {} profiles", targets.len()),
+    );
+    let all = fetch_parallel(targets);
+    for (t, u) in targets.iter().zip(&all) {
+        let outcome = match u.reason {
+            Some(r) => format!("unavailable ({})", r.code()),
+            None => "ok".into(),
+        };
+        crate::log::write("INFO", &format!("usage {}: {outcome}", t.name));
+    }
+    all
+}
+
+fn fetch_parallel(targets: &[Target]) -> Vec<Usage> {
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(2))
         .timeout(Duration::from_secs(4))
@@ -398,6 +422,13 @@ pub fn until(t: DateTime<Utc>, now: DateTime<Utc>) -> String {
     } else {
         format!("{m}m")
     }
+}
+
+/// `t` in local time, e.g. "Sat Oct 10 16:00".
+pub fn local_time(t: DateTime<Utc>) -> String {
+    t.with_timezone(&chrono::Local)
+        .format("%a %b %-d %H:%M")
+        .to_string()
 }
 
 /// The largest unit of [`until`]: "35m", "2h", "3d", "now".
@@ -658,6 +689,13 @@ mod tests {
         assert_eq!(until_short(plus(3 * 86400 + 4 * 3600), now), "3d");
         assert_eq!(until_short(plus(2 * 3600 + 14 * 60), now), "2h");
         assert_eq!(percent(41.6), "42%");
+        assert!(
+            regex::Regex::new(r"^[A-Z][a-z]{2} [A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}$")
+                .unwrap()
+                .is_match(&local_time(now)),
+            "{}",
+            local_time(now)
+        );
         assert_eq!(percent(0.0), "0%");
     }
 

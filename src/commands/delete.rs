@@ -53,9 +53,7 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &DeleteArgs) -> Result<()> {
         .into());
     }
     if registered.is_none() && !dir.exists() {
-        return Err(CliError::usage(format!("no profile named \"{alias}\""))
-            .hint("run `mcc list` to see your profiles")
-            .into());
+        return Err(super::unknown_profile(alias));
     }
 
     ui::header(&format!("Delete Claude Code profile \"{alias}\""));
