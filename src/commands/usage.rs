@@ -23,23 +23,20 @@ struct Layout {
     reset_time: bool,
 }
 
-/// Layouts tried, most generous first: the bar shrinks and the absolute reset
-/// time goes before the bar is dropped (narrow terminals).
-const LAYOUTS: [Layout; 5] = [
+/// Layouts tried, most generous first: the absolute reset time goes first,
+/// then the bar shrinks in the same 20/10/0 steps as `mcc list --long`
+/// (narrow terminals).
+const LAYOUTS: [Layout; 4] = [
     Layout {
         bar: 20,
         reset_time: true,
     },
     Layout {
-        bar: 10,
-        reset_time: true,
-    },
-    Layout {
-        bar: 10,
+        bar: 20,
         reset_time: false,
     },
     Layout {
-        bar: 5,
+        bar: 10,
         reset_time: false,
     },
     Layout {
@@ -239,8 +236,8 @@ mod tests {
         // Used and left always add up to 100%, and left never goes negative.
         // Compact layouts drop the absolute reset time, never "resets in".
         assert_eq!(
-            plain(&window(Some(&w(42.4, Some(reset))), LAYOUTS[3], now)),
-            "██░░░ 42% used · 58% left · resets in 2h 14m"
+            plain(&window(Some(&w(42.4, Some(reset))), LAYOUTS[2], now)),
+            "████░░░░░░ 42% used · 58% left · resets in 2h 14m"
         );
         assert_eq!(
             window(Some(&w(42.5, None)), full(0), now),

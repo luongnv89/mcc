@@ -258,17 +258,18 @@ fn usage_keeps_bars_at_80_columns() {
             .env("COLUMNS", "80")
             .arg("usage"),
     );
-    // The absolute reset time goes before the bar does; "resets in" stays.
+    // The absolute reset time goes before the bar shrinks, so the full
+    // 20-cell bar still fits; "resets in" stays.
     assert_match(
-        r"(?m)^    5-hour   ████░░░░░░ 42% used · 58% left · resets in 2h 14m$",
+        r"(?m)^    5-hour   ████████░░░░░░░░░░░░ 42% used · 58% left · resets in 2h 14m$",
         &out,
     );
     assert_match(
-        r"(?m)^    Weekly   ██░░░░░░░░ 18% used · 82% left · resets in 3d 4h$",
+        r"(?m)^    Weekly   ████░░░░░░░░░░░░░░░░ 18% used · 82% left · resets in 3d 4h$",
         &out,
     );
     assert_match(
-        r"(?m)^    Weekly   ██████░░░░ 64% used · 36% left · resets in 3d 4h$",
+        r"(?m)^    Weekly   █████████████░░░░░░░ 64% used · 36% left · resets in 3d 4h$",
         &out,
     );
     for line in out.lines() {
