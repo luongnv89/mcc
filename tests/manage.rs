@@ -564,6 +564,83 @@ fn sync_keeps_profile_dir_when_default_item_is_a_symlink() {
     assert!(!sb.exists("dotfiles/skills/mine"));
 }
 
+/// Every file under `dir` with its bytes, symlinks not followed.
+#[cfg(unix)]
+fn snapshot(dir: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            let m = std::fs::symlink_metadata(&p).unwrap();
+            if m.is_dir() {
+                stack.push(p);
+            } else {
+                let bytes = std::fs::read(&p).unwrap_or_default();
+                out.push((p.strip_prefix(dir).unwrap().to_path_buf(), bytes));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// A profile dir that is a symlink into the default (`plugins -> ~/.claude/plugins`)
+/// must never be written or pruned through: the default is only ever a source.
+#[cfg(unix)]
+#[test]
+fn sync_never_writes_through_symlinked_profile_dir() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    with_profile(&sb, "work", "--clone");
+    let link = sb.path(".mcc/profiles/work/plugins");
+    let relink = || {
+        std::fs::remove_dir_all(&link).unwrap();
+        std::os::unix::fs::symlink(sb.path(".claude/plugins"), &link).unwrap();
+    };
+    relink();
+    let default_before = snapshot(&sb.path(".claude/plugins"));
+    assert!(!default_before.is_empty());
+
+    // Replacing the link is a removal: needs confirmation.
+    sb.mcc()
+        .args(["sync", "work"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--yes"));
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(snapshot(&sb.path(".claude/plugins")), default_before);
+
+    sb.mcc().args(["sync", "work", "--yes"]).assert().success();
+    assert_eq!(snapshot(&sb.path(".claude/plugins")), default_before);
+    let meta = std::fs::symlink_metadata(&link).unwrap();
+    assert!(meta.is_dir() && !meta.file_type().is_symlink());
+    let installed = sb.read(".mcc/profiles/work/plugins/installed_plugins.json");
+    assert!(
+        installed.contains(".mcc/profiles/work/plugins/cache/m/p1"),
+        "{installed}"
+    );
+    assert!(sb.exists(".mcc/profiles/work/plugins/cache/m/p1/1.0.0/plugin.json"));
+
+    relink();
+    sb.mcc()
+        .args(["sync", "work", "--prune", "--yes"])
+        .assert()
+        .success();
+    assert_eq!(snapshot(&sb.path(".claude/plugins")), default_before);
+    assert!(
+        !std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
 #[test]
 fn sync_all_shows_each_failing_profiles_hint() {
     let sb = Sandbox::new();

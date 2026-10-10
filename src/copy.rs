@@ -381,6 +381,25 @@ fn replace_dir(push: &mut impl FnMut(Action, PathBuf), rel: PathBuf, prune: bool
     }
 }
 
+/// The first directory strictly between `dst_dir` and `dst_dir/rel` that is a
+/// symlink (dangling or not), as a path relative to `dst_dir`. Nothing may be
+/// read, written or pruned through it: it can point into the default profile
+/// (`plugins -> ~/.claude/plugins`), which must only ever be a source.
+fn linked_ancestor(dst_dir: &Path, rel: &Path) -> Option<PathBuf> {
+    let mut comps = rel.components().peekable();
+    let mut acc = PathBuf::new();
+    while let Some(c) = comps.next() {
+        if comps.peek().is_none() {
+            break;
+        }
+        acc.push(c);
+        if std::fs::symlink_metadata(dst_dir.join(&acc)).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Some(acc);
+        }
+    }
+    None
+}
+
 /// Compute what a copy from `src` to `dst` would change.
 pub fn plan(
     src_dir: &Path,
@@ -392,6 +411,8 @@ pub fn plan(
 ) -> Result<Plan> {
     let mut plan = Plan::default();
     let extra_action = if prune { Action::Remove } else { Action::Extra };
+    // Symlinked parent dirs in the profile already planned for replacement.
+    let mut relinked: BTreeSet<PathBuf> = BTreeSet::new();
     for item in &spec.items {
         let src = src_dir.join(&item.rel);
         let dst = dst_dir.join(&item.rel);
@@ -403,14 +424,28 @@ pub fn plan(
                 rewrite: item.rewrite,
             })
         };
+        // A nested item (`plugins/cache`) under a symlinked profile dir: like
+        // a symlink in place of a top-level dir, the link is removed first
+        // (only the link, never its target) and the item is copied fresh into
+        // a real directory. Whatever lies behind the link is not the
+        // profile's, so it is never compared, updated or pruned.
+        let detached = match linked_ancestor(dst_dir, &item.rel) {
+            Some(link) => {
+                if kind(&src) != Kind::Missing && relinked.insert(link.clone()) {
+                    push(Action::Remove, link);
+                }
+                true
+            }
+            None => false,
+        };
         match kind(&src) {
             Kind::Missing => {
-                if kind(&dst) != Kind::Missing {
+                if !detached && kind(&dst) != Kind::Missing {
                     push(extra_action, item.rel.clone());
                 }
             }
             Kind::File | Kind::Link(_) => {
-                if kind(&dst) == Kind::Missing {
+                if detached || kind(&dst) == Kind::Missing {
                     push(Action::Add, item.rel.clone());
                 } else if is_nonempty_dir(&dst) {
                     replace_dir(&mut push, item.rel.clone(), prune);
@@ -421,7 +456,7 @@ pub fn plan(
                 }
             }
             Kind::Dir => {
-                let dst_kind = kind(&dst);
+                let dst_kind = if detached { Kind::Missing } else { kind(&dst) };
                 // A file or symlink where the directory belongs is removed
                 // *before* anything is written, so nothing lands through a
                 // symlink; the whole subtree is then copied fresh.
@@ -454,7 +489,7 @@ pub fn plan(
                         .to_path_buf();
                     seen.insert(rel_in.clone());
                     let rel = item.rel.join(&rel_in);
-                    if fresh || replaced.iter().any(|r| rel_in.starts_with(r)) {
+                    if fresh || detached || replaced.iter().any(|r| rel_in.starts_with(r)) {
                         push(Action::Add, rel);
                         continue;
                     }
@@ -610,6 +645,17 @@ pub fn apply(
         bar.set_message(c.rel.display().to_string());
         let src = src_dir.join(&c.rel);
         let dst = dst_dir.join(&c.rel);
+        // Defense in depth: plan() removes symlinked parent dirs before
+        // anything is written below them; never write or remove through one
+        // (e.g. if the profile changed between plan and apply).
+        if let Some(link) = linked_ancestor(dst_dir, &c.rel) {
+            return Err(CliError::runtime(format!(
+                "refusing to write through symlinked directory {}",
+                dst_dir.join(link).display()
+            ))
+            .hint("re-run the command; mcc replaces the symlink with a real directory")
+            .into());
+        }
         match c.action {
             Action::Remove => fsutil::remove_any(&dst)?,
             Action::Add | Action::Update => copy_one(&src, &dst, c.rewrite, rw)?,
@@ -1045,6 +1091,90 @@ mod tests {
             std::fs::read_to_string(target.join("SKILL.md")).unwrap(),
             "skill"
         );
+    }
+
+    #[test]
+    fn nested_items_never_written_or_pruned_through_symlinked_parent() {
+        let (_d, paths, dst) = setup();
+        let src = &paths.default_dir;
+        std::fs::create_dir_all(src.join("plugins/cache/m/p")).unwrap();
+        std::fs::write(src.join("plugins/cache/m/p/f"), "plugin").unwrap();
+        std::fs::write(
+            src.join("plugins/installed_plugins.json"),
+            r#"{"installPath":"~/.claude/plugins/cache/m/p"}"#,
+        )
+        .unwrap();
+        // The profile's plugins/ points at a dir with content the default lacks.
+        let outside = paths.home.join("dotfiles/plugins");
+        std::fs::create_dir_all(outside.join("cache/other")).unwrap();
+        std::fs::write(outside.join("cache/other/keep.txt"), "keep").unwrap();
+        std::fs::write(outside.join("known_marketplaces.json"), "{}").unwrap();
+        std::fs::write(outside.join("installed_plugins.json"), "old").unwrap();
+        std::os::unix::fs::symlink(&outside, dst.join("plugins")).unwrap();
+
+        let rw = Rewriter::new(&paths, &dst, &SyncConfig::default());
+        let sp = spec(Some(&["plugins".to_string()]), &SyncConfig::default()).unwrap();
+        let mk = || {
+            plan(
+                &paths.default_dir,
+                &paths.default_json,
+                &dst,
+                &sp,
+                &rw,
+                true,
+            )
+            .unwrap()
+        };
+        let p = mk();
+        assert_eq!(p.changes[0].action, Action::Remove, "{:?}", p.changes);
+        assert_eq!(p.changes[0].rel, PathBuf::from("plugins"));
+        assert_eq!(p.count(Action::Remove), 1, "{:?}", p.changes);
+        apply(&p, &paths.default_dir, &dst, &rw, false).unwrap();
+
+        // The link's target is untouched: nothing written, nothing pruned.
+        assert_eq!(
+            std::fs::read_to_string(outside.join("installed_plugins.json")).unwrap(),
+            "old"
+        );
+        assert!(outside.join("cache/other/keep.txt").exists());
+        assert!(outside.join("known_marketplaces.json").exists());
+        // The profile now has a real plugins/ dir with the copied items.
+        let meta = std::fs::symlink_metadata(dst.join("plugins")).unwrap();
+        assert!(meta.is_dir() && !meta.file_type().is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(dst.join("plugins/cache/m/p/f")).unwrap(),
+            "plugin"
+        );
+        assert!(
+            std::fs::read_to_string(dst.join("plugins/installed_plugins.json"))
+                .unwrap()
+                .contains("~/.mcc/profiles/work/plugins/cache/m/p")
+        );
+        assert_eq!(mk().actionable(), 0, "{:?}", mk().changes);
+    }
+
+    #[test]
+    fn apply_refuses_to_write_through_symlinked_parent() {
+        let (_d, paths, dst) = setup();
+        let outside = paths.home.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let rw = Rewriter::new(&paths, &dst, &SyncConfig::default());
+        let sp = spec(Some(&["plugins".to_string()]), &SyncConfig::default()).unwrap();
+        let p = plan(
+            &paths.default_dir,
+            &paths.default_json,
+            &dst,
+            &sp,
+            &rw,
+            false,
+        )
+        .unwrap();
+        assert!(p.changes.iter().any(|c| c.rel.starts_with("plugins/cache")));
+        // The profile changes between plan and apply.
+        std::os::unix::fs::symlink(&outside, dst.join("plugins")).unwrap();
+        let err = apply(&p, &paths.default_dir, &dst, &rw, false).unwrap_err();
+        assert!(err.to_string().contains("symlinked directory"), "{err}");
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
     }
 
     #[test]
