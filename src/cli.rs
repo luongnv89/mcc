@@ -72,7 +72,7 @@ pub enum Command {
     /// List all profiles with their metrics
     #[command(
         visible_alias = "ls",
-        after_help = "Examples:\n  mcc list\n  mcc list --long\n  mcc list --json | jq '.[] | {name, skills, plugins_installed}'"
+        after_help = "Examples:\n  mcc list\n  mcc list --long\n  mcc list --no-usage\n  mcc list --json | jq '.[] | {name, skills, plugins_installed}'\n  mcc list --json | jq '.[] | {name, five_hour: .usage.five_hour.percent}'\n\n5H and WEEK show each account's 5-hour and weekly usage (percent used and\ntime until reset), read with the profile's own login; \"unavailable\" when\nit can't be determined (`mcc list --long` says why)."
     )]
     List(ListArgs),
 
@@ -138,6 +138,10 @@ pub struct ListArgs {
     /// Show a detailed card per profile
     #[arg(short, long)]
     pub long: bool,
+
+    /// Skip fetching 5-hour/weekly usage (no network; also MCC_NO_USAGE=1)
+    #[arg(long)]
+    pub no_usage: bool,
 }
 
 #[derive(Debug, Args)]

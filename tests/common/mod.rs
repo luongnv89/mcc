@@ -1,8 +1,13 @@
 //! Test sandbox: a temp HOME, a fake `claude` binary, and an `mcc` command
-//! wired to them. Nothing here touches the real ~/.claude, rc files, or keychain.
+//! wired to them. Nothing here touches the real ~/.claude, rc files, or keychain,
+//! and nothing reaches the network: the keychain is a fake `security` script and
+//! the usage endpoint is a refused loopback port unless a test starts a stub.
 #![allow(dead_code)]
 
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use assert_cmd::Command;
 use tempfile::TempDir;
@@ -30,6 +35,24 @@ case "$1 $2" in
 esac
 "#;
 
+const FAKE_SECURITY: &str = r#"#!/bin/sh
+# Fake macOS `security`: serves $HOME/fake-keychain/<service> for account
+# mcc-test, else "item not found" (exit 44) like the real one.
+echo "$*" >> "$HOME/security.log"
+svc=""; acct=""
+while [ $# -gt 0 ]; do
+  case "$1" in -s) svc="$2"; shift ;; -a) acct="$2"; shift ;; esac
+  shift
+done
+f="$HOME/fake-keychain/$svc"
+if [ "$acct" = "mcc-test" ] && [ -f "$f" ]; then cat "$f"; exit 0; fi
+echo "security: The specified item could not be found in the keychain." >&2
+exit 44
+"#;
+
+/// Nothing listens on the discard port: connections are refused at once.
+pub const REFUSED_URL: &str = "http://127.0.0.1:9/api/oauth/usage";
+
 pub struct Sandbox {
     pub tmp: TempDir,
 }
@@ -43,6 +66,9 @@ impl Sandbox {
         let claude = bin.join("claude");
         std::fs::write(&claude, FAKE_CLAUDE).unwrap();
         chmod_x(&claude);
+        let security = bin.join("security");
+        std::fs::write(&security, FAKE_SECURITY).unwrap();
+        chmod_x(&security);
         Self { tmp }
     }
 
@@ -84,6 +110,9 @@ impl Sandbox {
             .env("SHELL", "/bin/zsh")
             .env("TERM_PROGRAM", "TestTerm")
             .env("MCC_CLAUDE_BIN", home.join("fakebin/claude"))
+            .env("MCC_SECURITY_BIN", home.join("fakebin/security"))
+            .env("MCC_USAGE_URL", REFUSED_URL)
+            .env("USER", "mcc-test")
             .env("MCC_NO_SHELL_PROBE", "1")
             .env("MCC_NON_INTERACTIVE", "1")
             .env("NO_COLOR", "1")
@@ -122,6 +151,117 @@ impl Sandbox {
             ".zshrc",
             "export EDITOR=vim\nalias cus_luong='CLAUDE_CONFIG_DIR=~/.cus_luong claude'\n",
         );
+    }
+}
+
+impl Sandbox {
+    /// Claude Code OAuth credentials (`claudeAiOauth`) in `<rel_dir>/.credentials.json`.
+    pub fn seed_oauth(&self, rel_dir: &str, token: &str, expires_at_ms: i64) {
+        self.write(
+            &format!("{rel_dir}/.credentials.json"),
+            &oauth_blob(token, expires_at_ms),
+        );
+    }
+
+    /// The same credentials as a fake-keychain item for `service`.
+    pub fn seed_keychain(&self, service: &str, token: &str, expires_at_ms: i64) {
+        self.write(
+            &format!("fake-keychain/{service}"),
+            &oauth_blob(token, expires_at_ms),
+        );
+    }
+}
+
+fn oauth_blob(token: &str, expires_at_ms: i64) -> String {
+    format!(
+        r#"{{"claudeAiOauth":{{"accessToken":"{token}","refreshToken":"refresh-{token}","expiresAt":{expires_at_ms},"scopes":["user:inference","user:profile"],"subscriptionType":"max"}}}}"#
+    )
+}
+
+pub fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+/// One request received by a [`UsageStub`].
+#[derive(Debug, Clone)]
+pub struct StubRequest {
+    pub request_line: String,
+    pub authorization: Option<String>,
+    pub beta: Option<String>,
+}
+
+/// A loopback HTTP server standing in for the usage endpoint. It answers each
+/// request with `handler(&request) -> (status, body)` and records it.
+pub struct UsageStub {
+    pub url: String,
+    requests: Arc<Mutex<Vec<StubRequest>>>,
+}
+
+impl UsageStub {
+    pub fn start(handler: impl Fn(&StubRequest) -> (u16, String) + Send + 'static) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!(
+            "http://127.0.0.1:{}/api/oauth/usage",
+            listener.local_addr().unwrap().port()
+        );
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&requests);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut lines = Vec::new();
+                loop {
+                    let mut line = String::new();
+                    match reader.read_line(&mut line) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) if line == "\r\n" => break,
+                        Ok(_) => lines.push(line.trim_end().to_string()),
+                    }
+                }
+                let header = |name: &str| {
+                    lines.iter().skip(1).find_map(|l| {
+                        let (k, v) = l.split_once(':')?;
+                        k.eq_ignore_ascii_case(name).then(|| v.trim().to_string())
+                    })
+                };
+                let req = StubRequest {
+                    request_line: lines.first().cloned().unwrap_or_default(),
+                    authorization: header("authorization"),
+                    beta: header("anthropic-beta"),
+                };
+                let (status, body) = handler(&req);
+                seen.lock().unwrap().push(req);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status} Stub\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.flush();
+            }
+        });
+        Self { url, requests }
+    }
+
+    pub fn requests(&self) -> Vec<StubRequest> {
+        self.requests.lock().unwrap().clone()
+    }
+
+    /// The bearer tokens received, sorted.
+    pub fn tokens(&self) -> Vec<String> {
+        let mut t: Vec<String> = self
+            .requests()
+            .iter()
+            .filter_map(|r| {
+                r.authorization
+                    .as_deref()?
+                    .strip_prefix("Bearer ")
+                    .map(str::to_string)
+            })
+            .collect();
+        t.sort();
+        t
     }
 }
 
