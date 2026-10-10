@@ -15,8 +15,38 @@ use crate::paths::Paths;
 use crate::ui;
 use crate::usage::{self, Reason, Status, Usage, Window};
 
-/// Bar widths tried, widest first; 0 = no bar (narrow terminals).
-const BARS: [usize; 3] = [20, 10, 0];
+/// How a window row is laid out: its bar width (0 = no bar) and whether the
+/// absolute reset time follows the relative "resets in …".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Layout {
+    bar: usize,
+    reset_time: bool,
+}
+
+/// Layouts tried, most generous first: the bar shrinks and the absolute reset
+/// time goes before the bar is dropped (narrow terminals).
+const LAYOUTS: [Layout; 5] = [
+    Layout {
+        bar: 20,
+        reset_time: true,
+    },
+    Layout {
+        bar: 10,
+        reset_time: true,
+    },
+    Layout {
+        bar: 10,
+        reset_time: false,
+    },
+    Layout {
+        bar: 5,
+        reset_time: false,
+    },
+    Layout {
+        bar: 0,
+        reset_time: false,
+    },
+];
 
 /// One profile's usage, as printed and as serialized by `--json`.
 #[derive(Debug, Serialize)]
@@ -88,28 +118,32 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
         writeln!(out)?;
     } else {
         let now = Utc::now();
-        let bar = ui::fit_bar(&BARS, |bar| {
-            render(&entries, bar, now)
-                .iter()
-                .map(|l| measure_text_width(l))
-                .max()
-                .unwrap_or(0)
-        });
-        for line in render(&entries, bar, now) {
+        let layout = ui::fit_layout(
+            &LAYOUTS,
+            |l| l.bar,
+            |l| {
+                render(&entries, l, now)
+                    .iter()
+                    .map(|line| measure_text_width(line))
+                    .max()
+                    .unwrap_or(0)
+            },
+        );
+        for line in render(&entries, layout, now) {
             writeln!(out, "{line}")?;
         }
     }
     Ok(())
 }
 
-/// One block per profile, separated by blank lines, with bars `bar` cells wide:
+/// One block per profile, separated by blank lines, laid out as `layout`:
 ///
 /// ```text
 /// ◆ default ★  claude · me@example.com
 ///     5-hour   ████████░░░░░░░░░░░░ 42% used · 58% left · resets in 2h 14m (Sat Oct 10 16:00)
 ///     Weekly   ████░░░░░░░░░░░░░░░░ 18% used · 82% left · resets in 3d 4h (Wed Oct 14 00:00)
 /// ```
-fn render(entries: &[Entry], bar: usize, now: DateTime<Utc>) -> Vec<String> {
+fn render(entries: &[Entry], layout: Layout, now: DateTime<Utc>) -> Vec<String> {
     let mut lines = Vec::new();
     for (i, e) in entries.iter().enumerate() {
         if i > 0 {
@@ -134,8 +168,8 @@ fn render(entries: &[Entry], bar: usize, now: DateTime<Utc>) -> Vec<String> {
         let u = &e.usage;
         match (u.status, u.reason) {
             (Status::Ok, _) => {
-                lines.push(row("5-hour", window(u.five_hour.as_ref(), bar, now)));
-                lines.push(row("Weekly", window(u.weekly.as_ref(), bar, now)));
+                lines.push(row("5-hour", window(u.five_hour.as_ref(), layout, now)));
+                lines.push(row("Weekly", window(u.weekly.as_ref(), layout, now)));
             }
             (_, Some(Reason::Disabled)) => {
                 lines.push(row("Usage", format!("— ({})", Reason::Disabled.describe())));
@@ -153,19 +187,19 @@ fn render(entries: &[Entry], bar: usize, now: DateTime<Utc>) -> Vec<String> {
 }
 
 /// "████░░░░ 42% used · 58% left · resets in 2h 14m (Sat Oct 10 16:00)", or
-/// "— (no data)" when the API reported no such window.
-fn window(w: Option<&Window>, bar: usize, now: DateTime<Utc>) -> String {
+/// "— (no data)" when the API reported no such window. The bar and the
+/// absolute reset time follow `layout`; "resets in …" is always there.
+fn window(w: Option<&Window>, layout: Layout, now: DateTime<Utc>) -> String {
     let Some(w) = w else {
         return "— (no data)".into();
     };
     let left = usage::percent((100.0 - w.percent.round()).max(0.0));
-    let mut s = format!("{} used · {left} left", ui::gauge(w.percent, bar));
+    let mut s = format!("{} used · {left} left", ui::gauge(w.percent, layout.bar));
     if let Some(t) = w.resets_at {
-        s.push_str(&format!(
-            " · resets in {} ({})",
-            usage::until(t, now),
-            usage::local_time(t)
-        ));
+        s.push_str(&format!(" · resets in {}", usage::until(t, now)));
+        if layout.reset_time {
+            s.push_str(&format!(" ({})", usage::local_time(t)));
+        }
     }
     s
 }
@@ -187,23 +221,35 @@ mod tests {
         let now = at("2026-10-10T12:00:00Z");
         let reset = at("2026-10-10T14:14:00Z");
         let w = |percent, resets_at| Window { percent, resets_at };
+        let full = |bar| Layout {
+            bar,
+            reset_time: true,
+        };
         assert_eq!(
-            plain(&window(Some(&w(42.4, None)), 10, now)),
+            plain(&window(Some(&w(42.4, None)), full(10), now)),
             "████░░░░░░ 42% used · 58% left"
         );
         assert_eq!(
-            window(Some(&w(96.0, Some(reset))), 0, now),
+            window(Some(&w(96.0, Some(reset))), full(0), now),
             format!(
                 "96%!! used · 4% left · resets in 2h 14m ({})",
                 usage::local_time(reset)
             )
         );
         // Used and left always add up to 100%, and left never goes negative.
-        assert_eq!(window(Some(&w(42.5, None)), 0, now), "43% used · 57% left");
+        // Compact layouts drop the absolute reset time, never "resets in".
         assert_eq!(
-            window(Some(&w(130.0, None)), 0, now),
+            plain(&window(Some(&w(42.4, Some(reset))), LAYOUTS[3], now)),
+            "██░░░ 42% used · 58% left · resets in 2h 14m"
+        );
+        assert_eq!(
+            window(Some(&w(42.5, None)), full(0), now),
+            "43% used · 57% left"
+        );
+        assert_eq!(
+            window(Some(&w(130.0, None)), full(0), now),
             "130%!! used · 0% left"
         );
-        assert_eq!(window(None, 10, now), "— (no data)");
+        assert_eq!(window(None, full(10), now), "— (no data)");
     }
 }

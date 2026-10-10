@@ -74,13 +74,13 @@ pub enum Command {
     /// List all profiles with their metrics
     #[command(
         visible_alias = "ls",
-        after_help = "Examples:\n  mcc list\n  mcc list --long\n  mcc list --no-usage\n  mcc list --json | jq '.[] | {name, skills, plugins_installed}'\n  mcc list --json | jq '.[] | {name, five_hour: .usage.five_hour.percent}'\n\n5H and WEEK show each account's 5-hour and weekly usage (a bar, percent used\nand time until reset), read with the profile's own login; `!` marks 80% or\nmore and `!!` 95% or more. Bars are dropped when the terminal is too narrow.\n\"unavailable\" when it can't be determined (`mcc list --long` says why);\n`mcc usage` shows every window in detail."
+        after_help = "Examples:\n  mcc list\n  mcc list --long\n  mcc list --no-usage\n  mcc list --json | jq '.[] | {name, skills, plugins_installed}'\n  mcc list --json | jq '.[] | {name, five_hour: .usage.five_hour.percent}'\n\n5H and WEEK show each account's 5-hour and weekly usage (a bar, percent used\nand time until reset), read with the profile's own login; `!` marks 80% or\nmore and `!!` 95% or more. Bars shrink to fit the terminal; under 80 columns\nthey are dropped when even the smallest does not fit.\n\"unavailable\" when it can't be determined (`mcc list --long` says why);\n`mcc usage` shows every window in detail."
     )]
     List(ListArgs),
 
     /// Show each profile's 5-hour and weekly usage in detail
     #[command(
-        after_help = "Examples:\n  mcc usage                     Every profile, the default included\n  mcc usage work                Only the `work` profile\n  mcc usage default             Only the default profile (~/.claude)\n  mcc usage --json | jq '.[] | {name, weekly: .usage.weekly.percent}'\n\nEach window shows a bar of the limit used, the percent used and left, and\nwhen it resets. `!` marks 80% or more and `!!` 95% or more; bars shrink or\ndisappear when the terminal is narrow. A profile whose usage can't be read\nshows \"unavailable\" and why. MCC_NO_USAGE=1 skips fetching (no network)."
+        after_help = "Examples:\n  mcc usage                     Every profile, the default included\n  mcc usage work                Only the `work` profile\n  mcc usage default             Only the default profile (~/.claude)\n  mcc usage --json | jq '.[] | {name, weekly: .usage.weekly.percent}'\n\nEach window shows a bar of the limit used, the percent used and left, and\nwhen it resets. `!` marks 80% or more and `!!` 95% or more. On a narrow\nterminal bars shrink and only \"resets in …\" is kept; under 80 columns bars\nare dropped when nothing fits. A profile whose usage can't be read shows\n\"unavailable\" and why. MCC_NO_USAGE=1 skips fetching (no network)."
     )]
     Usage(UsageArgs),
 

@@ -233,8 +233,9 @@ fn usage_drops_bars_in_narrow_terminals() {
             .env("COLUMNS", "40")
             .arg("usage"),
     );
+    // No bar and no absolute reset time; "resets in" stays.
     assert_match(
-        r"(?m)^    5-hour   42% used · 58% left · resets in 2h 14m ",
+        r"(?m)^    5-hour   42% used · 58% left · resets in 2h 14m$",
         &out,
     );
     assert!(!out.contains('█') && !out.contains('░'), "{out}");
@@ -245,6 +246,34 @@ fn usage_drops_bars_in_narrow_terminals() {
             .arg("usage"),
     );
     assert!(wide.contains("████████░░░░░░░░░░░░ 42% used"), "{wide}");
+}
+
+#[test]
+fn usage_keeps_bars_at_80_columns() {
+    let sb = usage_sandbox();
+    let stub = usage_stub();
+    let out = stdout_of(
+        sb.mcc()
+            .env("MCC_USAGE_URL", &stub.url)
+            .env("COLUMNS", "80")
+            .arg("usage"),
+    );
+    // The absolute reset time goes before the bar does; "resets in" stays.
+    assert_match(
+        r"(?m)^    5-hour   ████░░░░░░ 42% used · 58% left · resets in 2h 14m$",
+        &out,
+    );
+    assert_match(
+        r"(?m)^    Weekly   ██░░░░░░░░ 18% used · 82% left · resets in 3d 4h$",
+        &out,
+    );
+    assert_match(
+        r"(?m)^    Weekly   ██████░░░░ 64% used · 36% left · resets in 3d 4h$",
+        &out,
+    );
+    for line in out.lines() {
+        assert!(console::measure_text_width(line) <= 80, "{line}");
+    }
 }
 
 #[test]

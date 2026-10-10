@@ -413,18 +413,57 @@ fn parse_columns(v: Option<&str>) -> Option<usize> {
     v?.trim().parse::<usize>().ok().filter(|&n| n > 0)
 }
 
-/// The first bar width in `candidates` whose output, `need(width)` columns
-/// wide, fits [`terminal_width`]: the first when the width is unknown, 0 (no
-/// bar) when none fits.
+/// Below this many columns a layout that overflows the terminal drops its
+/// bar entirely; at or above it the most compact bar is kept, since the
+/// output wraps either way and a small meter still reads at a glance.
+pub const MIN_BAR_COLUMNS: usize = 80;
+
+/// The first bar width in `candidates` (widest first) whose output,
+/// `need(width)` columns wide, fits [`terminal_width`]; see [`fit_layout`]
+/// for what happens when none fits or the width is unknown.
 pub fn fit_bar(candidates: &[usize], need: impl Fn(usize) -> usize) -> usize {
-    match terminal_width() {
-        None => candidates.first().copied().unwrap_or(0),
-        Some(cols) => candidates
+    fit_layout(candidates, |w| w, need)
+}
+
+/// The first of `layouts` (most generous first) whose output, `need(layout)`
+/// columns wide, fits [`terminal_width`]. `bar(layout)` is its bar width.
+/// When the width is unknown (piped) the first layout; when none fits, the
+/// one with the smallest non-zero bar on terminals of at least
+/// [`MIN_BAR_COLUMNS`] columns, and the one with no bar below that.
+pub fn fit_layout<L: Copy>(
+    layouts: &[L],
+    bar: impl Fn(L) -> usize,
+    need: impl Fn(L) -> usize,
+) -> L {
+    choose_layout(terminal_width(), layouts, bar, need)
+}
+
+fn choose_layout<L: Copy>(
+    cols: Option<usize>,
+    layouts: &[L],
+    bar: impl Fn(L) -> usize,
+    need: impl Fn(L) -> usize,
+) -> L {
+    let first = *layouts.first().expect("at least one layout");
+    let Some(cols) = cols else {
+        return first;
+    };
+    if let Some(l) = layouts.iter().copied().find(|&l| need(l) <= cols) {
+        return l;
+    }
+    let smallest = |nonzero: bool| {
+        layouts
             .iter()
             .copied()
-            .find(|&w| need(w) <= cols)
-            .unwrap_or(0),
-    }
+            .filter(|&l| (bar(l) > 0) == nonzero)
+            .min_by_key(|&l| bar(l))
+    };
+    let fallback = if cols >= MIN_BAR_COLUMNS {
+        smallest(true).or_else(|| smallest(false))
+    } else {
+        smallest(false).or_else(|| smallest(true))
+    };
+    fallback.unwrap_or(first)
 }
 
 #[cfg(test)]
@@ -488,5 +527,30 @@ mod tests {
         for bad in [None, Some(""), Some("0"), Some("-3"), Some("wide")] {
             assert_eq!(parse_columns(bad), None, "{bad:?}");
         }
+    }
+
+    #[test]
+    fn layout_fallbacks() {
+        let bars = [10, 5, 0];
+        // Each cell of bar costs one column on top of a 100-column row.
+        let need = |w: usize| 100 + w;
+        let pick = |cols| choose_layout(cols, &bars, |w| w, need);
+        assert_eq!(pick(None), 10);
+        assert_eq!(pick(Some(500)), 10);
+        assert_eq!(pick(Some(107)), 5);
+        assert_eq!(pick(Some(102)), 0);
+        // Nothing fits: keep the compact bar from 80 columns up, none below.
+        assert_eq!(pick(Some(99)), 5);
+        assert_eq!(pick(Some(MIN_BAR_COLUMNS)), 5);
+        assert_eq!(pick(Some(MIN_BAR_COLUMNS - 1)), 0);
+        assert_eq!(pick(Some(40)), 0);
+        // Layouts carrying more than a bar width.
+        let layouts = [(20, true), (10, true), (10, false), (5, false), (0, false)];
+        let need = |(w, abs): (usize, bool)| 60 + w + if abs { 20 } else { 0 };
+        let pick = |cols| choose_layout(cols, &layouts, |l| l.0, need);
+        assert_eq!(pick(None), (20, true));
+        assert_eq!(pick(Some(80)), (10, false));
+        assert_eq!(pick(Some(65)), (5, false));
+        assert_eq!(pick(Some(40)), (0, false));
     }
 }

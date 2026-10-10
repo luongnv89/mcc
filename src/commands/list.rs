@@ -149,8 +149,9 @@ fn card_bar(all: &[ProfileMetrics], now: DateTime<Utc>) -> usize {
     })
 }
 
-/// The table, as printed: the widest usage bar that fits the terminal, or
-/// none (plain "42% (2h)") when even that is too wide.
+/// The table, as printed: the widest usage bar that fits the terminal; when
+/// none does, the 5-cell bar from 80 columns up (the table wraps anyway) and
+/// no bar (plain "42% (2h)") below that.
 fn table(out: &mut impl Write, all: &[ProfileMetrics]) -> Result<()> {
     let now = Utc::now();
     let width = |lines: &[String]| lines.iter().map(|l| measure_text_width(l)).max();

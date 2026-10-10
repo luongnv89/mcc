@@ -517,6 +517,16 @@ fn list_drops_bars_in_narrow_terminals() {
     for out in [&narrow, &long] {
         assert!(!out.contains('█') && !out.contains('░'), "{out}");
     }
+    // From 80 columns the table keeps a compact bar even when it wraps.
+    let medium = list("120", &["list"]);
+    assert!(
+        regex::Regex::new(
+            r"(?m)^default ★\s+claude\s+me@example\.com\s+██░░░ 42% \(2h\)\s+█░░░░ 18% \(3d\)\s"
+        )
+        .unwrap()
+        .is_match(&medium),
+        "{medium}"
+    );
     // A wide terminal gets the full bars.
     assert!(list("500", &["list"]).contains("████░░░░░░ 42% (2h)"));
     assert!(list("500", &["list", "--long"]).contains("████████░░░░░░░░░░░░ 42% (resets"));
