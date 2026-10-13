@@ -48,6 +48,7 @@ Claude Code reads its config from `CLAUDE_CONFIG_DIR`, which defaults to `~/.cla
 - **`usage`.** Every profile's 5-hour and weekly limits in one compact table: a usage bar with the percent used, time until reset and the reset time. Near-limit accounts stand out with `!` / `!!` markers and colour. Account emails are hidden unless you ask for them. `--json` for scripts.
 - **`rename`.** Gives a profile a new name, and with it a new command. The new name is checked like an alias in `add`. The profile's directory, login and setup stay as they are.
 - **`sync`.** A one-way copy of setup from the default profile into a profile, with `--dry-run`, `--prune`, `--only`, and `--all`.
+- **Opt-in session sharing.** Off by default. `mcc share work` (or starting a profile with `work --mcc-share`) lets that profile's `--resume` see the sessions of every other sharing profile. Credentials and account files are never shared.
 - **`delete`.** Logs the profile out (clearing its keychain entry), then removes its directory, launcher, shell alias, and registry entry. It refuses the old name of a renamed profile, so that profile's files are never removed by mistake.
 - **Clear progress everywhere.** Steps are numbered with a status and timing. Every run is logged to `~/.mcc/logs/mcc.log`.
 - **Safe by design.** Changes are rolled back if `add` fails. Your rc file is backed up before mcc edits it. mcc only removes what it created.
@@ -104,6 +105,8 @@ mcc delete job              # remove it completely
 | `mcc usage [PROFILE]` | Show each profile's 5-hour and weekly usage in a table (`default` or `claude` for the default profile) | `--json`, `--show-email`, `--hide-email` |
 | `mcc sync [ALIAS]` | Copy the default's setup into a profile (default → profile only) | `--all`, `--dry-run`, `--prune`, `--only ITEMS`, `-y` |
 | `mcc rename ALIAS NEW` (`mv`) | Rename a profile and its command; directory and login are kept | |
+| `mcc share ALIAS` | Share the profile's sessions with your other sharing profiles (off by default; see [Sharing sessions](#sharing-sessions-between-profiles)) | `--off` |
+| `mcc refresh-launchers [ALIAS...]` | Rewrite launchers and shell aliases from the current templates (all profiles when none are given); needed once so `<alias> --mcc-share` works for profiles made by an older mcc | |
 | `mcc delete ALIAS` (`rm`) | Log out and remove a profile | `-y/--yes`, `--keep-auth` |
 | `mcc completions SHELL` | Print a completion script | `bash`, `zsh`, `fish`, `elvish`, `powershell` |
 | `mcc help [COMMAND]` | Usage and examples | |
@@ -127,6 +130,10 @@ mcc sync work --dry-run               # preview what would change
 mcc sync work --only skills,agents    # only some items
 mcc sync --all --prune --yes          # make every profile mirror the default exactly
 mcc rename lab sandbox                # new command `sandbox`, same directory and login
+mcc share work                        # share work's sessions with the other sharing profiles
+work --mcc-share --resume             # the same from the launcher, then pick any shared session
+mcc share work --off                  # stop sharing; work keeps a copy of the sessions
+mcc refresh-launchers                 # update launchers made by an older mcc
 mcc delete sandbox --yes
 ```
 
@@ -146,9 +153,10 @@ mcc completions fish > ~/.config/fish/completions/mcc.fish
 |---|---|
 | Default profile | `~/.claude` + `~/.claude.json` (command: `claude`) |
 | mcc profiles | `~/.mcc/profiles/<alias>/` (named after the alias the profile was created with; `mcc rename` keeps the directory), used as `CLAUDE_CONFIG_DIR` |
-| Launcher | `~/.local/bin/<alias>` (works in any shell as soon as it's written) |
-| Shell alias | a managed block in your rc file, between `# >>> mcc:<alias> >>>` and `# <<< mcc:<alias> <<<` |
-| mcc state | `~/.mcc/config.toml` (environment + registry), `~/.mcc/logs/mcc.log`, `~/.mcc/backups/` (rc file backups) |
+| Launcher | `~/.local/bin/<alias>` (works in any shell as soon as it's written; sets `CLAUDE_CONFIG_DIR` and starts `claude`, and handles `--mcc-share`) |
+| Shell alias | a managed block in your rc file, between `# >>> mcc:<alias> >>>` and `# <<< mcc:<alias> <<<`, that runs the launcher |
+| Shared sessions | `~/.mcc/shared/projects`, only for profiles that opted in with `mcc share` (their `projects/` links there) |
+| mcc state | `~/.mcc/config.toml` (environment + registry), `~/.mcc/logs/mcc.log`, `~/.mcc/backups/` (rc file backups, session-merge conflicts) |
 
 ### What clone and sync copy
 
@@ -164,7 +172,7 @@ mcc completions fish > ~/.config/fish/completions/mcc.fish
 | `plugins` | `plugins/installed_plugins.json`, `plugins/known_marketplaces.json`, `plugins/marketplaces/`, `plugins/cache/` |
 | `mcp` | the `mcpServers` entry from `~/.claude.json` (merged; the rest of the profile's state is kept) |
 
-**Never copied:** credentials, account identity (`oauthAccount`, `userID`), history, projects/sessions, todos, telemetry, caches, file history.
+**Never copied:** credentials, account identity (`oauthAccount`, `userID`), history, projects/sessions, todos, telemetry, caches, file history. (Sessions can be *shared* instead, opt-in, with `mcc share`; see below.)
 
 **Paths are rewritten** so each profile uses its own copies. In settings, plugin manifests, and MCP server entries, any `~/.claude/…`, `$HOME/.claude/…`, or `/Users/you/.claude/…` path that points at a *copied* item (for example `~/.claude/hooks/notify.sh`) is rewritten to the profile directory. Paths to things that aren't copied, such as `~/.claude/statusline/run.sh`, keep pointing at the default profile, so nothing dangles. Symlinks stay symlinks: a link into the default profile is re-pointed into the copy, and a relative link elsewhere (such as `skills/x -> ../../.agents/skills/x`) is resolved so it still works from the new location.
 
@@ -188,6 +196,39 @@ Also in `~/.mcc/config.toml` (emails are hidden by default):
 [usage]
 show_email = true
 ```
+
+### Sharing sessions between profiles
+
+Each profile keeps its sessions to itself unless you turn sharing on. Sharing is a per-profile setting and is **off by default**. Once two or more profiles share, `claude --resume` and `/resume` in any of them list the sessions of all of them.
+
+```sh
+mcc share work               # turn sharing on for `work`
+work --mcc-share             # the same, while starting `work` (the flag must come first)
+mcc share work --off         # turn it off again
+```
+
+The setting is stored per profile in `~/.mcc/config.toml`:
+
+```toml
+[profiles.work]
+share_sessions = true  # default: false; set it with `mcc share`
+```
+
+Editing the key by hand does nothing on its own. `mcc share <alias>` does the actual work, and it is the only supported way to change the setting:
+
+- **What is shared:** the profile's `projects/` directory, where Claude Code keeps the session transcripts `--resume` lists. It is replaced with a link to `~/.mcc/shared/projects`. The sessions the profile already had are moved into that store without overwriting anything. If a file of the same name with different contents is already there, the store's copy is kept and the profile's copy goes to `~/.mcc/backups/shared-projects-<alias>-<time>/`, with a warning.
+- **What is never shared:** credentials (`.credentials.json`, the keychain login), the account (`.claude.json`), `policy-limits.json`, `remote-settings.json`, prompt history (`history.jsonl`), live session state (`sessions/`), `shell-snapshots/`, `file-history/` and `todos/`. Each profile keeps its own login and `CLAUDE_CONFIG_DIR`.
+- **Every time sharing is turned on**, by `mcc share` or by `--mcc-share`, mcc prints this note on stderr:
+
+  > ⚠ Session sharing makes conversation history available across your Claude Code accounts. Use it only between accounts you own. Don't use it to get around usage limits, and never let other people use your account or credentials — doing so can violate Anthropic's Consumer Terms (https://www.anthropic.com/legal/consumer-terms) and Usage Policy (https://www.anthropic.com/legal/aup).
+
+- **`--off`** replaces the link with a directory of the profile's own, holding a copy of the shared sessions. The store stays for the other sharing profiles; mcc never deletes it, so remove `~/.mcc/shared` by hand once no profile shares.
+- **`mcc delete`** of a sharing profile removes only its link. The sessions stay in the store.
+- **`mcc rename`** keeps sharing as it is.
+- **The default profile** (`~/.claude`) can't share.
+- **Caveats.** In `mcc list`, sharing profiles are marked `(shared)`, and their session counts include every sharing profile's sessions. Claude Code removes old transcripts after `cleanupPeriodDays` (30 days unless set in `settings.json`): with sharing, the shortest setting among the sharing profiles applies to all of them.
+
+**Upgrading from an older mcc:** existing launchers and shell aliases are left exactly as they were. `<alias> --mcc-share` needs the current launcher, and an alias that runs it. To get both, run `mcc refresh-launchers` once (or `mcc refresh-launchers work` for a single profile). `CLAUDE_CONFIG_DIR` stays the same, so logins are kept. `mcc share <alias>` works without it, and `mcc list` reminds you while a launcher is out of date.
 
 ### Usage limits: `mcc list` and `mcc usage`
 
@@ -247,7 +288,7 @@ In `mcc list --json`, every profile has a `usage` object. `mcc usage --json` pri
 
 An alias must be 1–32 characters: lowercase letters, digits, `-` or `_`, starting with a letter. It is rejected if any of these already uses the name:
 
-- mcc's reserved names: `claude`, `mcc`, `default`, `help`, `all`
+- mcc's reserved names: `claude`, `mcc`, `default`, `help`, `all`, `path`, `share`, `refresh-launchers`
 - shell keywords and builtins
 - existing mcc profiles, and the old name of a renamed profile (its directory still uses that name; the error names the profile)
 - executables on `$PATH`
