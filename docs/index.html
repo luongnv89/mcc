@@ -196,7 +196,8 @@
         <p class="lede" style="margin:0">Each profile is checked with its own login, in parallel, with short timeouts.</p>
         </div>
         <ul class="checks">
-          <li>Percent used and left, time until reset, and the reset time in your time zone</li>
+          <li>One compact table: percent used, time until reset, and the reset time in your time zone</li>
+          <li>Account emails stay hidden unless you ask for them, so it is safe to share on screen</li>
           <li>Bars shrink to fit narrow terminals; <code>--json</code> for scripts</li>
           <li>A logged-out or offline profile shows <em>unavailable</em> and the reason. The command still exits 0</li>
           <li>Turn it off with <code>--no-usage</code> or <code>MCC_NO_USAGE=1</code>, and nothing touches the network</li>
@@ -205,16 +206,10 @@
       <figure class="term" style="margin:0" aria-label="Terminal: mcc usage output for three profiles">
         <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>~ — zsh</span></div>
 <pre><span class="p">$ </span><span class="c">mcc usage</span>
-<span class="a">◆</span> <span class="w">default ★</span>  <span class="d">claude · me@example.com</span>
-    5-hour   <span class="g">████████</span><span class="d">░░░░░░░░░░░░</span> 42% used · 58% left · resets in 2h 14m <span class="d">(Sat Oct 10 16:00)</span>
-    Weekly   <span class="g">████</span><span class="d">░░░░░░░░░░░░░░░░</span> 18% used · 82% left · resets in 3d 4h <span class="d">(Wed Oct 14 00:00)</span>
-
-<span class="a">◆</span> <span class="w">lab</span>  <span class="d">lab</span>
-    Usage    <span class="d">unavailable (not logged in)</span>
-
-<span class="a">◆</span> <span class="w">work</span>  <span class="d">work · work@corp.com</span>
-    5-hour   <span class="y">█████████████████</span><span class="d">░░░</span> <span class="y">85%!</span> used · 15% left · resets in 35m <span class="d">(Sat Oct 10 14:21)</span>
-    Weekly   <span class="r">███████████████████</span><span class="d">░</span> <span class="r">96%!!</span> used · 4% left · resets in 3d 4h <span class="d">(Wed Oct 14 00:00)</span></pre>
+<span class="w">PROFILE    5-HOUR           RESETS IN                  WEEKLY            RESETS IN</span>
+default ★  <span class="g">████</span><span class="d">░░░░░░</span> 42%   2h 14m <span class="d">(Sat Oct 10 16:00)</span>  <span class="g">██</span><span class="d">░░░░░░░░</span> 18%    3d 4h <span class="d">(Wed Oct 14 00:00)</span>
+lab        <span class="d">unavailable (not logged in)</span>
+work       <span class="y">█████████</span><span class="d">░</span> <span class="y">85%!</span>  35m <span class="d">(Sat Oct 10 14:21)</span>     <span class="r">██████████</span> <span class="r">96%!!</span>  3d 4h <span class="d">(Wed Oct 14 00:00)</span></pre>
       </figure>
     </div>
   </section>

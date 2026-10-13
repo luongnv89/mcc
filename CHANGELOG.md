@@ -4,6 +4,20 @@ All notable changes to mcc are recorded here. The format follows [Keep a Changel
 
 ## [Unreleased]
 
+### Added
+
+- `mcc rename ALIAS NEW` (alias `mv`): renames a profile and its command. It installs the new launcher and alias block, renames the registry entry, then removes the old launcher and alias. The new name is checked like an alias in `mcc add`, and a failure rolls the changes back. The profile directory, and so its login, is kept.
+- `[usage] show_email` in `~/.mcc/config.toml`, plus `--show-email` / `--hide-email` on `mcc usage`, to choose whether account emails are shown.
+
+### Changed
+
+- `mcc usage` shows a compact table, one row per profile, instead of a block per profile: `PROFILE`, then the bar and percent used, time until reset and reset time for the 5-hour and weekly windows. On narrow terminals the reset time goes first, then bars shrink 10 → 5 → 0.
+- `mcc usage` hides account emails by default, in the table and in `--json` (`account` is `null`). Use `--show-email` or `[usage] show_email = true` to show them.
+
+### Fixed
+
+- `mcc delete <old name>` refuses to delete a directory that a renamed profile still uses.
+
 ## [0.1.0] - 2026-10-10
 
 The first version of mcc.

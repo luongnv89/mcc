@@ -55,6 +55,18 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &DeleteArgs) -> Result<()> {
     if registered.is_none() && !dir.exists() {
         return Err(super::unknown_profile(alias));
     }
+    // A renamed profile keeps its directory under the old name: never treat
+    // it as a leftover of that name.
+    if registered.is_none()
+        && let Some((owner, _)) = cfg.profiles.iter().find(|(_, p)| p.dir == dir)
+    {
+        return Err(CliError::usage(format!(
+            "no profile named \"{alias}\": {} belongs to profile \"{owner}\"",
+            paths.display(&dir)
+        ))
+        .hint(format!("to delete that profile, run `mcc delete {owner}`"))
+        .into());
+    }
 
     ui::header(&format!("Delete Claude Code profile \"{alias}\""));
     let size = if dir.exists() {

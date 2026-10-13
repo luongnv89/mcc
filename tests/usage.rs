@@ -19,42 +19,91 @@ fn usage_json(out: &str) -> Vec<serde_json::Value> {
     json(out.as_bytes()).as_array().unwrap().clone()
 }
 
+/// Turn `[usage] show_email` on in the sandbox's config.
+fn show_email_in_config(sb: &common::Sandbox) {
+    let cfg = sb.read(".mcc/config.toml");
+    assert!(cfg.contains("show_email = false"), "{cfg}");
+    sb.write(
+        ".mcc/config.toml",
+        &cfg.replace("show_email = false", "show_email = true"),
+    );
+}
+
 #[test]
-fn usage_shows_every_profile_in_detail() {
+fn usage_shows_every_profile_as_a_table() {
     let sb = usage_sandbox();
     let stub = usage_stub();
     let out = stdout_of(sb.mcc().env("MCC_USAGE_URL", &stub.url).arg("usage"));
 
-    assert_match(r"(?m)^◆ default ★  claude · me@example\.com$", &out);
     assert_match(
-        &format!(
-            r"(?m)^    5-hour   ████████░░░░░░░░░░░░ 42% used · 58% left · resets in 2h 14m {LOCAL_TIME}$"
-        ),
+        r"(?m)^PROFILE    5-HOUR          RESETS IN {18}WEEKLY          RESETS IN$",
         &out,
     );
     assert_match(
         &format!(
-            r"(?m)^    Weekly   ████░░░░░░░░░░░░░░░░ 18% used · 82% left · resets in 3d 4h {LOCAL_TIME}$"
+            r"(?m)^default ★  ████░░░░░░ 42%  2h 14m {LOCAL_TIME}  ██░░░░░░░░ 18%  3d 4h {LOCAL_TIME}$"
         ),
         &out,
     );
-    assert_match(r"(?m)^◆ work  work$", &out);
+    assert_match(r"(?m)^lab        unavailable \(not logged in\)$", &out);
     assert_match(
-        r"(?m)^    5-hour   █░░░░░░░░░░░░░░░░░░░ 7% used · 93% left · resets in 2h 14m ",
+        &format!(
+            r"(?m)^work       █░░░░░░░░░ 7%   2h 14m {LOCAL_TIME}  ██████░░░░ 64%  3d 4h {LOCAL_TIME}$"
+        ),
         &out,
     );
-    assert_match(
-        r"(?m)^    Weekly   █████████████░░░░░░░ 64% used · 36% left · resets in 3d 4h ",
-        &out,
+    // Header, then the default first and the profiles in name order.
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 4, "{out}");
+    assert!(lines[1].starts_with("default") && lines[2].starts_with("lab"));
+    // Account emails are hidden by default.
+    assert!(
+        !out.contains("me@example.com") && !out.contains("ACCOUNT"),
+        "{out}"
     );
-    assert_match(
-        r"(?m)^◆ lab  lab\n    Usage    unavailable \(not logged in\)$",
-        &out,
-    );
-    // Default first, then the profiles in name order.
-    let pos = |s: &str| out.find(s).unwrap();
-    assert!(pos("◆ default") < pos("◆ lab") && pos("◆ lab") < pos("◆ work"));
     assert_eq!(stub.tokens(), ["test-token-default", "test-token-work"]);
+}
+
+#[test]
+fn usage_shows_emails_only_when_asked() {
+    let sb = usage_sandbox();
+    let stub = usage_stub();
+    let run = |args: &[&str]| stdout_of(sb.mcc().env("MCC_USAGE_URL", &stub.url).args(args));
+    let shown = |out: &str| {
+        assert_match(r"(?m)^PROFILE    ACCOUNT         5-HOUR ", out);
+        assert_match(r"(?m)^default ★  me@example\.com  ████░░░░░░ 42%  ", out);
+        assert_match(
+            r"(?m)^lab        —               unavailable \(not logged in\)$",
+            out,
+        );
+    };
+    let hidden = |out: &str| assert!(!out.contains("me@example.com"), "{out}");
+
+    shown(&run(&["usage", "--show-email"]));
+    hidden(&run(&["usage", "--hide-email"]));
+    sb.mcc()
+        .args(["usage", "--show-email", "--hide-email"])
+        .assert()
+        .code(2);
+    let json_account =
+        |args: &[&str]| by_name(&usage_json(&run(args)), "default")["account"].clone();
+    assert_eq!(json_account(&["usage", "--json"]), serde_json::Value::Null);
+    assert_eq!(
+        json_account(&["usage", "--json", "--show-email"]),
+        "me@example.com"
+    );
+
+    // `[usage] show_email = true` makes it the default; --hide-email wins.
+    show_email_in_config(&sb);
+    shown(&run(&["usage"]));
+    assert_eq!(json_account(&["usage", "--json"]), "me@example.com");
+    hidden(&run(&["usage", "--hide-email"]));
+    // Other commands keep the setting when they save the config.
+    sb.mcc()
+        .args(["add", "other", "--fresh", "--no-login"])
+        .assert()
+        .success();
+    assert!(sb.read(".mcc/config.toml").contains("show_email = true"));
 }
 
 #[test]
@@ -66,15 +115,10 @@ fn usage_limits_output_to_one_profile() {
             .env("MCC_USAGE_URL", &stub.url)
             .args(["usage", "work"]),
     );
-    assert_match(r"(?m)^◆ work  work$", &work);
-    assert!(
-        work.contains("7% used") && work.contains("64% used"),
-        "{work}"
-    );
-    assert!(
-        !work.contains("default") && !work.contains("◆ lab"),
-        "{work}"
-    );
+    assert_match(r"(?m)^work     █░░░░░░░░░ 7%  ", &work);
+    assert!(work.contains("64%"), "{work}");
+    assert!(!work.contains("default") && !work.contains("lab"), "{work}");
+    assert_eq!(work.lines().count(), 2, "{work}");
     // Only the selected profile's usage is fetched.
     assert_eq!(stub.tokens(), ["test-token-work"]);
 
@@ -84,9 +128,8 @@ fn usage_limits_output_to_one_profile() {
                 .env("MCC_USAGE_URL", &stub.url)
                 .args(["usage", alias]),
         );
-        assert_match(r"^◆ default ★  claude · me@example\.com\n", &out);
-        assert!(out.contains("42% used"), "{out}");
-        assert_eq!(out.matches('◆').count(), 1, "{out}");
+        assert_match(r"(?m)^default ★  ████░░░░░░ 42%  ", &out);
+        assert_eq!(out.lines().count(), 2, "{out}");
     }
 }
 
@@ -112,17 +155,14 @@ fn usage_unavailable_still_succeeds() {
     let sb = usage_sandbox();
     let out = stdout_of(sb.mcc().env("MCC_USAGE_URL", REFUSED_URL).arg("usage"));
     assert_match(
-        r"(?m)^◆ default ★  claude · me@example\.com\n    Usage    unavailable \(offline or the usage API timed out\)$",
+        r"(?m)^default ★  unavailable \(offline or the usage API timed out\)$",
         &out,
     );
     assert_match(
-        r"(?m)^◆ work  work\n    Usage    unavailable \(offline or the usage API timed out\)$",
+        r"(?m)^work       unavailable \(offline or the usage API timed out\)$",
         &out,
     );
-    assert_match(
-        r"(?m)^◆ lab  lab\n    Usage    unavailable \(not logged in\)$",
-        &out,
-    );
+    assert_match(r"(?m)^lab        unavailable \(not logged in\)$", &out);
 
     let arr = usage_json(&stdout_of(
         sb.mcc()
@@ -145,7 +185,7 @@ fn usage_json_has_the_same_information() {
                 .args(args),
         )
     };
-    let out = run(&["usage", "--json"]);
+    let out = run(&["usage", "--json", "--show-email"]);
     for glyph in ['█', '░', '◆', '\x1b'] {
         assert!(!out.contains(glyph), "{glyph:?} in {out}");
     }
@@ -205,7 +245,7 @@ fn usage_honors_mcc_no_usage() {
             .arg("usage"),
     );
     assert_eq!(
-        out.matches("    Usage    — (not fetched: --no-usage or MCC_NO_USAGE)")
+        out.matches("  — (not fetched: --no-usage or MCC_NO_USAGE)\n")
             .count(),
         3,
         "{out}"
@@ -233,11 +273,8 @@ fn usage_drops_bars_in_narrow_terminals() {
             .env("COLUMNS", "40")
             .arg("usage"),
     );
-    // No bar and no absolute reset time; "resets in" stays.
-    assert_match(
-        r"(?m)^    5-hour   42% used · 58% left · resets in 2h 14m$",
-        &out,
-    );
+    // No bar and no absolute reset time; the time until the reset stays.
+    assert_match(r"(?m)^default ★  42%     2h 14m     18%     3d 4h$", &out);
     assert!(!out.contains('█') && !out.contains('░'), "{out}");
     let wide = stdout_of(
         sb.mcc()
@@ -245,7 +282,7 @@ fn usage_drops_bars_in_narrow_terminals() {
             .env("COLUMNS", "500")
             .arg("usage"),
     );
-    assert!(wide.contains("████████░░░░░░░░░░░░ 42% used"), "{wide}");
+    assert_match(&format!(r"████░░░░░░ 42%  2h 14m {LOCAL_TIME}"), &wide);
 }
 
 #[test]
@@ -259,19 +296,26 @@ fn usage_keeps_bars_at_80_columns() {
             .arg("usage"),
     );
     // The absolute reset time goes before the bar shrinks, so the full
-    // 20-cell bar still fits; "resets in" stays.
+    // 10-cell bar still fits.
     assert_match(
-        r"(?m)^    5-hour   ████████░░░░░░░░░░░░ 42% used · 58% left · resets in 2h 14m$",
+        r"(?m)^default ★  ████░░░░░░ 42%  2h 14m     ██░░░░░░░░ 18%  3d 4h$",
         &out,
     );
     assert_match(
-        r"(?m)^    Weekly   ████░░░░░░░░░░░░░░░░ 18% used · 82% left · resets in 3d 4h$",
+        r"(?m)^work       █░░░░░░░░░ 7%   2h 14m     ██████░░░░ 64%  3d 4h$",
         &out,
     );
-    assert_match(
-        r"(?m)^    Weekly   █████████████░░░░░░░ 64% used · 36% left · resets in 3d 4h$",
-        &out,
+    for line in out.lines() {
+        assert!(console::measure_text_width(line) <= 80, "{line}");
+    }
+    // Also with the account column.
+    let out = stdout_of(
+        sb.mcc()
+            .env("MCC_USAGE_URL", &stub.url)
+            .env("COLUMNS", "80")
+            .args(["usage", "--show-email"]),
     );
+    assert!(out.contains("me@example.com  ████░░░░░░ 42%"), "{out}");
     for line in out.lines() {
         assert!(console::measure_text_width(line) <= 80, "{line}");
     }
@@ -289,7 +333,7 @@ fn usage_output_has_no_colour_codes_when_piped() {
                 .env("MCC_USAGE_URL", &stub.url)
                 .args(args),
         );
-        assert!(out.contains('█') && out.contains("42% used"), "{out}");
+        assert!(out.contains('█') && out.contains("42%"), "{out}");
         assert!(!out.contains('\x1b'), "{out:?}");
     }
 }

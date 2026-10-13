@@ -45,7 +45,8 @@ Claude Code reads its config from `CLAUDE_CONFIG_DIR`, which defaults to `~/.cla
 - **First-run detection.** mcc detects your OS, terminal, shell (zsh, bash, fish) and the right rc file, so new commands work in your shell.
 - **`add`.** If `~/.claude` doesn't exist yet, `add` creates your default profile. Otherwise it asks for an alias and checks that the name isn't already taken by a command, alias, function, shell builtin, or existing profile. You then either **clone** the default's setup (without credentials) or start **fresh**, and the new profile's login opens.
 - **`list`.** One row per profile: command, account, 5-hour and weekly usage (with a usage bar), skills, agents, commands, plugins (enabled/installed), MCP servers, hooks, size, last used, last sync. `--long` and `--json` give more detail.
-- **`usage`.** Every profile's 5-hour and weekly limits in detail: a usage bar, percent used and left, time until reset and the reset time. Near-limit accounts stand out with `!` / `!!` markers and colour. `--json` for scripts.
+- **`usage`.** Every profile's 5-hour and weekly limits in one compact table: a usage bar with the percent used, time until reset and the reset time. Near-limit accounts stand out with `!` / `!!` markers and colour. Account emails are hidden unless you ask for them. `--json` for scripts.
+- **`rename`.** Gives a profile a new name, and with it a new command. The new name is checked like an alias in `add`. The profile's directory, login and setup stay as they are.
 - **`sync`.** A one-way copy of setup from the default profile into a profile, with `--dry-run`, `--prune`, `--only`, and `--all`.
 - **`delete`.** Logs the profile out (clearing its keychain entry), then removes its directory, launcher, shell alias, and registry entry.
 - **Clear progress everywhere.** Steps are numbered with a status and timing. Every run is logged to `~/.mcc/logs/mcc.log`.
@@ -89,7 +90,8 @@ work                        # start Claude Code as the "work" account
 mcc list                    # see all profiles
 mcc usage                   # how much of each account's limits is used
 mcc sync work               # later: pull new skills/plugins/settings from the default
-mcc delete work             # remove it completely
+mcc rename work job         # rename the profile: its command becomes `job`
+mcc delete job              # remove it completely
 ```
 
 ## Commands
@@ -99,8 +101,9 @@ mcc delete work             # remove it completely
 | `mcc init` | Detect OS, arch, terminal, shell, rc file, the `claude` binary, and whether `~/.local/bin` is on PATH (and offer to add it) | `--force`, `--shell zsh\|bash\|fish` |
 | `mcc add [ALIAS]` | Create the default profile, or a new profile with its own command | `--clone`, `--fresh`, `--no-login`, `-y` |
 | `mcc list` (`ls`) | Show every profile with metrics and 5-hour/weekly usage | `--json`, `-l/--long`, `--no-usage` |
-| `mcc usage [PROFILE]` | Show each profile's 5-hour and weekly usage in detail (`default` or `claude` for the default profile) | `--json` |
+| `mcc usage [PROFILE]` | Show each profile's 5-hour and weekly usage in a table (`default` or `claude` for the default profile) | `--json`, `--show-email`, `--hide-email` |
 | `mcc sync [ALIAS]` | Copy the default's setup into a profile (default → profile only) | `--all`, `--dry-run`, `--prune`, `--only ITEMS`, `-y` |
+| `mcc rename ALIAS NEW` (`mv`) | Rename a profile and its command; directory and login are kept | |
 | `mcc delete ALIAS` (`rm`) | Log out and remove a profile | `-y/--yes`, `--keep-auth` |
 | `mcc completions SHELL` | Print a completion script | `bash`, `zsh`, `fish`, `elvish`, `powershell` |
 | `mcc help [COMMAND]` | Usage and examples | |
@@ -118,11 +121,13 @@ mcc list --json | jq '.[] | {name, five_hour: .usage.five_hour.percent, weekly: 
 mcc list --no-usage                   # offline: skip the usage lookup
 mcc usage                             # every profile's limits, the default included
 mcc usage work                        # only the `work` profile
+mcc usage --show-email                # with each profile's account email
 mcc usage --json | jq '.[] | {name, weekly: .usage.weekly.percent}'
 mcc sync work --dry-run               # preview what would change
 mcc sync work --only skills,agents    # only some items
 mcc sync --all --prune --yes          # make every profile mirror the default exactly
-mcc delete lab --yes
+mcc rename lab sandbox                # new command `sandbox`, same directory and login
+mcc delete sandbox --yes
 ```
 
 ### Shell completions
@@ -175,6 +180,15 @@ exclude = ["plugins"]          # built-in items to skip
 extra = ["my-tool/config.yml"] # additional paths (relative to the config dir) to copy
 ```
 
+### Showing account emails in `mcc usage`
+
+Also in `~/.mcc/config.toml` (emails are hidden by default):
+
+```toml
+[usage]
+show_email = true
+```
+
 ### Usage limits: `mcc list` and `mcc usage`
 
 The `5H` and `WEEK` columns of `mcc list` show how much of each account's 5-hour and weekly limit is used, and how long until it resets, for every profile including the default:
@@ -188,30 +202,24 @@ lab        lab      —               unavailable            unavailable        
 
 `mcc list --long` spells it out (`5h usage: ████████░░░░░░░░░░░░ 42% (resets in 2h 14m)`), or says why it is unavailable (`Usage: unavailable (not logged in)`).
 
-`mcc usage` shows only usage, in more detail: percent used and left, time until reset, and the reset time in your local time zone. `mcc usage work` shows one profile (`mcc usage default` for `~/.claude`); an unknown name is a usage error (exit 2).
+`mcc usage` shows only usage, as a compact table with one row per profile: for each window a bar with the percent used, the time until it resets, and the reset time in your local time zone. `mcc usage work` shows one profile (`mcc usage default` for `~/.claude`); an unknown name is a usage error (exit 2). Account emails are hidden by default, so the output is safe to share on screen; `--show-email` adds an `ACCOUNT` column for one run, and `show_email = true` under `[usage]` in `~/.mcc/config.toml` shows it every time (`--hide-email` then hides it again).
 
 ```console
 $ mcc usage
-◆ default ★  claude · me@example.com
-    5-hour   ████████░░░░░░░░░░░░ 42% used · 58% left · resets in 2h 14m (Sat Oct 10 16:00)
-    Weekly   ████░░░░░░░░░░░░░░░░ 18% used · 82% left · resets in 3d 4h (Wed Oct 14 00:00)
-
-◆ lab  lab
-    Usage    unavailable (not logged in)
-
-◆ work  work · work@corp.com
-    5-hour   █████████████████░░░ 85%! used · 15% left · resets in 35m (Sat Oct 10 14:21)
-    Weekly   ███████████████████░ 96%!! used · 4% left · resets in 3d 4h (Wed Oct 14 00:00)
+PROFILE    5-HOUR           RESETS IN                  WEEKLY            RESETS IN
+default ★  ████░░░░░░ 42%   2h 14m (Sat Oct 10 16:00)  ██░░░░░░░░ 18%    3d 4h (Wed Oct 14 00:00)
+lab        unavailable (not logged in)
+work       █████████░ 85%!  35m (Sat Oct 10 14:21)     ██████████ 96%!!  3d 4h (Wed Oct 14 00:00)
 ```
 
 - **Reading the bars.** Each bar is the share of the limit used. `!` after the percent marks 80% or more and `!!` 95% or more. In a colour terminal the bar is also green, yellow (80%+) or red (95%+), but the markers carry the same meaning, so nothing depends on colour alone (`--no-color`, `NO_COLOR`, or piped output).
-- **Narrow terminals.** When the output would not fit the terminal's width, bars shrink (`mcc usage` first drops the absolute reset time, keeping the relative "resets in …", then shrinks its bar in the same 20/10/0 steps as `mcc list --long`). From 80 columns up a compact bar always stays, even if the `mcc list` table has to wrap; below 80 columns bars disappear (leaving `42% (2h)`) when nothing fits. Set `COLUMNS` to override the detected width. Piped output gets full-size bars unless `COLUMNS` is set, and `--json` never has bars or colour.
+- **Narrow terminals.** When the output would not fit the terminal's width, bars shrink (`mcc usage` first drops the absolute reset time, keeping the time until the reset, then shrinks its bar in the same 10/5/0 steps as the `mcc list` table). From 80 columns up a compact bar always stays, even if the `mcc list` table has to wrap; below 80 columns bars disappear (leaving just the percent, such as `42%`) when nothing fits. Set `COLUMNS` to override the detected width. Piped output gets full-size bars unless `COLUMNS` is set, and `--json` never has bars or colour.
 - **Where it comes from.** mcc reads each profile's own Claude Code login (`<config dir>/.credentials.json`, or on macOS the login Keychain item Claude Code created for that config dir) and asks Anthropic's usage endpoint (`https://api.anthropic.com/api/oauth/usage`, the one behind Claude Code's `/usage` screen). The endpoint is **undocumented** and may change; when it does, mcc shows "unavailable" rather than failing.
 - **Never fatal.** If usage can't be determined (logged out, expired login, offline, API error), the profile shows `unavailable` with the reason (in `mcc usage` and `mcc list --long`), the command still exits 0, and no warning is printed. Requests run in parallel with short timeouts (2 s to connect, 4 s total).
 - **Tokens stay private.** The access token is only sent to that endpoint, for its own profile. It is never printed, logged, or written anywhere. mcc never refreshes tokens: if a login has expired, start the profile in Claude Code once (`work`, `claude`, …) and it refreshes itself.
 - **Turn it off** with `mcc list --no-usage` or `MCC_NO_USAGE=1` (which also applies to `mcc usage`); usage then shows `—` and nothing touches the network or the keychain.
 
-In `mcc list --json`, every profile has a `usage` object. `mcc usage --json` prints one object per profile with `name`, `command`, `is_default`, `account` (or `null`) and the same `usage` object:
+In `mcc list --json`, every profile has a `usage` object. `mcc usage --json` prints one object per profile with `name`, `command`, `is_default`, `account` (`null` when logged out, or when emails are hidden, as they are by default) and the same `usage` object:
 
 ```json
 "usage": {

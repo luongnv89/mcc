@@ -15,8 +15,8 @@ use crate::paths::Paths;
 use crate::ui;
 use crate::usage::{self, Reason, Status, Usage, Window};
 
-/// How a window row is laid out: its bar width (0 = no bar) and whether the
-/// absolute reset time follows the relative "resets in …".
+/// How the table is laid out: the bar width of the usage cells (0 = no bar)
+/// and whether the absolute reset time follows the relative one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Layout {
     bar: usize,
@@ -24,19 +24,19 @@ struct Layout {
 }
 
 /// Layouts tried, most generous first: the absolute reset time goes first,
-/// then the bar shrinks in the same 20/10/0 steps as `mcc list --long`
+/// then the bar shrinks in the same 10/5/0 steps as the `mcc list` table
 /// (narrow terminals).
 const LAYOUTS: [Layout; 4] = [
     Layout {
-        bar: 20,
+        bar: 10,
         reset_time: true,
     },
     Layout {
-        bar: 20,
+        bar: 10,
         reset_time: false,
     },
     Layout {
-        bar: 10,
+        bar: 5,
         reset_time: false,
     },
     Layout {
@@ -93,6 +93,13 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
         },
     };
 
+    let show_email = (cfg.usage.show_email || args.show_email) && !args.hide_email;
+    if !show_email {
+        for e in &mut entries {
+            e.account = None;
+        }
+    }
+
     if usage::disabled_by_env() {
         crate::log::write("INFO", "usage not fetched: MCC_NO_USAGE is set");
     } else {
@@ -119,86 +126,115 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
             &LAYOUTS,
             |l| l.bar,
             |l| {
-                render(&entries, l, now)
+                render(&entries, l, show_email, now)
                     .iter()
                     .map(|line| measure_text_width(line))
                     .max()
                     .unwrap_or(0)
             },
         );
-        for line in render(&entries, layout, now) {
+        for line in render(&entries, layout, show_email, now) {
             writeln!(out, "{line}")?;
         }
     }
     Ok(())
 }
 
-/// One block per profile, separated by blank lines, laid out as `layout`:
+/// One row per profile under a header, laid out as `layout`:
 ///
 /// ```text
-/// ◆ default ★  claude · me@example.com
-///     5-hour   ████████░░░░░░░░░░░░ 42% used · 58% left · resets in 2h 14m (Sat Oct 10 16:00)
-///     Weekly   ████░░░░░░░░░░░░░░░░ 18% used · 82% left · resets in 3d 4h (Wed Oct 14 00:00)
+/// PROFILE    5-HOUR          RESETS IN                  WEEKLY          RESETS IN
+/// default ★  ████░░░░░░ 42%  2h 14m (Sat Oct 10 16:00)  ██░░░░░░░░ 18%  3d 4h (Wed Oct 14 00:00)
+/// lab        unavailable (not logged in)
 /// ```
-fn render(entries: &[Entry], layout: Layout, now: DateTime<Utc>) -> Vec<String> {
-    let mut lines = Vec::new();
-    for (i, e) in entries.iter().enumerate() {
-        if i > 0 {
-            lines.push(String::new());
-        }
-        let title = if e.is_default {
-            format!("{} ★", e.name)
-        } else {
-            e.name.clone()
-        };
-        let about = match &e.account {
-            Some(a) => format!("{} · {a}", e.command),
-            None => e.command.clone(),
-        };
-        lines.push(format!(
-            "{} {}  {}",
-            style("◆").cyan().bold(),
-            style(title).bold(),
-            style(about).dim()
-        ));
-        let row = |label: &str, value: String| format!("    {label:<8} {value}");
-        let u = &e.usage;
-        match (u.status, u.reason) {
-            (Status::Ok, _) => {
-                lines.push(row("5-hour", window(u.five_hour.as_ref(), layout, now)));
-                lines.push(row("Weekly", window(u.weekly.as_ref(), layout, now)));
+///
+/// An ACCOUNT column follows PROFILE when `show_email` is set. A profile
+/// without usage has its reason in place of the usage columns.
+fn render(entries: &[Entry], layout: Layout, show_email: bool, now: DateTime<Utc>) -> Vec<String> {
+    let mut headers = vec!["PROFILE"];
+    if show_email {
+        headers.push("ACCOUNT");
+    }
+    headers.extend(["5-HOUR", "RESETS IN", "WEEKLY", "RESETS IN"]);
+    // Each row: the leading cells, then either all four usage cells or one
+    // reason that spans them.
+    let rows: Vec<Vec<String>> = entries
+        .iter()
+        .map(|e| {
+            let mut cells = vec![if e.is_default {
+                format!("{} ★", e.name)
+            } else {
+                e.name.clone()
+            }];
+            if show_email {
+                cells.push(e.account.clone().unwrap_or_else(|| "—".into()));
             }
-            (_, Some(Reason::Disabled)) => {
-                lines.push(row("Usage", format!("— ({})", Reason::Disabled.describe())));
-            }
-            (_, reason) => lines.push(row(
-                "Usage",
-                format!(
+            let u = &e.usage;
+            match (u.status, u.reason) {
+                (Status::Ok, _) => {
+                    for w in [u.five_hour.as_ref(), u.weekly.as_ref()] {
+                        let (used, resets) = window(w, layout, now);
+                        cells.extend([used, resets]);
+                    }
+                }
+                (_, Some(Reason::Disabled)) => {
+                    cells.push(format!("— ({})", Reason::Disabled.describe()));
+                }
+                (_, reason) => cells.push(format!(
                     "unavailable ({})",
                     reason.map_or("unknown", Reason::describe)
-                ),
-            )),
-        }
-    }
-    lines
+                )),
+            }
+            cells
+        })
+        .collect();
+    // A spanning reason (a short row's last cell) doesn't widen the column
+    // it starts in.
+    let widths: Vec<usize> = (0..headers.len())
+        .map(|i| {
+            rows.iter()
+                .filter(|r| r.len() == headers.len() || i + 1 < r.len())
+                .map(|r| measure_text_width(&r[i]))
+                .chain([headers[i].len()])
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+    let fmt_row = |cells: &[String]| -> String {
+        cells
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let pad = widths[i].saturating_sub(measure_text_width(c));
+                format!("{c}{}", " ".repeat(pad))
+            })
+            .collect::<Vec<_>>()
+            .join("  ")
+            .trim_end()
+            .to_string()
+    };
+    let head: Vec<String> = headers.iter().map(|h| h.to_string()).collect();
+    std::iter::once(style(fmt_row(&head)).bold().to_string())
+        .chain(rows.iter().map(|r| fmt_row(r)))
+        .collect()
 }
 
-/// "████░░░░ 42% used · 58% left · resets in 2h 14m (Sat Oct 10 16:00)", or
-/// "— (no data)" when the API reported no such window. The bar and the
-/// absolute reset time follow `layout`; "resets in …" is always there.
-fn window(w: Option<&Window>, layout: Layout, now: DateTime<Utc>) -> String {
+/// The two cells for one window: "████░░░░░░ 42%" and
+/// "2h 14m (Sat Oct 10 16:00)", or "—" and "" when the API reported no such
+/// window. The bar and the absolute reset time follow `layout`; the time
+/// until the reset is always there.
+fn window(w: Option<&Window>, layout: Layout, now: DateTime<Utc>) -> (String, String) {
     let Some(w) = w else {
-        return "— (no data)".into();
+        return ("—".into(), String::new());
     };
-    let left = usage::percent((100.0 - w.percent.round()).max(0.0));
-    let mut s = format!("{} used · {left} left", ui::gauge(w.percent, layout.bar));
-    if let Some(t) = w.resets_at {
-        s.push_str(&format!(" · resets in {}", usage::until(t, now)));
-        if layout.reset_time {
-            s.push_str(&format!(" ({})", usage::local_time(t)));
+    let resets = match w.resets_at {
+        Some(t) if layout.reset_time => {
+            format!("{} ({})", usage::until(t, now), usage::local_time(t))
         }
-    }
-    s
+        Some(t) => usage::until(t, now),
+        None => String::new(),
+    };
+    (ui::gauge(w.percent, layout.bar), resets)
 }
 
 #[cfg(test)]
@@ -214,39 +250,115 @@ mod tests {
     }
 
     #[test]
-    fn window_text() {
+    fn window_cells() {
         let now = at("2026-10-10T12:00:00Z");
         let reset = at("2026-10-10T14:14:00Z");
         let w = |percent, resets_at| Window { percent, resets_at };
-        let full = |bar| Layout {
-            bar,
-            reset_time: true,
+        let cells = |w: Option<&Window>, l: Layout| {
+            let (used, resets) = window(w, l, now);
+            (plain(&used), resets)
         };
         assert_eq!(
-            plain(&window(Some(&w(42.4, None)), full(10), now)),
-            "████░░░░░░ 42% used · 58% left"
+            cells(Some(&w(42.4, None)), LAYOUTS[0]),
+            ("████░░░░░░ 42%".into(), String::new())
         );
         assert_eq!(
-            window(Some(&w(96.0, Some(reset))), full(0), now),
-            format!(
-                "96%!! used · 4% left · resets in 2h 14m ({})",
-                usage::local_time(reset)
+            cells(Some(&w(96.0, Some(reset))), LAYOUTS[0]),
+            (
+                "██████████ 96%!!".into(),
+                format!("2h 14m ({})", usage::local_time(reset))
             )
         );
-        // Used and left always add up to 100%, and left never goes negative.
-        // Compact layouts drop the absolute reset time, never "resets in".
+        // Compact layouts drop the absolute reset time, never the relative one.
         assert_eq!(
-            plain(&window(Some(&w(42.4, Some(reset))), LAYOUTS[2], now)),
-            "████░░░░░░ 42% used · 58% left · resets in 2h 14m"
+            cells(Some(&w(42.4, Some(reset))), LAYOUTS[2]),
+            ("██░░░ 42%".into(), "2h 14m".into())
         );
         assert_eq!(
-            window(Some(&w(42.5, None)), full(0), now),
-            "43% used · 57% left"
+            cells(Some(&w(85.0, Some(reset))), LAYOUTS[3]),
+            ("85%!".into(), "2h 14m".into())
+        );
+        assert_eq!(cells(None, LAYOUTS[0]), ("—".into(), String::new()));
+    }
+
+    fn entry(name: &str, account: Option<&str>, usage: Usage) -> Entry {
+        Entry {
+            name: name.into(),
+            command: name.into(),
+            is_default: name == "default",
+            account: account.map(str::to_string),
+            usage,
+            config_dir: PathBuf::new(),
+        }
+    }
+
+    #[test]
+    fn table_rows() {
+        let now = at("2026-10-10T12:00:00Z");
+        let reset = Some(at("2026-10-10T14:14:00Z"));
+        let ok = Usage {
+            status: Status::Ok,
+            reason: None,
+            five_hour: Some(Window {
+                percent: 42.4,
+                resets_at: reset,
+            }),
+            weekly: Some(Window {
+                percent: 18.0,
+                resets_at: None,
+            }),
+        };
+        let entries = [
+            entry("default", Some("me@example.com"), ok),
+            entry("lab", None, Usage::unavailable(Reason::NotLoggedIn)),
+        ];
+        let lines = |email| -> Vec<String> {
+            render(&entries, LAYOUTS[1], email, now)
+                .iter()
+                .map(|l| plain(l))
+                .collect()
+        };
+        assert_eq!(
+            lines(false),
+            [
+                "PROFILE    5-HOUR          RESETS IN  WEEKLY          RESETS IN",
+                "default ★  ████░░░░░░ 42%  2h 14m     ██░░░░░░░░ 18%",
+                "lab        unavailable (not logged in)",
+            ]
         );
         assert_eq!(
-            window(Some(&w(130.0, None)), full(0), now),
-            "130%!! used · 0% left"
+            lines(true),
+            [
+                "PROFILE    ACCOUNT         5-HOUR          RESETS IN  WEEKLY          RESETS IN",
+                "default ★  me@example.com  ████░░░░░░ 42%  2h 14m     ██░░░░░░░░ 18%",
+                "lab        —               unavailable (not logged in)",
+            ]
         );
-        assert_eq!(window(None, full(10), now), "— (no data)");
+        // With no usage at all, the leading columns still line up.
+        let lines: Vec<String> = render(&entries[1..], LAYOUTS[0], true, now)
+            .iter()
+            .map(|l| plain(l))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                "PROFILE  ACCOUNT  5-HOUR  RESETS IN  WEEKLY  RESETS IN",
+                "lab      —        unavailable (not logged in)",
+            ]
+        );
+        let mut both = vec![entry("default", Some("me@example.com"), Usage::default())];
+        both.extend(entries.into_iter().skip(1));
+        let lines: Vec<String> = render(&both, LAYOUTS[0], false, now)
+            .iter()
+            .map(|l| plain(l))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                "PROFILE    5-HOUR  RESETS IN  WEEKLY  RESETS IN",
+                "default ★  — (not fetched: --no-usage or MCC_NO_USAGE)",
+                "lab        unavailable (not logged in)",
+            ]
+        );
     }
 }

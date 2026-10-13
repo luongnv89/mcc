@@ -52,7 +52,20 @@
           <h2>Unreleased</h2>
           <span class="pill pill-muted">main</span>
         </div>
-        <p style="margin:0">Nothing yet beyond 0.1.0. Follow <a href="https://github.com/luongnv89/mcc/commits/main">commits on <code>main</code></a> for work in progress.</p>
+        <h3>Added</h3>
+        <ul>
+          <li><code>mcc rename ALIAS NEW</code> (alias <code>mv</code>): renames a profile and its command. It installs the new launcher and alias block, renames the registry entry, then removes the old launcher and alias. The new name is checked like an alias in <code>mcc add</code>, and a failure rolls the changes back. The profile directory, and so its login, is kept.</li>
+          <li><code>[usage] show_email</code> in <code>~/.mcc/config.toml</code>, plus <code>--show-email</code> / <code>--hide-email</code> on <code>mcc usage</code>, to choose whether account emails are shown.</li>
+        </ul>
+        <h3>Changed</h3>
+        <ul>
+          <li><code>mcc usage</code> shows a compact table, one row per profile, instead of a block per profile: the bar and percent used, time until reset and reset time for the 5-hour and weekly windows. On narrow terminals the reset time goes first, then bars shrink 10 → 5 → 0.</li>
+          <li><code>mcc usage</code> hides account emails by default, in the table and in <code>--json</code> (<code>account</code> is <code>null</code>).</li>
+        </ul>
+        <h3>Fixed</h3>
+        <ul>
+          <li><code>mcc delete &lt;old name&gt;</code> refuses to delete a directory that a renamed profile still uses.</li>
+        </ul>
       </article>
 
       <article class="release" id="v0.1.0">
