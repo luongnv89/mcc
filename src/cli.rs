@@ -4,6 +4,15 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::env_detect::Shell;
 
+/// The terms-of-service note printed whenever session sharing is turned on.
+/// A macro so the help text below can include it verbatim.
+macro_rules! share_tos_note {
+    () => {
+        "⚠ Session sharing makes conversation history available across your Claude Code accounts. Use it only between accounts you own. Don't use it to get around usage limits, and never let other people use your account or credentials — doing so can violate Anthropic's Consumer Terms (https://www.anthropic.com/legal/consumer-terms) and Usage Policy (https://www.anthropic.com/legal/aup)."
+    };
+}
+pub(crate) use share_tos_note;
+
 const ABOUT: &str = "mcc — run several Claude Code accounts side by side.
 
 Each profile is a separate Claude Code config directory (CLAUDE_CONFIG_DIR)
@@ -22,6 +31,8 @@ Examples:
   mcc sync work --dry-run        Preview copying the default's setup into `work`
   mcc sync --all                 Bring every profile up to date with the default
   mcc rename work job            Rename profile `work` (and its command) to `job`
+  mcc share work                 Share `work`'s sessions with your other sharing profiles
+  mcc refresh-launchers          Update older launchers so `<alias> --mcc-share` works
   mcc delete personal            Log out and remove the profile completely
 
 Run `mcc help <command>` for details on a command.
@@ -104,6 +115,39 @@ pub enum Command {
         after_help = "Examples:\n  mcc rename work job\n\nThe new name is checked like `mcc add` checks an alias: it must not be an\nexisting profile, command, alias, function or shell builtin. The profile's\ndirectory, login and setup stay as they are; only the command changes."
     )]
     Rename(RenameArgs),
+
+    /// Share a profile's sessions with your other sharing profiles (off by default)
+    #[command(after_help = concat!(
+        "Examples:\n",
+        "  mcc share work                Share `work`'s sessions with every other sharing profile\n",
+        "  mcc share work --off          Stop sharing; `work` keeps a copy of the shared sessions\n",
+        "  work --mcc-share              Start `work`, turning sharing on first (like `mcc share work`)\n",
+        "  work --mcc-share --resume     …then pick a session from any sharing profile\n",
+        "\n",
+        "Sharing links the profile's projects/ directory (the sessions `claude --resume`\n",
+        "and /resume list) to ~/.mcc/shared/projects, which every sharing profile uses.\n",
+        "Nothing else is shared: credentials, the account (.claude.json), prompt history,\n",
+        "live sessions and shell snapshots stay per profile. The default profile\n",
+        "(~/.claude) can't share. `--mcc-share` must be the first argument; launchers\n",
+        "written by an older mcc need `mcc refresh-launchers` once before it works.\n",
+        "\n",
+        "The setting is kept per profile in ~/.mcc/config.toml (default: off):\n",
+        "\n",
+        "  [profiles.work]\n",
+        "  share_sessions = true  # default: false; set it with `mcc share`\n",
+        "\n",
+        "Editing the key by hand does nothing on its own: `mcc share <alias>` links the\n",
+        "directory. Every time sharing is turned on, this note is printed on stderr:\n",
+        "\n",
+        share_tos_note!()
+    ))]
+    Share(ShareArgs),
+
+    /// Rewrite profiles' launchers and shell aliases from the current templates
+    #[command(
+        after_help = "Examples:\n  mcc refresh-launchers          Every profile\n  mcc refresh-launchers work lab Only these profiles\n\nNeeded once for profiles created by an older mcc, so that `<alias> --mcc-share`\nworks: the shell alias then runs the launcher (~/.local/bin/<alias>) instead of\nclaude directly. CLAUDE_CONFIG_DIR stays exactly the same, so logins are kept.\nmcc never rewrites existing launchers on its own. Launchers that are already\ncurrent are left alone, and files mcc didn't write are skipped."
+    )]
+    RefreshLaunchers(RefreshLaunchersArgs),
 
     /// Print a shell completion script to stdout
     #[command(
@@ -199,6 +243,26 @@ pub struct RenameArgs {
 
     /// New name, which becomes the profile's command
     pub new_alias: String,
+}
+
+#[derive(Debug, Args)]
+pub struct ShareArgs {
+    /// Profile whose sessions to share
+    pub alias: String,
+
+    /// Stop sharing: give the profile its own copy of the shared sessions
+    #[arg(long)]
+    pub off: bool,
+
+    /// Called by the launcher for `<alias> --mcc-share`: only the note and errors, on stderr
+    #[arg(long, hide = true, conflicts_with = "off")]
+    pub from_launch: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct RefreshLaunchersArgs {
+    /// Profiles to refresh (default: all)
+    pub aliases: Vec<String>,
 }
 
 #[derive(Debug, Args)]

@@ -3,7 +3,9 @@ pub mod completions;
 pub mod delete;
 pub mod init;
 pub mod list;
+pub mod refresh_launchers;
 pub mod rename;
+pub mod share;
 pub mod sync;
 pub mod usage;
 

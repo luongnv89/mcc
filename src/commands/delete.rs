@@ -13,7 +13,7 @@ use crate::{fsutil, shell, ui, validate};
 
 /// Only a direct, named child of `profiles_dir` may be removed. The check is
 /// lexical, so `..` or an absolute path in the alias or registry never matches.
-fn is_profile_dir(paths: &Paths, dir: &Path) -> bool {
+pub(crate) fn is_profile_dir(paths: &Paths, dir: &Path) -> bool {
     dir.parent() == Some(paths.profiles_dir.as_path())
         && dir
             .components()
