@@ -10,6 +10,7 @@ use walkdir::WalkDir;
 use crate::config::Profile;
 use crate::fsutil;
 use crate::paths::Paths;
+use crate::shell;
 use crate::usage::Usage;
 
 #[derive(Debug, Clone, Serialize)]
@@ -37,6 +38,13 @@ pub struct ProfileMetrics {
     pub last_used: Option<String>,
     pub created_at: Option<String>,
     pub last_sync: Option<String>,
+    /// Sessions are shared with the other sharing profiles (`mcc share`);
+    /// always false for the default profile.
+    pub share_sessions: bool,
+    /// False only for an mcc launcher written before session sharing (run
+    /// `mcc refresh-launchers`); true when there is nothing to refresh, as
+    /// for the default profile or a profile without a launcher.
+    pub launcher_current: bool,
     /// 5-hour/weekly usage; filled in by `mcc list` (network), not by `collect`.
     pub usage: Usage,
     /// The config dir as Claude Code sees it (`CLAUDE_CONFIG_DIR`).
@@ -166,6 +174,10 @@ fn collect(
         }),
         created_at: reg.map(|r| r.created_at.clone()),
         last_sync: reg.and_then(|r| r.last_sync.clone()),
+        share_sessions: reg.is_some_and(|r| r.share_sessions),
+        launcher_current: reg
+            .and_then(|r| r.wrapper.as_deref())
+            .is_none_or(|w| !shell::is_mcc_wrapper(w) || shell::launcher_is_current(w)),
         usage: Usage::default(),
         config_dir: dir.to_path_buf(),
         last_used_time,
