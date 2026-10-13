@@ -44,6 +44,8 @@ fn every_subcommand_has_help() {
         "usage",
         "rename",
         "mv",
+        "share",
+        "refresh-launchers",
         "completions",
     ] {
         sb.mcc()

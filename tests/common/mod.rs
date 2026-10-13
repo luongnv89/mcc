@@ -94,29 +94,43 @@ impl Sandbox {
         std::fs::symlink_metadata(self.path(rel)).is_ok()
     }
 
-    /// `mcc` with a sandboxed environment (non-interactive: no TTY in tests).
-    pub fn mcc(&self) -> Command {
-        let mut cmd = Command::cargo_bin("mcc").unwrap();
+    /// The sandboxed environment every command here runs with. PATH holds
+    /// the fakes and `~/.local/bin`, never a real `claude` or `mcc`.
+    fn env(&self) -> Vec<(&'static str, std::ffi::OsString)> {
         let home = self.home();
         let path = format!(
             "{}:{}:/usr/bin:/bin",
             home.join("fakebin").display(),
             home.join(".local/bin").display()
         );
-        cmd.env_clear()
-            .env("HOME", home)
-            .env("MCC_HOME", home)
-            .env("PATH", path)
-            .env("SHELL", "/bin/zsh")
-            .env("TERM_PROGRAM", "TestTerm")
-            .env("MCC_CLAUDE_BIN", home.join("fakebin/claude"))
-            .env("MCC_SECURITY_BIN", home.join("fakebin/security"))
-            .env("MCC_USAGE_URL", REFUSED_URL)
-            .env("USER", "mcc-test")
-            .env("MCC_NO_SHELL_PROBE", "1")
-            .env("MCC_NON_INTERACTIVE", "1")
-            .env("NO_COLOR", "1")
-            .current_dir(home);
+        vec![
+            ("HOME", home.into()),
+            ("MCC_HOME", home.into()),
+            ("PATH", path.into()),
+            ("SHELL", "/bin/zsh".into()),
+            ("TERM_PROGRAM", "TestTerm".into()),
+            ("MCC_CLAUDE_BIN", home.join("fakebin/claude").into()),
+            ("MCC_SECURITY_BIN", home.join("fakebin/security").into()),
+            ("MCC_USAGE_URL", REFUSED_URL.into()),
+            ("USER", "mcc-test".into()),
+            ("MCC_NO_SHELL_PROBE", "1".into()),
+            ("MCC_NON_INTERACTIVE", "1".into()),
+            ("NO_COLOR", "1".into()),
+        ]
+    }
+
+    /// `mcc` with a sandboxed environment (non-interactive: no TTY in tests).
+    pub fn mcc(&self) -> Command {
+        let mut cmd = Command::cargo_bin("mcc").unwrap();
+        cmd.env_clear().envs(self.env()).current_dir(self.home());
+        cmd
+    }
+
+    /// The launcher `~/.local/bin/<alias>`, run with the sandboxed environment.
+    /// `mcc` is not on its PATH, so `--mcc-share` uses the mcc under test.
+    pub fn launcher(&self, alias: &str) -> std::process::Command {
+        let mut cmd = std::process::Command::new(self.path(&format!(".local/bin/{alias}")));
+        cmd.env_clear().envs(self.env()).current_dir(self.home());
         cmd
     }
 
