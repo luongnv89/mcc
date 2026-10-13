@@ -411,10 +411,17 @@ fn merge_into(
     Ok(())
 }
 
-/// Two regular files with the same bytes.
+/// Two regular files with the same bytes. A file that cannot be read is never
+/// "the same", so it takes the conflict path and gets backed up.
 fn same_file(a: &Path, b: &Path) -> bool {
     let regular = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_file());
-    regular(a) && regular(b) && std::fs::read(a).ok() == std::fs::read(b).ok()
+    if !(regular(a) && regular(b)) {
+        return false;
+    }
+    match (std::fs::read(a), std::fs::read(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => false,
+    }
 }
 
 /// Copy the tree at `src` (if any) to a new directory `dst`, keeping symlinks
@@ -504,6 +511,27 @@ mod tests {
         assert_eq!(read(src.join("q/b.jsonl")), "b");
         assert!(!dst.join("q").exists());
         assert_eq!(read(dst.join("p/a.jsonl")), "theirs");
+    }
+
+    #[test]
+    fn unreadable_files_are_never_the_same() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let (a, b) = (d.path().join("a"), d.path().join("b"));
+        for p in [&a, &b] {
+            std::fs::write(p, "x").unwrap();
+        }
+        assert!(same_file(&a, &b));
+        for p in [&a, &b] {
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        // Root can still read 0o000 files, so the check means nothing there.
+        if std::fs::read(&a).is_err() {
+            assert!(!same_file(&a, &b));
+        }
+        for p in [&a, &b] {
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
     }
 
     #[test]

@@ -396,6 +396,7 @@ td code { white-space: nowrap; }
 .callout {
   border: 1px solid var(--line); border-left: 3px solid var(--accent); background: var(--surface);
   border-radius: var(--radius-sm); padding: 14px 16px; margin: 0 0 1.4em; color: var(--ink-2);
+  overflow-wrap: anywhere;
 }
 .callout p:last-child { margin-bottom: 0; }
 .callout strong { color: var(--ink); }
