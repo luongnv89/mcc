@@ -3,6 +3,7 @@ pub mod completions;
 pub mod delete;
 pub mod init;
 pub mod list;
+pub mod rename;
 pub mod sync;
 pub mod usage;
 

@@ -16,6 +16,8 @@ pub struct Config {
     #[serde(default)]
     pub sync: SyncConfig,
     #[serde(default)]
+    pub usage: UsageConfig,
+    #[serde(default)]
     pub profiles: BTreeMap<String, Profile>,
 }
 
@@ -27,6 +29,14 @@ pub struct SyncConfig {
     /// Extra paths (relative to the config dir) to copy verbatim.
     #[serde(default)]
     pub extra: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UsageConfig {
+    /// Show each profile's account email in `mcc usage` (hidden by default;
+    /// `--show-email` / `--hide-email` override it for one run).
+    #[serde(default)]
+    pub show_email: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -82,6 +92,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         let mut cfg = Config::default();
         cfg.sync.exclude = vec!["plugins".into()];
+        cfg.usage.show_email = true;
         cfg.profiles.insert(
             "work".into(),
             Profile {
@@ -97,6 +108,17 @@ mod tests {
         let back = Config::load(&path).unwrap();
         assert_eq!(back.profiles, cfg.profiles);
         assert_eq!(back.sync.exclude, vec!["plugins".to_string()]);
+        assert!(back.usage.show_email);
+    }
+
+    #[test]
+    fn email_hidden_unless_configured() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[sync]\nexclude = []\n").unwrap();
+        assert!(!Config::load(&path).unwrap().usage.show_email);
+        std::fs::write(&path, "[usage]\nshow_email = true\n").unwrap();
+        assert!(Config::load(&path).unwrap().usage.show_email);
     }
 
     #[test]

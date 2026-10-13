@@ -21,6 +21,7 @@ Examples:
   mcc usage work --json          The same for `work`, as JSON
   mcc sync work --dry-run        Preview copying the default's setup into `work`
   mcc sync --all                 Bring every profile up to date with the default
+  mcc rename work job            Rename profile `work` (and its command) to `job`
   mcc delete personal            Log out and remove the profile completely
 
 Run `mcc help <command>` for details on a command.
@@ -80,7 +81,7 @@ pub enum Command {
 
     /// Show each profile's 5-hour and weekly usage in detail
     #[command(
-        after_help = "Examples:\n  mcc usage                     Every profile, the default included\n  mcc usage work                Only the `work` profile\n  mcc usage default             Only the default profile (~/.claude)\n  mcc usage --json | jq '.[] | {name, weekly: .usage.weekly.percent}'\n\nEach window shows a bar of the limit used, the percent used and left, and\nwhen it resets. `!` marks 80% or more and `!!` 95% or more. On a narrow\nterminal bars shrink and only \"resets in …\" is kept; under 80 columns bars\nare dropped when nothing fits. A profile whose usage can't be read shows\n\"unavailable\" and why. MCC_NO_USAGE=1 skips fetching (no network)."
+        after_help = "Examples:\n  mcc usage                     Every profile, the default included\n  mcc usage work                Only the `work` profile\n  mcc usage default             Only the default profile (~/.claude)\n  mcc usage --show-email        Also show each profile's account email\n  mcc usage --json | jq '.[] | {name, weekly: .usage.weekly.percent}'\n\nOne table row per profile: for the 5-hour and weekly windows, a bar of the\nlimit used with its percent, then the time until it resets (and the reset\ntime when it fits). `!` marks 80% or more and `!!` 95% or more. On a narrow\nterminal the reset time goes first, then bars shrink; under 80 columns bars\nare dropped when nothing fits. A profile whose usage can't be read shows\n\"unavailable\" and why. MCC_NO_USAGE=1 skips fetching (no network).\n\nAccount emails are hidden by default (also `null` in --json). To always\nshow them, set this in ~/.mcc/config.toml:\n\n  [usage]\n  show_email = true"
     )]
     Usage(UsageArgs),
 
@@ -96,6 +97,13 @@ pub enum Command {
         after_help = "Items: settings, claude-md, keybindings, statusline, agents, skills,\n       commands, hooks, output-styles, plugins, mcp\n\nExamples:\n  mcc sync work --dry-run\n  mcc sync work --only skills,agents\n  mcc sync --all --prune"
     )]
     Sync(SyncArgs),
+
+    /// Rename a profile: its command, launcher, shell alias and registry entry
+    #[command(
+        visible_alias = "mv",
+        after_help = "Examples:\n  mcc rename work job\n\nThe new name is checked like `mcc add` checks an alias: it must not be an\nexisting profile, command, alias, function or shell builtin. The profile's\ndirectory, login and setup stay as they are; only the command changes."
+    )]
+    Rename(RenameArgs),
 
     /// Print a shell completion script to stdout
     #[command(
@@ -157,9 +165,17 @@ pub struct UsageArgs {
     /// Only this profile (`default` or `claude` for ~/.claude)
     pub profile: Option<String>,
 
-    /// Output JSON (to stdout) instead of text
+    /// Output JSON (to stdout) instead of a table
     #[arg(long)]
     pub json: bool,
+
+    /// Show account emails (overrides `[usage] show_email` in ~/.mcc/config.toml)
+    #[arg(long, conflicts_with = "hide_email")]
+    pub show_email: bool,
+
+    /// Hide account emails (the default)
+    #[arg(long)]
+    pub hide_email: bool,
 }
 
 #[derive(Debug, Args)]
@@ -174,6 +190,15 @@ pub struct DeleteArgs {
     /// Do not run `claude auth logout` before deleting
     #[arg(long)]
     pub keep_auth: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct RenameArgs {
+    /// Profile to rename
+    pub alias: String,
+
+    /// New name, which becomes the profile's command
+    pub new_alias: String,
 }
 
 #[derive(Debug, Args)]

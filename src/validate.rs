@@ -151,6 +151,19 @@ pub fn conflicts(
     cfg: &Config,
     shell_path: Option<&str>,
 ) -> Vec<Conflict> {
+    conflicts_for(alias, paths, cfg, shell_path, None)
+}
+
+/// [`conflicts`] for a profile being renamed to `alias`: its own directory
+/// (`own_dir`, which never moves) is not a conflict, so a profile can take
+/// back the name it was created with.
+pub fn conflicts_for(
+    alias: &str,
+    paths: &Paths,
+    cfg: &Config,
+    shell_path: Option<&str>,
+    own_dir: Option<&Path>,
+) -> Vec<Conflict> {
     let mut out = Vec::new();
     let mut add = |r: String| out.push(Conflict { reason: r });
 
@@ -164,11 +177,18 @@ pub fn conflicts(
         add(format!("an mcc profile named \"{alias}\" already exists"));
     }
     let dir = paths.profile_dir(alias);
-    if dir.exists() {
-        add(format!(
-            "profile directory {} already exists",
-            paths.display(&dir)
-        ));
+    if dir.exists() && own_dir != Some(dir.as_path()) {
+        // A renamed profile keeps the directory of its first name.
+        match cfg.profiles.iter().find(|(_, p)| p.dir == dir) {
+            Some((owner, _)) if owner != alias => add(format!(
+                "profile directory {} is used by profile \"{owner}\"",
+                paths.display(&dir)
+            )),
+            _ => add(format!(
+                "profile directory {} already exists",
+                paths.display(&dir)
+            )),
+        }
     }
     let wrapper = paths.wrapper(alias);
     if std::fs::symlink_metadata(&wrapper).is_ok() {
@@ -357,5 +377,14 @@ mod tests {
         assert!(!conflicts("export", &paths, &cfg, None).is_empty());
         assert!(!conflicts("taken", &paths, &cfg, None).is_empty());
         assert!(conflicts("zz-unused-name-xyz", &paths, &cfg, None).is_empty());
+
+        // A renamed profile keeps its directory and may take its old name back.
+        let own = paths.profile_dir("was");
+        std::fs::create_dir_all(&own).unwrap();
+        assert!(!conflicts("was", &paths, &cfg, None).is_empty());
+        assert!(conflicts_for("was", &paths, &cfg, None, Some(&own)).is_empty());
+        assert!(
+            !conflicts_for("was", &paths, &cfg, None, Some(&paths.profile_dir("x"))).is_empty()
+        );
     }
 }

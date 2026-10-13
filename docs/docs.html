@@ -60,6 +60,7 @@
               <li><a href="#cmd-list">list</a></li>
               <li><a href="#cmd-usage">usage</a></li>
               <li><a href="#cmd-sync">sync</a></li>
+              <li><a href="#cmd-rename">rename</a></li>
               <li><a href="#cmd-delete">delete</a></li>
               <li><a href="#cmd-completions">completions</a></li>
               <li><a href="#global-flags">Global flags</a></li>
@@ -140,8 +141,9 @@
             <tr><td><a href="#cmd-init"><code>mcc init</code></a></td><td>Detect OS, terminal, shell, rc file and the <code>claude</code> binary</td><td><code>--force</code>, <code>--shell</code></td></tr>
             <tr><td><a href="#cmd-add"><code>mcc add [ALIAS]</code></a></td><td>Create the default profile, or a new profile with its own command</td><td><code>--clone</code>, <code>--fresh</code>, <code>--no-login</code>, <code>-y</code></td></tr>
             <tr><td><a href="#cmd-list"><code>mcc list</code></a> (<code>ls</code>)</td><td>Show every profile with metrics and usage</td><td><code>--json</code>, <code>-l</code>, <code>--no-usage</code></td></tr>
-            <tr><td><a href="#cmd-usage"><code>mcc usage [PROFILE]</code></a></td><td>Show 5-hour and weekly usage in detail</td><td><code>--json</code></td></tr>
+            <tr><td><a href="#cmd-usage"><code>mcc usage [PROFILE]</code></a></td><td>Show 5-hour and weekly usage in a table</td><td><code>--json</code>, <code>--show-email</code>, <code>--hide-email</code></td></tr>
             <tr><td><a href="#cmd-sync"><code>mcc sync [ALIAS]</code></a></td><td>Copy the default's setup into a profile</td><td><code>--all</code>, <code>--dry-run</code>, <code>--prune</code>, <code>--only</code>, <code>-y</code></td></tr>
+            <tr><td><a href="#cmd-rename"><code>mcc rename ALIAS NEW</code></a> (<code>mv</code>)</td><td>Rename a profile and its command</td><td></td></tr>
             <tr><td><a href="#cmd-delete"><code>mcc delete ALIAS</code></a> (<code>rm</code>)</td><td>Log out and remove a profile</td><td><code>-y</code>, <code>--keep-auth</code></td></tr>
             <tr><td><a href="#cmd-completions"><code>mcc completions SHELL</code></a></td><td>Print a shell completion script</td><td><code>bash</code>, <code>zsh</code>, <code>fish</code>, <code>elvish</code>, <code>powershell</code></td></tr>
             <tr><td><code>mcc help [COMMAND]</code></td><td>Usage and examples for any command</td><td></td></tr>
@@ -211,17 +213,21 @@ lab        lab      —               <span class="d">unavailable            una
 <span class="p">$ </span>mcc list --json | jq '.[] | {name, five_hour: .usage.five_hour.percent, weekly: .usage.weekly.percent}'</pre></div>
 
         <h3 id="cmd-usage"><code>mcc usage</code> <a class="anchor" href="#cmd-usage" aria-label="Link to mcc usage">#</a></h3>
-        <p class="synopsis">mcc usage [PROFILE] [--json]</p>
-        <p>Shows only usage, in more detail than <code>list</code>: a bar, percent used and left, time until reset, and the reset time in your local time zone. Pass a profile name to see just one; use <code>default</code> or <code>claude</code> for <code>~/.claude</code>. An unknown name is a usage error (exit 2).</p>
+        <p class="synopsis">mcc usage [PROFILE] [--json] [--show-email | --hide-email]</p>
+        <p>Shows only usage, as a compact table with one row per profile: for each window a bar with the percent used, the time until it resets, and the reset time in your local time zone. Pass a profile name to see just one; use <code>default</code> or <code>claude</code> for <code>~/.claude</code>. An unknown name is a usage error (exit 2).</p>
+        <p>Account emails are hidden by default, so the output is safe to share on screen. <code>--show-email</code> adds an <code>ACCOUNT</code> column; to show it every time, set <code>show_email = true</code> under <code>[usage]</code> in <code>~/.mcc/config.toml</code> (see <a href="#configuration">Configuration</a>).</p>
         <div class="table-wrap"><table>
           <thead><tr><th>Option</th><th>Effect</th></tr></thead>
           <tbody>
             <tr><td><code>PROFILE</code></td><td>Only this profile (<code>default</code> or <code>claude</code> for the default)</td></tr>
-            <tr><td><code>--json</code></td><td>Print one JSON object per profile with <code>name</code>, <code>command</code>, <code>is_default</code>, <code>account</code> and <code>usage</code></td></tr>
+            <tr><td><code>--json</code></td><td>Print one JSON object per profile with <code>name</code>, <code>command</code>, <code>is_default</code>, <code>account</code> and <code>usage</code> (<code>account</code> is <code>null</code> while emails are hidden)</td></tr>
+            <tr><td><code>--show-email</code></td><td>Show account emails for this run</td></tr>
+            <tr><td><code>--hide-email</code></td><td>Hide account emails for this run, even with <code>show_email = true</code> in the config</td></tr>
           </tbody>
         </table></div>
         <div class="code"><pre><span class="p">$ </span>mcc usage                       <span class="cm"># every profile, the default included</span>
 <span class="p">$ </span>mcc usage work                  <span class="cm"># only the `work` profile</span>
+<span class="p">$ </span>mcc usage --show-email          <span class="cm"># with each profile's account email</span>
 <span class="p">$ </span>mcc usage --json | jq '.[] | {name, weekly: .usage.weekly.percent}'</pre></div>
         <p>See <a href="#usage-limits">Usage limits</a> for how to read the output and where the data comes from.</p>
 
@@ -242,6 +248,18 @@ lab        lab      —               <span class="d">unavailable            una
         <div class="code"><pre><span class="p">$ </span>mcc sync work --dry-run               <span class="cm"># preview what would change</span>
 <span class="p">$ </span>mcc sync work --only skills,agents    <span class="cm"># only some items</span>
 <span class="p">$ </span>mcc sync --all --prune --yes          <span class="cm"># make every profile mirror the default exactly</span></pre></div>
+
+        <h3 id="cmd-rename"><code>mcc rename</code> <a class="anchor" href="#cmd-rename" aria-label="Link to mcc rename">#</a></h3>
+        <p class="synopsis">mcc rename ALIAS NEW   <span style="color:var(--muted)">alias: mcc mv</span></p>
+        <p>Gives a profile a new name, and with it a new command. The new name is checked the same way <code>add</code> checks an alias: it must not be an existing profile, command, alias, function or shell builtin; a taken name is a usage error (exit 2) and nothing changes. Then mcc:</p>
+        <ol>
+          <li>Installs the launcher <code>~/.local/bin/&lt;new&gt;</code></li>
+          <li>Adds the new alias block to your rc file</li>
+          <li>Renames the entry in <code>~/.mcc/config.toml</code></li>
+          <li>Removes the old launcher and alias block</li>
+        </ol>
+        <p>If a step before the last fails, the new launcher and alias are removed again. The profile's directory stays where it is (<code>~/.mcc/profiles/&lt;old&gt;</code>): Claude Code ties a profile's macOS Keychain login to its directory path, and cloned settings refer to it, so moving it would log the profile out. The default profile can't be renamed; its command is always <code>claude</code>.</p>
+        <div class="code"><pre><span class="p">$ </span>mcc rename work job             <span class="cm"># start it with `job` from now on</span></pre></div>
 
         <h3 id="cmd-delete"><code>mcc delete</code> <a class="anchor" href="#cmd-delete" aria-label="Link to mcc delete">#</a></h3>
         <p class="synopsis">mcc delete ALIAS [-y] [--keep-auth]   <span style="color:var(--muted)">alias: mcc rm</span></p>
@@ -306,10 +324,13 @@ lab        lab      —               <span class="d">unavailable            una
 
       <section id="configuration">
         <h2>Configuration <a class="anchor" href="#configuration" aria-label="Link to Configuration">#</a></h2>
-        <p>mcc keeps its environment and profile registry in <code>~/.mcc/config.toml</code>. You can customize what <code>sync</code> and clone copy with a <code>[sync]</code> table:</p>
+        <p>mcc keeps its environment and profile registry in <code>~/.mcc/config.toml</code>. You can customize what <code>sync</code> and clone copy with a <code>[sync]</code> table, and whether <code>mcc usage</code> shows account emails with a <code>[usage]</code> table:</p>
         <div class="code"><pre>[sync]
 exclude = ["plugins"]          <span class="cm"># built-in items to skip</span>
-extra = ["my-tool/config.yml"] <span class="cm"># additional paths (relative to the config dir) to copy</span></pre></div>
+extra = ["my-tool/config.yml"] <span class="cm"># additional paths (relative to the config dir) to copy</span>
+
+[usage]
+show_email = true              <span class="cm"># show account emails in `mcc usage` (default: false)</span></pre></div>
         <p>A corrupt <code>config.toml</code> makes mcc exit with code 3 (invalid input) instead of guessing.</p>
       </section>
 
@@ -317,22 +338,16 @@ extra = ["my-tool/config.yml"] <span class="cm"># additional paths (relative to 
         <h2>Usage limits <a class="anchor" href="#usage-limits" aria-label="Link to Usage limits">#</a></h2>
         <p><code>mcc list</code> shows 5-hour and weekly usage in its <code>5H</code> and <code>WEEK</code> columns; <code>mcc usage</code> shows it in full.</p>
         <div class="term" style="margin:0 0 1.4em"><pre><span class="p">$ </span><span class="c">mcc usage</span>
-<span class="a">◆</span> <span class="w">default ★</span>  <span class="d">claude · me@example.com</span>
-    5-hour   <span class="g">████████</span><span class="d">░░░░░░░░░░░░</span> 42% used · 58% left · resets in 2h 14m <span class="d">(Sat Oct 10 16:00)</span>
-    Weekly   <span class="g">████</span><span class="d">░░░░░░░░░░░░░░░░</span> 18% used · 82% left · resets in 3d 4h <span class="d">(Wed Oct 14 00:00)</span>
-
-<span class="a">◆</span> <span class="w">lab</span>  <span class="d">lab</span>
-    Usage    <span class="d">unavailable (not logged in)</span>
-
-<span class="a">◆</span> <span class="w">work</span>  <span class="d">work · work@corp.com</span>
-    5-hour   <span class="y">█████████████████</span><span class="d">░░░</span> <span class="y">85%!</span> used · 15% left · resets in 35m <span class="d">(Sat Oct 10 14:21)</span>
-    Weekly   <span class="r">███████████████████</span><span class="d">░</span> <span class="r">96%!!</span> used · 4% left · resets in 3d 4h <span class="d">(Wed Oct 14 00:00)</span></pre></div>
+<span class="w">PROFILE    5-HOUR           RESETS IN                  WEEKLY            RESETS IN</span>
+default ★  <span class="g">████</span><span class="d">░░░░░░</span> 42%   2h 14m <span class="d">(Sat Oct 10 16:00)</span>  <span class="g">██</span><span class="d">░░░░░░░░</span> 18%    3d 4h <span class="d">(Wed Oct 14 00:00)</span>
+lab        <span class="d">unavailable (not logged in)</span>
+work       <span class="y">█████████</span><span class="d">░</span> <span class="y">85%!</span>  35m <span class="d">(Sat Oct 10 14:21)</span>     <span class="r">██████████</span> <span class="r">96%!!</span>  3d 4h <span class="d">(Wed Oct 14 00:00)</span></pre></div>
 
         <h3>Reading the bars</h3>
         <p>Each bar is the share of the limit used. <code>!</code> after the percent marks 80% or more and <code>!!</code> marks 95% or more. In a colour terminal the bar is also green, yellow (80%+) or red (95%+), but the markers carry the same meaning, so nothing depends on colour alone (<code>--no-color</code>, <code>NO_COLOR</code> or piped output).</p>
 
         <h3>Narrow terminals</h3>
-        <p>When the output wouldn't fit the terminal, bars shrink. <code>mcc usage</code> first drops the absolute reset time and keeps the relative "resets in …", then shrinks its bar in the same 20 → 10 → 0 cell steps as <code>mcc list --long</code>. From 80 columns up a compact bar always stays; below 80 columns bars disappear (leaving <code>42% (2h)</code>) when nothing fits. Set <code>COLUMNS</code> to override the detected width. Piped output gets full-size bars unless <code>COLUMNS</code> is set, and <code>--json</code> never has bars or colour.</p>
+        <p>When the output wouldn't fit the terminal, bars shrink. <code>mcc usage</code> first drops the absolute reset time and keeps the time until the reset, then shrinks its bar in the same 10 → 5 → 0 cell steps as the <code>mcc list</code> table. From 80 columns up a compact bar always stays; below 80 columns bars disappear (leaving just the percent, such as <code>42%</code>) when nothing fits. Set <code>COLUMNS</code> to override the detected width. Piped output gets full-size bars unless <code>COLUMNS</code> is set, and <code>--json</code> never has bars or colour.</p>
 
         <h3>Where the data comes from</h3>
         <p>mcc reads each profile's own Claude Code login (<code>&lt;config dir&gt;/.credentials.json</code>, or on macOS the login Keychain item Claude Code created for that config dir) and asks Anthropic's usage endpoint, <code>https://api.anthropic.com/api/oauth/usage</code>, the one behind Claude Code's <code>/usage</code> screen.</p>
@@ -344,7 +359,7 @@ extra = ["my-tool/config.yml"] <span class="cm"># additional paths (relative to 
         </ul>
 
         <h3>JSON format</h3>
-        <p>In <code>mcc list --json</code> every profile has a <code>usage</code> object. <code>mcc usage --json</code> prints one object per profile with <code>name</code>, <code>command</code>, <code>is_default</code>, <code>account</code> (or <code>null</code>) and the same <code>usage</code> object:</p>
+        <p>In <code>mcc list --json</code> every profile has a <code>usage</code> object. <code>mcc usage --json</code> prints one object per profile with <code>name</code>, <code>command</code>, <code>is_default</code>, <code>account</code> (<code>null</code> when logged out, or while emails are hidden, as they are by default) and the same <code>usage</code> object:</p>
         <div class="code"><pre>"usage": {
   "status": "ok",
   "reason": null,

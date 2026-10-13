@@ -42,6 +42,8 @@ fn every_subcommand_has_help() {
         "rm",
         "sync",
         "usage",
+        "rename",
+        "mv",
         "completions",
     ] {
         sb.mcc()
