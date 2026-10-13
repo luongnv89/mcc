@@ -25,22 +25,48 @@ fn end(id: &str) -> String {
     format!("# <<< mcc:{id} <<<")
 }
 
+/// Marks a launcher written from the current template (one that understands
+/// `--mcc-share`). Launchers without it predate session sharing and are only
+/// rewritten by `mcc refresh-launchers`.
+pub const LAUNCHER_MARKER: &str = "# mcc-launcher: 2";
+
+/// The launch flag that turns on session sharing. Only the wrapper knows it:
+/// it is stripped before claude starts.
+pub const SHARE_FLAG: &str = "--mcc-share";
+
 /// Wrapper script that launches claude with the profile's config dir. Uses
 /// `claude` from PATH when available, else the binary found at `add` time
 /// (so it also works from cron, IDE tasks, or shells with a trimmed PATH).
+///
+/// A first argument of `--mcc-share` is removed and runs
+/// `mcc share <alias> --from-launch` first (`mcc` from PATH, else `mcc_bin`);
+/// if that fails, claude is not started. Without the flag the script does
+/// exactly what launchers did before session sharing existed, and the
+/// `CLAUDE_CONFIG_DIR` line is unchanged: the keychain login is keyed on it.
 pub fn wrapper_script(
     paths: &Paths,
     alias: &str,
     profile_dir: &Path,
     claude_bin: Option<&Path>,
+    mcc_bin: Option<&Path>,
 ) -> String {
     let fallback = match claude_bin {
         Some(bin) => format!("exec {} \"$@\"", sh_quote(&bin.to_string_lossy())),
         None => "echo \"claude not found on PATH\" >&2\nexit 127".to_string(),
     };
+    let share = format!("share {} --from-launch || exit $?", sh_quote(alias));
+    let mcc_fallback = match mcc_bin {
+        Some(bin) => format!("{} {share}", sh_quote(&bin.to_string_lossy())),
+        None => "echo \"mcc not found on PATH\" >&2; exit 127".to_string(),
+    };
     format!(
-        "#!/bin/sh\n{WRAPPER_MARKER}\n# Claude Code profile \"{alias}\". Remove with: mcc delete {alias}\n\
+        "#!/bin/sh\n{WRAPPER_MARKER}\n{LAUNCHER_MARKER}\n\
+         # Claude Code profile \"{alias}\". Remove with: mcc delete {alias}\n\
+         # Start it with {SHARE_FLAG} to share its sessions (see: mcc help share).\n\
          export CLAUDE_CONFIG_DIR=\"{dir}\"\n\
+         case \"$1\" in\n  {SHARE_FLAG})\n    shift\n    \
+         if command -v mcc >/dev/null 2>&1; then mcc {share}\n    \
+         else {mcc_fallback}; fi ;;\nesac\n\
          if command -v claude >/dev/null 2>&1; then exec claude \"$@\"; fi\n\
          {fallback}\n",
         dir = paths.shell_expr(profile_dir)
@@ -52,6 +78,23 @@ fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// [`wrapper_script`] with this mcc binary as the fallback for `--mcc-share`.
+pub fn launcher_script(
+    paths: &Paths,
+    alias: &str,
+    profile_dir: &Path,
+    claude_bin: Option<&Path>,
+) -> String {
+    let mcc_bin = std::env::current_exe().ok();
+    wrapper_script(paths, alias, profile_dir, claude_bin, mcc_bin.as_deref())
+}
+
+/// Write an executable launcher script to `path`.
+pub fn install_launcher(path: &Path, script: &str) -> Result<()> {
+    fsutil::write_atomic(path, script.as_bytes())?;
+    fsutil::set_executable(path)
+}
+
 pub fn write_wrapper(
     paths: &Paths,
     alias: &str,
@@ -59,11 +102,10 @@ pub fn write_wrapper(
     claude_bin: Option<&Path>,
 ) -> Result<PathBuf> {
     let path = paths.wrapper(alias);
-    fsutil::write_atomic(
+    install_launcher(
         &path,
-        wrapper_script(paths, alias, profile_dir, claude_bin).as_bytes(),
+        &launcher_script(paths, alias, profile_dir, claude_bin),
     )?;
-    fsutil::set_executable(&path)?;
     Ok(path)
 }
 
@@ -74,12 +116,36 @@ pub fn is_mcc_wrapper(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// The rc block body defining the alias for one profile.
-pub fn alias_block(paths: &Paths, shell: Shell, alias: &str, profile_dir: &Path) -> String {
-    let dir = paths.shell_expr(profile_dir);
-    let line = match shell {
-        Shell::Fish => format!("alias {alias} 'env CLAUDE_CONFIG_DIR=\"{dir}\" claude'"),
-        Shell::Zsh | Shell::Bash => format!("alias {alias}='CLAUDE_CONFIG_DIR=\"{dir}\" claude'"),
+/// True when the launcher at `path` was written from the current template.
+pub fn launcher_is_current(path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .map(|s| s.lines().any(|l| l == LAUNCHER_MARKER))
+        .unwrap_or(false)
+}
+
+/// The rc block body defining the alias for one profile. With a launcher the
+/// alias runs it, so `<alias> --mcc-share` reaches the launcher instead of
+/// being handed to claude; without one it sets `CLAUDE_CONFIG_DIR` itself.
+pub fn alias_block(
+    paths: &Paths,
+    shell: Shell,
+    alias: &str,
+    profile_dir: &Path,
+    launcher: Option<&Path>,
+) -> String {
+    let line = match (launcher, shell) {
+        (Some(w), Shell::Fish) => format!("alias {alias} '\"{}\"'", paths.shell_expr(w)),
+        (Some(w), Shell::Zsh | Shell::Bash) => {
+            format!("alias {alias}='\"{}\"'", paths.shell_expr(w))
+        }
+        (None, Shell::Fish) => format!(
+            "alias {alias} 'env CLAUDE_CONFIG_DIR=\"{}\" claude'",
+            paths.shell_expr(profile_dir)
+        ),
+        (None, Shell::Zsh | Shell::Bash) => format!(
+            "alias {alias}='CLAUDE_CONFIG_DIR=\"{}\" claude'",
+            paths.shell_expr(profile_dir)
+        ),
     };
     format!(
         "# Claude Code profile \"{alias}\" — managed by mcc (remove with: mcc delete {alias})\n{line}"
@@ -98,6 +164,21 @@ pub fn has_block(rc: &Path, id: &str) -> bool {
     std::fs::read_to_string(rc)
         .map(|s| s.contains(&begin(id)))
         .unwrap_or(false)
+}
+
+/// The body of block `id` in `rc` (between its markers), if there is one.
+pub fn block_body(rc: &Path, id: &str) -> Option<String> {
+    let text = std::fs::read_to_string(rc).ok()?;
+    let (b, e) = (begin(id), end(id));
+    let mut lines = text.lines().skip_while(|l| l.trim() != b).skip(1);
+    let mut body = Vec::new();
+    for l in lines.by_ref() {
+        if l.trim() == e {
+            return Some(body.join("\n"));
+        }
+        body.push(l);
+    }
+    None
 }
 
 /// Insert or replace the block `id` in `rc`. Backs the file up first.
@@ -305,19 +386,113 @@ mod tests {
     fn alias_lines() {
         let paths = Paths::new("/h".into());
         let dir = paths.profile_dir("work");
+        let wrapper = paths.wrapper("work");
+        // With a launcher, the alias runs it (so `work --mcc-share` reaches it).
         assert!(
-            alias_block(&paths, Shell::Zsh, "work", &dir)
+            alias_block(&paths, Shell::Zsh, "work", &dir, Some(&wrapper))
+                .contains("\nalias work='\"$HOME/.local/bin/work\"'")
+        );
+        assert!(
+            alias_block(&paths, Shell::Fish, "work", &dir, Some(&wrapper))
+                .contains("\nalias work '\"$HOME/.local/bin/work\"'")
+        );
+        // Without one, the legacy form that sets CLAUDE_CONFIG_DIR itself.
+        assert!(
+            alias_block(&paths, Shell::Zsh, "work", &dir, None)
                 .contains("alias work='CLAUDE_CONFIG_DIR=\"$HOME/.mcc/profiles/work\" claude'")
         );
         assert!(
-            alias_block(&paths, Shell::Fish, "work", &dir)
+            alias_block(&paths, Shell::Fish, "work", &dir, None)
                 .contains("alias work 'env CLAUDE_CONFIG_DIR=\"$HOME/.mcc/profiles/work\" claude'")
         );
-        let w = wrapper_script(&paths, "work", &dir, Some(Path::new("/opt/it's/claude")));
-        assert!(w.starts_with("#!/bin/sh\n# managed-by: mcc\n"));
+        let w = wrapper_script(
+            &paths,
+            "work",
+            &dir,
+            Some(Path::new("/opt/it's/claude")),
+            Some(Path::new("/opt/bin/mcc")),
+        );
+        assert!(w.starts_with("#!/bin/sh\n# managed-by: mcc\n# mcc-launcher: 2\n"));
         assert!(w.contains("export CLAUDE_CONFIG_DIR=\"$HOME/.mcc/profiles/work\"\n"));
         assert!(w.contains("if command -v claude >/dev/null 2>&1; then exec claude \"$@\"; fi\n"));
         assert!(w.contains("exec '/opt/it'\\''s/claude' \"$@\"\n"), "{w}");
-        assert!(wrapper_script(&paths, "work", &dir, None).contains("exit 127"));
+        assert!(wrapper_script(&paths, "work", &dir, None, None).contains("exit 127"));
+    }
+
+    /// The launcher every profile had before session sharing (v0.2.0).
+    const LEGACY_WRAPPER: &str = "#!/bin/sh\n# managed-by: mcc\n\
+        # Claude Code profile \"work\". Remove with: mcc delete work\n\
+        export CLAUDE_CONFIG_DIR=\"$HOME/.mcc/profiles/work\"\n\
+        if command -v claude >/dev/null 2>&1; then exec claude \"$@\"; fi\n\
+        exec '/opt/claude' \"$@\"\n";
+
+    #[test]
+    fn launcher_keeps_the_legacy_launch_lines() {
+        let paths = Paths::new("/h".into());
+        let dir = paths.profile_dir("work");
+        let w = wrapper_script(
+            &paths,
+            "work",
+            &dir,
+            Some(Path::new("/opt/claude")),
+            Some(Path::new("/opt/bin/mcc")),
+        );
+        // The CLAUDE_CONFIG_DIR export (the keychain service is a hash of the
+        // value it produces) and the exec lines are byte-identical to v0.2.0.
+        let legacy: Vec<&str> = LEGACY_WRAPPER.lines().collect();
+        let export = legacy.iter().find(|l| l.starts_with("export ")).unwrap();
+        assert_eq!(
+            w.lines()
+                .filter(|l| l.starts_with("export "))
+                .collect::<Vec<_>>(),
+            [*export]
+        );
+        assert!(
+            w.ends_with(&format!("{}\n{}\n", legacy[4], legacy[5])),
+            "{w}"
+        );
+        // The only addition on the launch path is the `--mcc-share` branch,
+        // placed between the export and the exec lines.
+        let added: Vec<&str> = w.lines().filter(|l| !legacy.contains(l)).collect();
+        assert_eq!(
+            added,
+            [
+                "# mcc-launcher: 2",
+                "# Start it with --mcc-share to share its sessions (see: mcc help share).",
+                "case \"$1\" in",
+                "  --mcc-share)",
+                "    shift",
+                "    if command -v mcc >/dev/null 2>&1; then mcc share 'work' --from-launch || exit $?",
+                "    else '/opt/bin/mcc' share 'work' --from-launch || exit $?; fi ;;",
+                "esac",
+            ],
+            "{w}"
+        );
+        let no_mcc = wrapper_script(&paths, "work", &dir, None, None);
+        assert!(no_mcc.contains("else echo \"mcc not found on PATH\" >&2; exit 127; fi ;;"));
+    }
+
+    #[test]
+    fn launcher_marker_and_block_body() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths::new(d.path().to_path_buf());
+        let w = d.path().join("work");
+        assert!(!launcher_is_current(&w));
+        std::fs::write(&w, LEGACY_WRAPPER).unwrap();
+        assert!(is_mcc_wrapper(&w) && !launcher_is_current(&w));
+        let dir = paths.profile_dir("work");
+        std::fs::write(&w, wrapper_script(&paths, "work", &dir, None, None)).unwrap();
+        assert!(is_mcc_wrapper(&w) && launcher_is_current(&w));
+
+        let rc = d.path().join(".zshrc");
+        assert_eq!(block_body(&rc, "work"), None);
+        upsert_block(&paths, &rc, "work", "# c\nalias work='true'").unwrap();
+        upsert_block(&paths, &rc, "lab", "alias lab='x'").unwrap();
+        assert_eq!(
+            block_body(&rc, "work").as_deref(),
+            Some("# c\nalias work='true'")
+        );
+        assert_eq!(block_body(&rc, "lab").as_deref(), Some("alias lab='x'"));
+        assert_eq!(block_body(&rc, "nope"), None);
     }
 }

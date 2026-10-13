@@ -61,6 +61,8 @@
               <li><a href="#cmd-usage">usage</a></li>
               <li><a href="#cmd-sync">sync</a></li>
               <li><a href="#cmd-rename">rename</a></li>
+              <li><a href="#cmd-share">share</a></li>
+              <li><a href="#cmd-refresh-launchers">refresh-launchers</a></li>
               <li><a href="#cmd-delete">delete</a></li>
               <li><a href="#cmd-completions">completions</a></li>
               <li><a href="#global-flags">Global flags</a></li>
@@ -68,6 +70,7 @@
           </li>
           <li><a href="#clone-sync">Clone &amp; sync rules</a></li>
           <li><a href="#configuration">Configuration</a></li>
+          <li><a href="#session-sharing">Session sharing</a></li>
           <li><a href="#usage-limits">Usage limits</a></li>
           <li><a href="#aliases">Alias rules</a></li>
           <li><a href="#files">Files &amp; locations</a></li>
@@ -145,6 +148,8 @@
             <tr><td><a href="#cmd-usage"><code>mcc usage [PROFILE]</code></a></td><td>Show 5-hour and weekly usage in a table</td><td><code>--json</code>, <code>--show-email</code>, <code>--hide-email</code></td></tr>
             <tr><td><a href="#cmd-sync"><code>mcc sync [ALIAS]</code></a></td><td>Copy the default's setup into a profile</td><td><code>--all</code>, <code>--dry-run</code>, <code>--prune</code>, <code>--only</code>, <code>-y</code></td></tr>
             <tr><td><a href="#cmd-rename"><code>mcc rename ALIAS NEW</code></a> (<code>mv</code>)</td><td>Rename a profile and its command</td><td></td></tr>
+            <tr><td><a href="#cmd-share"><code>mcc share ALIAS</code></a></td><td>Share the profile's sessions with your other sharing profiles (off by default)</td><td><code>--off</code></td></tr>
+            <tr><td><a href="#cmd-refresh-launchers"><code>mcc refresh-launchers [ALIAS...]</code></a></td><td>Rewrite launchers and shell aliases from the current templates</td><td></td></tr>
             <tr><td><a href="#cmd-delete"><code>mcc delete ALIAS</code></a> (<code>rm</code>)</td><td>Log out and remove a profile</td><td><code>-y</code>, <code>--keep-auth</code></td></tr>
             <tr><td><a href="#cmd-completions"><code>mcc completions SHELL</code></a></td><td>Print a shell completion script</td><td><code>bash</code>, <code>zsh</code>, <code>fish</code>, <code>elvish</code>, <code>powershell</code></td></tr>
             <tr><td><code>mcc help [COMMAND]</code></td><td>Usage and examples for any command</td><td></td></tr>
@@ -262,6 +267,19 @@ lab        lab      —               <span class="d">unavailable            una
         <p>If a step before the last fails, the new launcher and alias are removed again. The profile's directory stays where it is (<code>~/.mcc/profiles/&lt;old&gt;</code>): Claude Code ties a profile's macOS Keychain login to its directory path, and cloned settings refer to it, so moving it would log the profile out. The default profile can't be renamed; its command is always <code>claude</code>.</p>
         <div class="code"><pre><span class="p">$ </span>mcc rename work job             <span class="cm"># start it with `job` from now on</span></pre></div>
 
+        <h3 id="cmd-share"><code>mcc share</code> <a class="anchor" href="#cmd-share" aria-label="Link to mcc share">#</a></h3>
+        <p class="synopsis">mcc share ALIAS [--off]   <span style="color:var(--muted)">or: ALIAS --mcc-share [claude args…]</span></p>
+        <p>Turns session sharing on for a profile: its <code>projects/</code> directory, where Claude Code keeps the sessions <code>--resume</code> lists, becomes a link to <code>~/.mcc/shared/projects</code>, shared by every sharing profile. Starting the profile with <code>--mcc-share</code> as the first argument does the same before Claude Code starts; the flag itself is not passed on, and if sharing can't be turned on, Claude Code is not started. <code>--off</code> gives the profile its own copy of the shared sessions again. Every time sharing is turned on, mcc prints the terms-of-service note on stderr. See <a href="#session-sharing">Session sharing</a>.</p>
+        <div class="code"><pre><span class="p">$ </span>mcc share work                 <span class="cm"># share work's sessions</span>
+<span class="p">$ </span>work --mcc-share --resume      <span class="cm"># the same, then pick a session from any sharing profile</span>
+<span class="p">$ </span>mcc share work --off           <span class="cm"># stop sharing</span></pre></div>
+
+        <h3 id="cmd-refresh-launchers"><code>mcc refresh-launchers</code> <a class="anchor" href="#cmd-refresh-launchers" aria-label="Link to mcc refresh-launchers">#</a></h3>
+        <p class="synopsis">mcc refresh-launchers [ALIAS...]</p>
+        <p>Rewrites the launcher and shell alias of the given profiles (all of them when none are given) from the current templates, so that <code>&lt;alias&gt; --mcc-share</code> works for profiles created by an older mcc: the alias then runs the launcher instead of calling <code>claude</code> directly. <code>CLAUDE_CONFIG_DIR</code> stays exactly the same, so logins are kept. mcc never rewrites existing launchers on its own. Launchers that are already current are left alone, and launchers mcc didn't write are skipped. If a step fails, the previous launchers and aliases are restored.</p>
+        <div class="code"><pre><span class="p">$ </span>mcc refresh-launchers
+<span class="p">$ </span>mcc refresh-launchers work lab</pre></div>
+
         <h3 id="cmd-delete"><code>mcc delete</code> <a class="anchor" href="#cmd-delete" aria-label="Link to mcc delete">#</a></h3>
         <p class="synopsis">mcc delete ALIAS [-y] [--keep-auth]   <span style="color:var(--muted)">alias: mcc rm</span></p>
         <p>Logs the profile out with <code>claude auth logout</code> (clearing its keychain entry), then removes its directory, launcher, shell alias block and registry entry. It asks you to type the name to confirm unless you pass <code>--yes</code>. It refuses to delete the default profile, and only removes launchers that mcc created. Given the old name of a renamed profile, it refuses (exit 2) and names the profile that still uses that directory.</p>
@@ -310,7 +328,7 @@ lab        lab      —               <span class="d">unavailable            una
             <tr><td><code>mcp</code></td><td>the <code>mcpServers</code> entry from <code>~/.claude.json</code>, merged; the rest of the profile's state is kept</td></tr>
           </tbody>
         </table></div>
-        <div class="callout"><p><strong>Never copied:</strong> credentials, account identity (<code>oauthAccount</code>, <code>userID</code>), history, projects and sessions, todos, telemetry, caches and file history.</p></div>
+        <div class="callout"><p><strong>Never copied:</strong> credentials, account identity (<code>oauthAccount</code>, <code>userID</code>), history, projects and sessions, todos, telemetry, caches and file history. Sessions can be <em>shared</em> instead, opt-in; see <a href="#session-sharing">Session sharing</a>.</p></div>
 
         <h3>Path rewriting</h3>
         <p>Each profile uses its own copies. In settings, plugin manifests and MCP server entries, any <code>~/.claude/…</code>, <code>$HOME/.claude/…</code> or <code>/Users/you/.claude/…</code> path that points at a <em>copied</em> item (for example <code>~/.claude/hooks/notify.sh</code>) is rewritten to the profile directory.</p>
@@ -331,8 +349,25 @@ exclude = ["plugins"]          <span class="cm"># built-in items to skip</span>
 extra = ["my-tool/config.yml"] <span class="cm"># additional paths (relative to the config dir) to copy</span>
 
 [usage]
-show_email = true              <span class="cm"># show account emails in `mcc usage` (default: false)</span></pre></div>
+show_email = true              <span class="cm"># show account emails in `mcc usage` (default: false)</span>
+
+[profiles.work]
+share_sessions = true          <span class="cm"># default: false; set it with `mcc share work`</span></pre></div>
         <p>A corrupt <code>config.toml</code> makes mcc exit with code 3 (invalid input) instead of guessing.</p>
+      </section>
+
+      <section id="session-sharing">
+        <h2>Session sharing <a class="anchor" href="#session-sharing" aria-label="Link to Session sharing">#</a></h2>
+        <p>Each profile keeps its sessions to itself unless you turn sharing on. Sharing is a per-profile setting, <code>share_sessions</code> under <code>[profiles.&lt;alias&gt;]</code> in <code>~/.mcc/config.toml</code>, and it is <strong>off by default</strong>. Turn it on with <code>mcc share &lt;alias&gt;</code>, or by starting the profile with <code>&lt;alias&gt; --mcc-share</code>. Editing the key by hand does nothing on its own, because <code>mcc share</code> is what links the directory. Once two or more profiles share, <code>claude --resume</code> and <code>/resume</code> in any of them list the sessions of all of them.</p>
+        <div class="callout"><p>Every time sharing is turned on, mcc prints this note on stderr:</p><p>⚠ Session sharing makes conversation history available across your Claude Code accounts. Use it only between accounts you own. Don't use it to get around usage limits, and never let other people use your account or credentials — doing so can violate Anthropic's Consumer Terms (<a href="https://www.anthropic.com/legal/consumer-terms">https://www.anthropic.com/legal/consumer-terms</a>) and Usage Policy (<a href="https://www.anthropic.com/legal/aup">https://www.anthropic.com/legal/aup</a>).</p></div>
+        <ul>
+          <li><strong>Shared:</strong> only the profile's <code>projects/</code> directory (the session transcripts). It becomes a link to <code>~/.mcc/shared/projects</code>. Existing sessions are moved into the store without overwriting anything. If a file of the same name with different contents is already there, the store's copy is kept and the profile's copy goes to <code>~/.mcc/backups/shared-projects-&lt;alias&gt;-&lt;time&gt;/</code>.</li>
+          <li><strong>Never shared:</strong> credentials (<code>.credentials.json</code>, the keychain login), the account (<code>.claude.json</code>), <code>policy-limits.json</code>, <code>remote-settings.json</code>, prompt history, live session state (<code>sessions/</code>), <code>shell-snapshots/</code>, <code>file-history/</code> and <code>todos/</code>.</li>
+          <li><strong><code>--off</code></strong> gives the profile a directory of its own again, with a copy of the shared sessions. The store stays for the other sharing profiles. mcc never deletes it, so remove <code>~/.mcc/shared</code> by hand once no profile shares.</li>
+          <li><strong><code>mcc delete</code></strong> of a sharing profile removes only its link. <code>mcc rename</code> keeps sharing as it is. The default profile can't share.</li>
+          <li><strong>Caveats:</strong> <code>mcc list</code> marks sharing profiles <code>(shared)</code>, and their session counts include every sharing profile's sessions. Claude Code's <code>cleanupPeriodDays</code> cleanup in any sharing profile applies to the shared sessions of all of them.</li>
+        </ul>
+        <p><strong>Upgrading:</strong> launchers and aliases created by an older mcc stay exactly as they were. Run <code>mcc refresh-launchers</code> once so that <code>&lt;alias&gt; --mcc-share</code> works. <code>mcc share</code> works without it.</p>
       </section>
 
       <section id="usage-limits">
@@ -408,6 +443,7 @@ work       <span class="y">█████████</span><span class="d">░
             <tr><td>Shell alias</td><td>A managed block in your rc file, between <code># &gt;&gt;&gt; mcc:&lt;alias&gt; &gt;&gt;&gt;</code> and <code># &lt;&lt;&lt; mcc:&lt;alias&gt; &lt;&lt;&lt;</code></td></tr>
             <tr><td>Config &amp; registry</td><td><code>~/.mcc/config.toml</code></td></tr>
             <tr><td>Log</td><td><code>~/.mcc/logs/mcc.log</code>; every run is appended here</td></tr>
+            <tr><td>Shared sessions</td><td><code>~/.mcc/shared/projects</code>, only for profiles that opted in with <code>mcc share</code></td></tr>
             <tr><td>rc file backups</td><td><code>~/.mcc/backups/</code></td></tr>
             <tr><td>Sync backups</td><td><code>&lt;profile&gt;/.mcc-backup/&lt;timestamp&gt;/</code></td></tr>
           </tbody>

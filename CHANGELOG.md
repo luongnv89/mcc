@@ -4,6 +4,16 @@ All notable changes to mcc are recorded here. The format follows [Keep a Changel
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in session sharing between profiles, off by default. `mcc share ALIAS` (or starting a profile with `ALIAS --mcc-share`) links the profile's `projects/` to `~/.mcc/shared/projects`, so `--resume` lists the sessions of every sharing profile. `mcc share ALIAS --off` gives the profile its own copy again. The setting is `share_sessions` under `[profiles.ALIAS]` in `~/.mcc/config.toml`. Only sessions are shared: never credentials, the account, history or live session state. Every time sharing is turned on, mcc prints a note about Anthropic's Consumer Terms and Usage Policy. `mcc list` marks sharing profiles, and `--json` has `share_sessions` and `launcher_current`. ([#25](https://github.com/luongnv89/mcc/issues/25))
+- `mcc refresh-launchers [ALIAS...]` rewrites launchers and shell aliases from the current templates. ([#25](https://github.com/luongnv89/mcc/issues/25))
+
+### Changed
+
+- New launchers handle `--mcc-share`, and new shell aliases run the launcher instead of calling `claude` directly. `CLAUDE_CONFIG_DIR` is unchanged, so logins are kept. **Upgrade note:** existing launchers and aliases are not modified; run `mcc refresh-launchers` once to use `ALIAS --mcc-share` with profiles created before this release. ([#25](https://github.com/luongnv89/mcc/issues/25))
+- `share` and `refresh-launchers` are reserved and can't be used as aliases. ([#25](https://github.com/luongnv89/mcc/issues/25))
+
 ## [0.2.0] - 2026-10-13
 
 `mcc usage` is now a compact table that hides account emails by default, and `mcc rename` renames a profile and its command while keeping its login.

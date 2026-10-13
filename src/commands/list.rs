@@ -52,8 +52,26 @@ pub fn run(paths: &Paths, cfg: &Config, args: &ListArgs) -> Result<()> {
             if all.len() == 1 { "" } else { "s" },
             ui::human_size(total)
         ));
+        sharing_notes(&all);
     }
     Ok(())
+}
+
+/// Footnotes (stderr) for session sharing and launchers that predate it.
+fn sharing_notes(all: &[ProfileMetrics]) {
+    if all.iter().any(|m| m.share_sessions) {
+        ui::info(
+            "shared: sessions shared with every sharing profile (their session counts include all of them)",
+        );
+    }
+    let stale = all.iter().filter(|m| !m.launcher_current).count();
+    if stale > 0 {
+        ui::hint(&format!(
+            "{stale} launcher{} predate{} session sharing — run `mcc refresh-launchers` so `<alias> --mcc-share` works",
+            if stale == 1 { "" } else { "s" },
+            if stale == 1 { "s" } else { "" },
+        ));
+    }
 }
 
 /// `--no-usage`, or `MCC_NO_USAGE` set to anything but "" / "0".
@@ -190,6 +208,11 @@ fn table_lines(all: &[ProfileMetrics], bar: usize, now: DateTime<Utc>) -> Vec<St
             } else {
                 m.name.clone()
             };
+            let name = if m.share_sessions {
+                format!("{name} (shared)")
+            } else {
+                name
+            };
             let name = if m.exists {
                 name
             } else {
@@ -297,7 +320,16 @@ fn card(out: &mut impl Write, m: &ProfileMetrics, bar: usize, now: DateTime<Utc>
     row(
         out,
         "Projects",
-        format!("{} ({} sessions)", m.projects, m.sessions),
+        format!(
+            "{} ({} sessions{})",
+            m.projects,
+            m.sessions,
+            if m.share_sessions {
+                ", shared with every sharing profile"
+            } else {
+                ""
+            }
+        ),
     )?;
     row(out, "Size", ui::human_size(m.size_bytes))?;
     row(out, "Last used", metrics::ago(m.last_used_time))?;
