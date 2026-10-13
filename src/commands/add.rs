@@ -227,7 +227,7 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
                     paths,
                     rc,
                     &alias,
-                    &shell::alias_block(paths, sh, &alias, &profile_dir),
+                    &shell::alias_block(paths, sh, &alias, &profile_dir, Some(&wrapper)),
                 )?;
                 undo.push(Undo::RcBlock(rc.clone(), alias.clone()));
                 step.ok(&paths.display(rc));

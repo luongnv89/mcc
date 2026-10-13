@@ -120,7 +120,7 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &RenameArgs) -> Result<()> {
                         paths,
                         rc,
                         new,
-                        &shell::alias_block(paths, sh, new, &profile.dir),
+                        &shell::alias_block(paths, sh, new, &profile.dir, Some(&wrapper)),
                     )?;
                     undo.push(Undo::RcBlock(rc.clone(), new.to_string()));
                 }

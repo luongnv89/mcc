@@ -108,7 +108,11 @@ fn clone_profile_end_to_end() {
     let rc = sb.read(".zshrc");
     assert!(rc.starts_with("export EDITOR=vim\n"), "{rc}");
     assert!(rc.contains("# >>> mcc:work >>>\n"));
-    assert!(rc.contains("alias work='CLAUDE_CONFIG_DIR=\"$HOME/.mcc/profiles/work\" claude'"));
+    // The alias runs the launcher, so `work --mcc-share` reaches it.
+    assert!(
+        rc.contains("alias work='\"$HOME/.local/bin/work\"'"),
+        "{rc}"
+    );
     let cfg = sb.read(".mcc/config.toml");
     assert!(
         cfg.contains("[profiles.work]") && cfg.contains("mode = \"clone\""),

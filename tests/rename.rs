@@ -53,10 +53,7 @@ fn rename_changes_the_command_and_keeps_the_profile() {
     assert!(!sb.exists(".local/bin/work"));
     let rc = sb.read(".zshrc");
     assert!(!rc.contains("mcc:work"), "{rc}");
-    assert!(
-        rc.contains("alias job='CLAUDE_CONFIG_DIR=\"$HOME/.mcc/profiles/work\" claude'"),
-        "{rc}"
-    );
+    assert!(rc.contains("alias job='\"$HOME/.local/bin/job\"'"), "{rc}");
     assert!(
         rc.contains("mcc:keep") && rc.contains("alias cus_luong="),
         "{rc}"
