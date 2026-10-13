@@ -48,7 +48,7 @@ Claude Code reads its config from `CLAUDE_CONFIG_DIR`, which defaults to `~/.cla
 - **`usage`.** Every profile's 5-hour and weekly limits in one compact table: a usage bar with the percent used, time until reset and the reset time. Near-limit accounts stand out with `!` / `!!` markers and colour. Account emails are hidden unless you ask for them. `--json` for scripts.
 - **`rename`.** Gives a profile a new name, and with it a new command. The new name is checked like an alias in `add`. The profile's directory, login and setup stay as they are.
 - **`sync`.** A one-way copy of setup from the default profile into a profile, with `--dry-run`, `--prune`, `--only`, and `--all`.
-- **`delete`.** Logs the profile out (clearing its keychain entry), then removes its directory, launcher, shell alias, and registry entry.
+- **`delete`.** Logs the profile out (clearing its keychain entry), then removes its directory, launcher, shell alias, and registry entry. It refuses the old name of a renamed profile, so that profile's files are never removed by mistake.
 - **Clear progress everywhere.** Steps are numbered with a status and timing. Every run is logged to `~/.mcc/logs/mcc.log`.
 - **Safe by design.** Changes are rolled back if `add` fails. Your rc file is backed up before mcc edits it. mcc only removes what it created.
 
@@ -145,7 +145,7 @@ mcc completions fish > ~/.config/fish/completions/mcc.fish
 | What | Where |
 |---|---|
 | Default profile | `~/.claude` + `~/.claude.json` (command: `claude`) |
-| mcc profiles | `~/.mcc/profiles/<alias>/`, used as `CLAUDE_CONFIG_DIR` |
+| mcc profiles | `~/.mcc/profiles/<alias>/` (named after the alias the profile was created with; `mcc rename` keeps the directory), used as `CLAUDE_CONFIG_DIR` |
 | Launcher | `~/.local/bin/<alias>` (works in any shell as soon as it's written) |
 | Shell alias | a managed block in your rc file, between `# >>> mcc:<alias> >>>` and `# <<< mcc:<alias> <<<` |
 | mcc state | `~/.mcc/config.toml` (environment + registry), `~/.mcc/logs/mcc.log`, `~/.mcc/backups/` (rc file backups) |
@@ -219,7 +219,7 @@ work       █████████░ 85%!  35m (Sat Oct 10 14:21)     █�
 - **Tokens stay private.** The access token is only sent to that endpoint, for its own profile. It is never printed, logged, or written anywhere. mcc never refreshes tokens: if a login has expired, start the profile in Claude Code once (`work`, `claude`, …) and it refreshes itself.
 - **Turn it off** with `mcc list --no-usage` or `MCC_NO_USAGE=1` (which also applies to `mcc usage`); usage then shows `—` and nothing touches the network or the keychain.
 
-In `mcc list --json`, every profile has a `usage` object. `mcc usage --json` prints one object per profile with `name`, `command`, `is_default`, `account` (`null` when logged out, or when emails are hidden, as they are by default) and the same `usage` object:
+In `mcc list --json`, every profile has a `usage` object. `mcc usage --json` prints one object per profile with `name`, `command`, `is_default`, `account` (`null` when logged out, or when emails are hidden, as they are by default since v0.2.0; scripts that read `account` need `--show-email` or `[usage] show_email = true`) and the same `usage` object:
 
 ```json
 "usage": {
@@ -249,7 +249,7 @@ An alias must be 1–32 characters: lowercase letters, digits, `-` or `_`, start
 
 - mcc's reserved names: `claude`, `mcc`, `default`, `help`, `all`
 - shell keywords and builtins
-- existing mcc profiles
+- existing mcc profiles, and the old name of a renamed profile (its directory still uses that name; the error names the profile)
 - executables on `$PATH`
 - aliases and functions in your rc files (`.zshrc`, `.bashrc`, `.bash_profile`, `.profile`, fish config, …)
 - anything your interactive shell resolves with `type <name>`, which catches plugin-defined aliases

@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-mcc is pre-1.0 (currently 0.1.0). Security fixes are made on `main` and shipped in the next release; only the latest release and `main` are supported.
+mcc is pre-1.0 (currently 0.2.0). Security fixes are made on `main` and shipped in the next release; only the latest release and `main` are supported.
 
 | Version | Supported |
 |---|---|
@@ -42,7 +42,7 @@ Please give us a reasonable amount of time to fix the issue before you disclose 
 
 mcc manages Claude Code profiles on your machine, so it handles sensitive local data:
 
-- **Credentials.** For the usage columns in `mcc list`, mcc reads each profile's Claude Code OAuth login from `<config dir>/.credentials.json` or, on macOS, from the login Keychain item Claude Code created for that config dir. The access token is kept in memory only, is never printed, logged or written anywhere, and is sent only to Anthropic's usage endpoint (`https://api.anthropic.com/api/oauth/usage`) for its own profile, or to the `MCC_USAGE_URL` test override (accepted only for `https://` URLs or `http://` on loopback). mcc never refreshes tokens.
+- **Credentials.** For the usage columns in `mcc list` and for `mcc usage`, mcc reads each profile's Claude Code OAuth login from `<config dir>/.credentials.json` or, on macOS, from the login Keychain item Claude Code created for that config dir. The access token is kept in memory only, is never printed, logged or written anywhere, and is sent only to Anthropic's usage endpoint (`https://api.anthropic.com/api/oauth/usage`) for its own profile, or to the `MCC_USAGE_URL` test override (accepted only for `https://` URLs or `http://` on loopback). mcc never refreshes tokens.
 - **Files it writes.** Profile directories under `~/.mcc/profiles/`, launchers in `~/.local/bin/`, a managed alias block in your shell rc file, and its own state, logs and backups under `~/.mcc/`.
 
 Examples of issues that are in scope:

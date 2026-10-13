@@ -4,19 +4,24 @@ All notable changes to mcc are recorded here. The format follows [Keep a Changel
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-13
+
+`mcc usage` is now a compact table that hides account emails by default, and `mcc rename` renames a profile and its command while keeping its login.
+
 ### Added
 
-- `mcc rename ALIAS NEW` (alias `mv`): renames a profile and its command. It installs the new launcher and alias block, renames the registry entry, then removes the old launcher and alias. The new name is checked like an alias in `mcc add`, and a failure rolls the changes back. The profile directory, and so its login, is kept.
-- `[usage] show_email` in `~/.mcc/config.toml`, plus `--show-email` / `--hide-email` on `mcc usage`, to choose whether account emails are shown.
+- `mcc rename ALIAS NEW` (alias `mv`): renames a profile and its command. It installs the new launcher and alias block, renames the registry entry, then removes the old launcher and alias. The new name is checked like an alias in `mcc add`, and a failure rolls the changes back. The profile directory, and so its login, is kept. ([#24](https://github.com/luongnv89/mcc/issues/24), [#23](https://github.com/luongnv89/mcc/pull/23))
+- `[usage] show_email` in `~/.mcc/config.toml`, plus `--show-email` / `--hide-email` on `mcc usage`, to choose whether account emails are shown. ([#24](https://github.com/luongnv89/mcc/issues/24), [#23](https://github.com/luongnv89/mcc/pull/23))
 
 ### Changed
 
-- `mcc usage` shows a compact table, one row per profile, instead of a block per profile: `PROFILE`, then the bar and percent used, time until reset and reset time for the 5-hour and weekly windows. On narrow terminals the reset time goes first, then bars shrink 10 → 5 → 0.
-- `mcc usage` hides account emails by default, in the table and in `--json` (`account` is `null`). Use `--show-email` or `[usage] show_email = true` to show them.
+- `mcc usage` shows a compact table, one row per profile, instead of a block per profile: `PROFILE`, then the bar and percent used, time until reset and reset time for the 5-hour and weekly windows. On narrow terminals the reset time goes first, then bars shrink 10 → 5 → 0. ([#24](https://github.com/luongnv89/mcc/issues/24), [#23](https://github.com/luongnv89/mcc/pull/23))
+- `mcc usage` hides account emails by default, in the table and in `--json` (`account` is `null`). Use `--show-email` or `[usage] show_email = true` to show them. ([#24](https://github.com/luongnv89/mcc/issues/24), [#23](https://github.com/luongnv89/mcc/pull/23))
+- `mcc add <old name>` names the renamed profile that still uses that name's directory, instead of only saying that the directory exists. ([#24](https://github.com/luongnv89/mcc/issues/24), [#23](https://github.com/luongnv89/mcc/pull/23))
 
 ### Fixed
 
-- `mcc delete <old name>` refuses to delete a directory that a renamed profile still uses.
+- `mcc delete <old name>` refuses to delete a directory that a renamed profile still uses. ([#24](https://github.com/luongnv89/mcc/issues/24), [#23](https://github.com/luongnv89/mcc/pull/23))
 
 ## [0.1.0] - 2026-10-10
 
@@ -44,5 +49,6 @@ The first version of mcc.
 - Access tokens are kept in memory only, sent only to the usage endpoint for their own profile, and never printed, logged or written to disk. Expired tokens are never sent. ([#15](https://github.com/luongnv89/mcc/pull/15))
 - GitHub private vulnerability reporting is enabled, and `contact@luongnv.com` is listed as the security contact. ([#21](https://github.com/luongnv89/mcc/pull/21))
 
-[Unreleased]: https://github.com/luongnv89/mcc/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/luongnv89/mcc/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/luongnv89/mcc/releases/tag/v0.2.0
 [0.1.0]: https://github.com/luongnv89/mcc/releases/tag/v0.1.0

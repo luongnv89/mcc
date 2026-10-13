@@ -38,7 +38,7 @@
 <main id="main">
   <div class="page-head">
     <div class="wrap">
-      <span class="eyebrow">Documentation · v0.1.0</span>
+      <span class="eyebrow">Documentation · v0.2.0</span>
       <h1>Using mcc</h1>
       <p class="lede">Install mcc, add profiles, keep them in sync and check their limits. Every command and option, with examples.</p>
     </div>
@@ -113,7 +113,8 @@
 <span class="p">$ </span>mcc list                    <span class="cm"># see all profiles</span>
 <span class="p">$ </span>mcc usage                   <span class="cm"># how much of each account's limits is used</span>
 <span class="p">$ </span>mcc sync work               <span class="cm"># later: pull new skills/plugins/settings from the default</span>
-<span class="p">$ </span>mcc delete work             <span class="cm"># remove it completely</span></pre></div>
+<span class="p">$ </span>mcc rename work job         <span class="cm"># rename the profile: its command becomes `job`</span>
+<span class="p">$ </span>mcc delete job              <span class="cm"># remove it completely</span></pre></div>
         <p>After <code>mcc add</code> finishes, the new command works in any shell straight away, because the launcher is written to <code>~/.local/bin</code>. The shell alias takes effect in new terminals.</p>
       </section>
 
@@ -263,7 +264,7 @@ lab        lab      —               <span class="d">unavailable            una
 
         <h3 id="cmd-delete"><code>mcc delete</code> <a class="anchor" href="#cmd-delete" aria-label="Link to mcc delete">#</a></h3>
         <p class="synopsis">mcc delete ALIAS [-y] [--keep-auth]   <span style="color:var(--muted)">alias: mcc rm</span></p>
-        <p>Logs the profile out with <code>claude auth logout</code> (clearing its keychain entry), then removes its directory, launcher, shell alias block and registry entry. It asks you to type the name to confirm unless you pass <code>--yes</code>. It refuses to delete the default profile, and only removes launchers that mcc created.</p>
+        <p>Logs the profile out with <code>claude auth logout</code> (clearing its keychain entry), then removes its directory, launcher, shell alias block and registry entry. It asks you to type the name to confirm unless you pass <code>--yes</code>. It refuses to delete the default profile, and only removes launchers that mcc created. Given the old name of a renamed profile, it refuses (exit 2) and names the profile that still uses that directory.</p>
         <div class="table-wrap"><table>
           <thead><tr><th>Option</th><th>Effect</th></tr></thead>
           <tbody>
