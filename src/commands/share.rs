@@ -89,6 +89,9 @@ struct Merge {
     /// store's copy is kept, the profile's goes to `backup`.
     conflicts: usize,
     backup: PathBuf,
+    /// Staging directories left by an interrupted `mcc share`, merged into
+    /// the store, with the number of items each one gave.
+    recovered: Vec<(PathBuf, usize)>,
 }
 
 pub fn run(paths: &Paths, cfg: &mut Config, args: &ShareArgs) -> Result<()> {
@@ -188,8 +191,19 @@ fn enable(
             )),
             ..Merge::default()
         };
+        // Created even when already shared: the link dangles if the store
+        // was deleted by hand.
+        create_store(paths)?;
+        // Before staging, so this run's own staging directory isn't listed.
+        for dir in leftover_stagings(&profile.dir)? {
+            let mut rec = Merge::default();
+            let name = dir.file_name().expect("listed in the profile directory");
+            let backup = merge.backup.join(name);
+            merge_into(&dir, &store, &backup, &mut undo, &mut rec)?;
+            merge.conflicts += rec.conflicts;
+            merge.recovered.push((dir, rec.moved + rec.conflicts));
+        }
         if !already {
-            create_store(paths)?;
             if matches!(state, Projects::Dir) {
                 rename(&projects, &staged)?;
                 undo.push(Undo::Moved {
@@ -223,6 +237,18 @@ fn enable(
             "could not remove {} (left over, safe to delete): {e:#}",
             paths.display(&staged)
         ));
+    }
+    for (dir, items) in &merge.recovered {
+        ui::info(&format!(
+            "recovered {items} item(s) from an interrupted `mcc share` in {}",
+            paths.display(dir)
+        ));
+        if let Err(e) = fsutil::remove_any(dir) {
+            ui::warn(&format!(
+                "could not remove {} (left over, safe to delete): {e:#}",
+                paths.display(dir)
+            ));
+        }
     }
     if merge.conflicts > 0 {
         ui::warn(&format!(
@@ -358,6 +384,31 @@ fn create_store(paths: &Paths) -> Result<()> {
     std::fs::create_dir_all(&store).with_context(|| format!("creating {}", store.display()))?;
     fsutil::set_private_dir(&paths.shared_dir)?;
     fsutil::set_private_dir(&store)
+}
+
+/// `.projects.mcc-share-<pid>` directories directly inside `profile_dir`:
+/// what an `mcc share` interrupted mid-merge left behind. Symlinks are skipped.
+fn leftover_stagings(profile_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(profile_dir)
+        .with_context(|| format!("reading {}", profile_dir.display()))?
+    {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|n| n.strip_prefix(".projects.mcc-share-"))
+        else {
+            continue;
+        };
+        // `file_type` does not follow symlinks.
+        if !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()) && entry.file_type()?.is_dir()
+        {
+            found.push(entry.path());
+        }
+    }
+    found.sort();
+    Ok(found)
 }
 
 fn rename(from: &Path, to: &Path) -> Result<()> {

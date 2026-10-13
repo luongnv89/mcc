@@ -431,6 +431,71 @@ fn share_keeps_the_stores_copy_on_a_conflict() {
 }
 
 #[test]
+fn share_recreates_a_deleted_store() {
+    use std::os::unix::fs::PermissionsExt;
+    let sb = sandbox();
+    sb.mcc().args(["share", "work"]).assert().success();
+    std::fs::remove_dir_all(store(&sb)).unwrap();
+    assert!(std::fs::metadata(sb.path(".mcc/profiles/work/projects")).is_err());
+
+    sb.mcc()
+        .args(["share", "work"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("already shared"));
+    assert!(store(&sb).is_dir());
+    assert_eq!(
+        std::fs::metadata(store(&sb)).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    assert_eq!(link_target(&sb, ".mcc/profiles/work/projects"), store(&sb));
+    assert!(
+        std::fs::metadata(sb.path(".mcc/profiles/work/projects"))
+            .unwrap()
+            .is_dir()
+    );
+}
+
+#[test]
+fn share_recovers_an_interrupted_merge() {
+    let sb = sandbox();
+    sb.mcc().args(["share", "work"]).assert().success();
+    // What a Ctrl+C between linking and merging leaves behind.
+    sb.write(
+        ".mcc/profiles/work/.projects.mcc-share-4242/-tmp-old/lost.jsonl",
+        "lost\n",
+    );
+    // Not a staging directory: a symlink with the same name pattern.
+    sb.write("elsewhere/-tmp-x/keep.jsonl", "keep\n");
+    std::os::unix::fs::symlink(
+        sb.path("elsewhere"),
+        sb.path(".mcc/profiles/work/.projects.mcc-share-7"),
+    )
+    .unwrap();
+
+    sb.mcc()
+        .args(["share", "work"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("recovered 1 item(s)"));
+    assert_eq!(
+        std::fs::read_to_string(store(&sb).join("-tmp-old/lost.jsonl")).unwrap(),
+        "lost\n"
+    );
+    assert_eq!(
+        sb.read(".mcc/profiles/work/projects/-tmp-old/lost.jsonl"),
+        "lost\n"
+    );
+    assert!(!sb.exists(".mcc/profiles/work/.projects.mcc-share-4242"));
+    assert_eq!(
+        link_target(&sb, ".mcc/profiles/work/.projects.mcc-share-7"),
+        sb.path("elsewhere")
+    );
+    assert_eq!(sb.read("elsewhere/-tmp-x/keep.jsonl"), "keep\n");
+    assert!(!store(&sb).join("-tmp-x").exists());
+}
+
+#[test]
 fn the_link_survives_a_rename() {
     let sb = sandbox();
     sb.mcc().args(["share", "work"]).assert().success();
