@@ -44,7 +44,7 @@ Claude Code reads its config from `CLAUDE_CONFIG_DIR`, which defaults to `~/.cla
 
 - **First-run detection.** mcc detects your OS, terminal, shell (zsh, bash, fish) and the right rc file, so new commands work in your shell.
 - **`add`.** If `~/.claude` doesn't exist yet, `add` creates your default profile. Otherwise it asks for an alias and checks that the name isn't already taken by a command, alias, function, shell builtin, or existing profile. You then either **clone** the default's setup (without credentials) or start **fresh**, and the new profile's login opens.
-- **`list`.** One row per profile: command, account, 5-hour and weekly usage (with a usage bar), skills, agents, commands, plugins (enabled/installed), MCP servers, hooks, size, last used, last sync. `--long` and `--json` give more detail.
+- **`list`.** One row per profile: command, account, 5-hour and weekly usage (with a usage bar), skills, agents, commands, plugins (enabled/installed), MCP servers, hooks, size, last used, last sync. Profiles that share sessions are marked `(shared)`, and a hint names `mcc refresh-launchers` while a launcher is out of date. `--long` and `--json` give more detail.
 - **`usage`.** Every profile's 5-hour and weekly limits in one compact table: a usage bar with the percent used, time until reset and the reset time. Near-limit accounts stand out with `!` / `!!` markers and colour. Account emails are hidden unless you ask for them. `--json` for scripts.
 - **`rename`.** Gives a profile a new name, and with it a new command. The new name is checked like an alias in `add`. The profile's directory, login and setup stay as they are.
 - **`sync`.** A one-way copy of setup from the default profile into a profile, with `--dry-run`, `--prune`, `--only`, and `--all`.
@@ -226,9 +226,9 @@ Editing the key by hand does nothing on its own. `mcc share <alias>` does the ac
 - **`mcc delete`** of a sharing profile removes only its link. The sessions stay in the store.
 - **`mcc rename`** keeps sharing as it is.
 - **The default profile** (`~/.claude`) can't share.
-- **Caveats.** In `mcc list`, sharing profiles are marked `(shared)`, and their session counts include every sharing profile's sessions. Claude Code removes old transcripts after `cleanupPeriodDays` (30 days unless set in `settings.json`): with sharing, the shortest setting among the sharing profiles applies to all of them.
+- **Caveats.** In `mcc list`, sharing profiles are marked `(shared)` (`"share_sessions": true` in `mcc list --json`), and their session counts include every sharing profile's sessions. Claude Code removes old transcripts after `cleanupPeriodDays` (30 days unless set in `settings.json`): with sharing, the shortest setting among the sharing profiles applies to all of them.
 
-**Upgrading from an older mcc:** existing launchers and shell aliases are left exactly as they were. `<alias> --mcc-share` needs the current launcher, and an alias that runs it. To get both, run `mcc refresh-launchers` once (or `mcc refresh-launchers work` for a single profile). `CLAUDE_CONFIG_DIR` stays the same, so logins are kept. `mcc share <alias>` works without it, and `mcc list` reminds you while a launcher is out of date.
+**Upgrading from an older mcc:** existing launchers and shell aliases are left exactly as they were. `<alias> --mcc-share` needs the current launcher, and an alias that runs it. To get both, run `mcc refresh-launchers` once (or `mcc refresh-launchers work` for a single profile). `CLAUDE_CONFIG_DIR` stays the same, so logins are kept. `mcc share <alias>` works without it, and `mcc list` reminds you while a launcher is out of date (`"launcher_current": false` in `mcc list --json`).
 
 ### Usage limits: `mcc list` and `mcc usage`
 

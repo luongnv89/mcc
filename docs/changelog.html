@@ -52,7 +52,28 @@
           <h2>Unreleased</h2>
           <span class="pill pill-muted">main</span>
         </div>
-        <p style="margin:0">Nothing yet beyond 0.2.0. Follow <a href="https://github.com/luongnv89/mcc/commits/main">commits on <code>main</code></a> for work in progress.</p>
+        <p style="margin:0">Nothing yet beyond 0.3.0. Follow <a href="https://github.com/luongnv89/mcc/commits/main">commits on <code>main</code></a> for work in progress.</p>
+      </article>
+
+      <article class="release" id="v0.3.0">
+        <div class="release-head">
+          <h2>0.3.0</h2>
+          <span class="pill pill-muted">2026-10-13</span>
+        </div>
+        <p>Profiles can now opt in to session sharing with <code>mcc share ALIAS</code> or <code>ALIAS --mcc-share</code>, so <code>--resume</code> lists the sessions of every sharing profile, and <code>mcc refresh-launchers</code> updates launchers and shell aliases made by an older mcc. <a href="https://github.com/luongnv89/mcc/releases/tag/v0.3.0">Release v0.3.0</a>.</p>
+
+        <h3>Added</h3>
+        <ul>
+          <li>Opt-in session sharing between profiles, off by default. <code>mcc share ALIAS</code> (or starting a profile with <code>ALIAS --mcc-share</code>) links the profile's <code>projects/</code> to <code>~/.mcc/shared/projects</code>, so <code>--resume</code> lists the sessions of every sharing profile. <code>mcc share ALIAS --off</code> gives the profile its own copy again. The setting is <code>share_sessions</code> under <code>[profiles.ALIAS]</code> in <code>~/.mcc/config.toml</code>. Only sessions are shared: never credentials, the account, history or live session state. Every time sharing is turned on, mcc prints a note about Anthropic's Consumer Terms and Usage Policy. <code>mcc list</code> marks sharing profiles, and <code>--json</code> has <code>share_sessions</code> and <code>launcher_current</code>. <span class="ref"><a href="https://github.com/luongnv89/mcc/issues/25">#25</a>, <a href="https://github.com/luongnv89/mcc/pull/26">#26</a></span></li>
+          <li><code>mcc refresh-launchers [ALIAS...]</code> rewrites launchers and shell aliases from the current templates. <span class="ref"><a href="https://github.com/luongnv89/mcc/issues/25">#25</a>, <a href="https://github.com/luongnv89/mcc/pull/26">#26</a></span></li>
+        </ul>
+
+        <h3>Changed</h3>
+        <ul>
+          <li>New launchers handle <code>--mcc-share</code>, and new shell aliases run the launcher instead of calling <code>claude</code> directly. <code>CLAUDE_CONFIG_DIR</code> is unchanged, so logins are kept. <strong>Upgrade note:</strong> existing launchers and aliases are not modified; run <code>mcc refresh-launchers</code> once to use <code>ALIAS --mcc-share</code> with profiles created before this release. <span class="ref"><a href="https://github.com/luongnv89/mcc/issues/25">#25</a>, <a href="https://github.com/luongnv89/mcc/pull/26">#26</a></span></li>
+          <li><code>mcc list</code> prints a hint to run <code>mcc refresh-launchers</code> while a launcher predates session sharing. <span class="ref"><a href="https://github.com/luongnv89/mcc/issues/25">#25</a>, <a href="https://github.com/luongnv89/mcc/pull/26">#26</a></span></li>
+          <li><code>share</code> and <code>refresh-launchers</code> are reserved and can't be used as aliases. <span class="ref"><a href="https://github.com/luongnv89/mcc/issues/25">#25</a>, <a href="https://github.com/luongnv89/mcc/pull/26">#26</a></span></li>
+        </ul>
       </article>
 
       <article class="release" id="v0.2.0">
