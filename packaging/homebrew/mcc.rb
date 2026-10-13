@@ -3,18 +3,20 @@
 # Formula/mcc.rb, so `brew install luongnv89/tap/mcc` works on macOS and Linux.
 #
 # Publishing a release (keep `version` in Cargo.toml and the tag in sync):
-#   1. Tag and push the release: git tag vX.Y.Z && git push origin vX.Y.Z
-#   2. Get the checksum of the source tarball:
+#   1. In the release commit, point `url` below at the new tag (tests/metadata.rs
+#      checks it matches Cargo.toml) and set `sha256` to 64 zeros.
+#   2. Tag and push the release: git tag vX.Y.Z && git push origin vX.Y.Z
+#   3. Get the checksum of the source tarball:
 #        curl -fsSL https://github.com/luongnv89/mcc/archive/refs/tags/vX.Y.Z.tar.gz | shasum -a 256
-#   3. Update `url` and `sha256` below, then copy this file to
+#   4. Set `sha256` below, then copy this file to
 #      Formula/mcc.rb in luongnv89/homebrew-tap and push it.
-#   4. Check it: brew audit --strict --online luongnv89/tap/mcc
+#   5. Check it: brew audit --strict --online luongnv89/tap/mcc
 #                brew install --build-from-source luongnv89/tap/mcc && brew test mcc
 class Mcc < Formula
   desc "Manage multiple Claude Code profiles (accounts) from one CLI"
   homepage "https://github.com/luongnv89/mcc"
   url "https://github.com/luongnv89/mcc/archive/refs/tags/v0.2.0.tar.gz"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 "50712585a280f8ee15f025db0adfbcf8f4a6285f5b746b0335586104854d524b"
   license "Apache-2.0"
   head "https://github.com/luongnv89/mcc.git", branch: "main"
 
