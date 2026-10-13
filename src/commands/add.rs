@@ -253,6 +253,7 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
                 wrapper: Some(wrapper),
                 rc_file,
                 last_sync: clone.then(now),
+                share_sessions: false,
             },
         );
         undo.push(Undo::Registry(alias.clone()));

@@ -19,6 +19,8 @@ pub struct Paths {
     pub config_file: PathBuf,
     pub log_file: PathBuf,
     pub backups_dir: PathBuf,
+    /// Data shared between profiles that opted in (`mcc share`).
+    pub shared_dir: PathBuf,
     pub local_bin: PathBuf,
 }
 
@@ -44,6 +46,7 @@ impl Paths {
             config_file: mcc_dir.join("config.toml"),
             log_file: mcc_dir.join("logs").join("mcc.log"),
             backups_dir: mcc_dir.join("backups"),
+            shared_dir: mcc_dir.join("shared"),
             local_bin: home.join(".local").join("bin"),
             home,
         }
@@ -51,6 +54,11 @@ impl Paths {
 
     pub fn profile_dir(&self, alias: &str) -> PathBuf {
         self.profiles_dir.join(alias)
+    }
+
+    /// The shared session store: every sharing profile's `projects/` links here.
+    pub fn shared_projects_dir(&self) -> PathBuf {
+        self.shared_dir.join("projects")
     }
 
     pub fn wrapper(&self, alias: &str) -> PathBuf {
@@ -91,6 +99,11 @@ mod tests {
         assert_eq!(p.wrapper("work"), PathBuf::from("/h/.local/bin/work"));
         assert_eq!(p.config_file, PathBuf::from("/h/.mcc/config.toml"));
         assert_eq!(p.log_file, PathBuf::from("/h/.mcc/logs/mcc.log"));
+        assert_eq!(p.shared_dir, PathBuf::from("/h/.mcc/shared"));
+        assert_eq!(
+            p.shared_projects_dir(),
+            PathBuf::from("/h/.mcc/shared/projects")
+        );
     }
 
     #[test]
