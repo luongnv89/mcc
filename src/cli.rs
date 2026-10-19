@@ -1,5 +1,8 @@
 //! Command-line interface definition.
 
+use std::ffi::OsString;
+use std::path::PathBuf;
+
 use clap::{Args, Parser, Subcommand};
 
 use crate::env_detect::Shell;
@@ -32,6 +35,8 @@ Examples:
   mcc sync --all                 Bring every profile up to date with the default
   mcc rename work job            Rename profile `work` (and its command) to `job`
   mcc share work                 Share `work`'s sessions with your other sharing profiles
+  mcc project set work           Start `work` in this project (git repo) with `mcc run`
+  mcc run                        Start Claude Code with this project's profile
   mcc refresh-launchers          Update older launchers so `<alias> --mcc-share` works
   mcc delete personal            Log out and remove the profile completely
 
@@ -142,6 +147,18 @@ pub enum Command {
         share_tos_note!()
     ))]
     Share(ShareArgs),
+
+    /// Choose the profile `mcc run` starts with in a project
+    #[command(
+        after_help = "Examples:\n  mcc project set work          `mcc run` starts `work` in this project\n  mcc project set default --path ~/code/site\n  mcc project list              Every project and its profile\n  mcc project unset             Remove the project default that applies here\n\nA project is a directory: by default the top of the git repository you are\nin, else the current directory. It covers everything below it, and the\ndeepest project containing the current directory applies. Project defaults\nare kept in ~/.mcc/config.toml:\n\n  [projects.\"/Users/me/code/app\"]\n  profile = \"work\"\n\n`mcc rename` updates them; `mcc delete` removes the ones naming the profile."
+    )]
+    Project(ProjectArgs),
+
+    /// Start Claude Code with the current project's profile
+    #[command(
+        after_help = "Examples:\n  mcc run                       Start Claude Code with this project's profile\n  mcc run -- --resume           Pass arguments to claude after `--`\n  mcc run --profile lab         Start `lab` here instead (usage isn't checked)\n  mcc run --dry-run             Print the profile that would start, and why\n\nThe profile that starts is the project's default (`mcc project set`), or\nthe default profile (~/.claude) outside any project. mcc never switches\naccounts on its own: when that profile is at its 5-hour or weekly limit,\n`mcc run` shows every profile's usage and asks which one to start. Without\na terminal it stops instead (exit 2); start one with `--profile`.\n\nIf the profile's usage can't be read (offline, expired login,\nMCC_NO_USAGE=1), it starts. Sessions are kept per profile, so `--resume` in\nanother profile won't list this project's sessions unless both profiles\nshare sessions (`mcc help share`)."
+    )]
+    Run(RunArgs),
 
     /// Rewrite profiles' launchers and shell aliases from the current templates
     #[command(
@@ -257,6 +274,59 @@ pub struct ShareArgs {
     /// Called by the launcher for `<alias> --mcc-share`: only the note and errors, on stderr
     #[arg(long, hide = true, conflicts_with = "off")]
     pub from_launch: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ProjectArgs {
+    #[command(subcommand)]
+    pub action: ProjectAction,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProjectAction {
+    /// Make PROFILE the one `mcc run` starts with in this project
+    Set {
+        /// Profile to start (`default` or `claude` for ~/.claude)
+        profile: String,
+
+        /// Project directory (default: the top of the current git repository, else the current directory)
+        #[arg(long, value_name = "DIR")]
+        path: Option<PathBuf>,
+    },
+
+    /// Remove a project default (default: the one that applies here)
+    Unset {
+        /// Project directory, as listed by `mcc project list`
+        #[arg(long, value_name = "DIR")]
+        path: Option<PathBuf>,
+    },
+
+    /// List every project and its profile
+    #[command(visible_alias = "ls")]
+    List {
+        /// Output JSON (to stdout) instead of a table
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct RunArgs {
+    /// Start this profile instead (`default` or `claude` for ~/.claude); usage isn't checked
+    #[arg(long, value_name = "PROFILE")]
+    pub profile: Option<String>,
+
+    /// Print the profile that would start (on stdout) and why, without starting it
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Arguments for claude; put them after `--` (e.g. `mcc run -- --resume`)
+    #[arg(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        value_name = "CLAUDE_ARGS"
+    )]
+    pub args: Vec<OsString>,
 }
 
 #[derive(Debug, Args)]

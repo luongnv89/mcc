@@ -62,6 +62,8 @@
               <li><a href="#cmd-sync">sync</a></li>
               <li><a href="#cmd-rename">rename</a></li>
               <li><a href="#cmd-share">share</a></li>
+              <li><a href="#cmd-project">project</a></li>
+              <li><a href="#cmd-run">run</a></li>
               <li><a href="#cmd-refresh-launchers">refresh-launchers</a></li>
               <li><a href="#cmd-delete">delete</a></li>
               <li><a href="#cmd-completions">completions</a></li>
@@ -71,6 +73,7 @@
           <li><a href="#clone-sync">Clone &amp; sync rules</a></li>
           <li><a href="#configuration">Configuration</a></li>
           <li><a href="#session-sharing">Session sharing</a></li>
+          <li><a href="#per-project">Per-project profiles</a></li>
           <li><a href="#usage-limits">Usage limits</a></li>
           <li><a href="#aliases">Alias rules</a></li>
           <li><a href="#files">Files &amp; locations</a></li>
@@ -149,6 +152,8 @@
             <tr><td><a href="#cmd-sync"><code>mcc sync [ALIAS]</code></a></td><td>Copy the default's setup into a profile</td><td><code>--all</code>, <code>--dry-run</code>, <code>--prune</code>, <code>--only</code>, <code>-y</code></td></tr>
             <tr><td><a href="#cmd-rename"><code>mcc rename ALIAS NEW</code></a> (<code>mv</code>)</td><td>Rename a profile and its command</td><td></td></tr>
             <tr><td><a href="#cmd-share"><code>mcc share ALIAS</code></a></td><td>Share the profile's sessions with your other sharing profiles (off by default)</td><td><code>--off</code></td></tr>
+            <tr><td><a href="#cmd-project"><code>mcc project set PROFILE</code></a></td><td>Make PROFILE the one <code>mcc run</code> starts in this project; also <code>unset</code> and <code>list</code></td><td><code>--path</code>, <code>list --json</code></td></tr>
+            <tr><td><a href="#cmd-run"><code>mcc run [-- CLAUDE_ARGS]</code></a></td><td>Start Claude Code with the current project's profile; at its limit, ask which profile to start</td><td><code>--profile</code>, <code>--dry-run</code></td></tr>
             <tr><td><a href="#cmd-refresh-launchers"><code>mcc refresh-launchers [ALIAS...]</code></a></td><td>Rewrite launchers and shell aliases from the current templates</td><td></td></tr>
             <tr><td><a href="#cmd-delete"><code>mcc delete ALIAS</code></a> (<code>rm</code>)</td><td>Log out and remove a profile</td><td><code>-y</code>, <code>--keep-auth</code></td></tr>
             <tr><td><a href="#cmd-completions"><code>mcc completions SHELL</code></a></td><td>Print a shell completion script</td><td><code>bash</code>, <code>zsh</code>, <code>fish</code>, <code>elvish</code>, <code>powershell</code></td></tr>
@@ -199,7 +204,7 @@
 
         <h3 id="cmd-list"><code>mcc list</code> <a class="anchor" href="#cmd-list" aria-label="Link to mcc list">#</a></h3>
         <p class="synopsis">mcc list [--json | -l/--long] [--no-usage]   <span style="color:var(--muted)">alias: mcc ls</span></p>
-        <p>One row per profile, the default included: command, account, 5-hour and weekly usage (with a bar), skills, agents, commands, plugins (enabled/installed), MCP servers, hooks, size, last used and last sync.</p>
+        <p>One row per profile, the default included: command, account, 5-hour and weekly usage (with a bar), skills, agents, commands, plugins (enabled/installed), MCP servers, hooks, size, last used and last sync. When projects have a default profile (<code>mcc project set</code>), a second table lists each project with its profile and account, marking the one that applies in the current directory with <code>← here</code>. <code>--long</code> cards show them in a <code>Default for</code> row, and <code>--json</code> has a <code>project_defaults</code> array per profile.</p>
         <div class="table-wrap"><table>
           <thead><tr><th>Option</th><th>Effect</th></tr></thead>
           <tbody>
@@ -273,6 +278,21 @@ lab        lab      —               <span class="d">unavailable            una
         <div class="code"><pre><span class="p">$ </span>mcc share work                 <span class="cm"># share work's sessions</span>
 <span class="p">$ </span>work --mcc-share --resume      <span class="cm"># the same, then pick a session from any sharing profile</span>
 <span class="p">$ </span>mcc share work --off           <span class="cm"># stop sharing</span></pre></div>
+
+        <h3 id="cmd-project"><code>mcc project</code> <a class="anchor" href="#cmd-project" aria-label="Link to mcc project">#</a></h3>
+        <p class="synopsis">mcc project set PROFILE [--path DIR] | unset [--path DIR] | list [--json]</p>
+        <p><code>set</code> makes PROFILE (an mcc profile, or <code>default</code> / <code>claude</code> for <code>~/.claude</code>) the one <code>mcc run</code> starts in a project: by default the top of the git repository you are in, else the current directory. <code>unset</code> removes the project default that applies here, or the one at <code>--path</code>. <code>list</code> shows every project and its profile, marking the one that applies here. See <a href="#per-project">Per-project profiles</a>.</p>
+        <div class="code"><pre><span class="p">$ </span>mcc project set work                    <span class="cm"># `mcc run` starts `work` in this repository</span>
+<span class="p">$ </span>mcc project set default --path ~/site   <span class="cm"># …and the default profile in ~/site</span>
+<span class="p">$ </span>mcc project list</pre></div>
+
+        <h3 id="cmd-run"><code>mcc run</code> <a class="anchor" href="#cmd-run" aria-label="Link to mcc run">#</a></h3>
+        <p class="synopsis">mcc run [--profile NAME] [--dry-run] [-- CLAUDE_ARGS…]</p>
+        <p>Starts Claude Code with the current project's default profile, or with the default profile outside every project. mcc never switches accounts on its own: when that profile is at its 5-hour or weekly limit, <code>mcc run</code> shows every profile's usage and asks which one to start (without a terminal it stops with exit code 2). <code>--profile NAME</code> starts NAME without checking usage. Arguments after <code>--</code> are passed to <code>claude</code>. <code>--dry-run</code> prints the profile it would start on stdout, and why on stderr, without starting it.</p>
+        <div class="code"><pre><span class="p">$ </span>mcc run
+<span class="p">$ </span>mcc run -- --resume
+<span class="p">$ </span>mcc run --profile lab            <span class="cm"># this time only; the project's default stays</span>
+<span class="p">$ </span>mcc run --dry-run</pre></div>
 
         <h3 id="cmd-refresh-launchers"><code>mcc refresh-launchers</code> <a class="anchor" href="#cmd-refresh-launchers" aria-label="Link to mcc refresh-launchers">#</a></h3>
         <p class="synopsis">mcc refresh-launchers [ALIAS...]</p>
@@ -352,7 +372,10 @@ extra = ["my-tool/config.yml"] <span class="cm"># additional paths (relative to 
 show_email = true              <span class="cm"># show account emails in `mcc usage` (default: false)</span>
 
 [profiles.work]
-share_sessions = true          <span class="cm"># default: false; set it with `mcc share work`</span></pre></div>
+share_sessions = true          <span class="cm"># default: false; set it with `mcc share work`</span>
+
+[projects."/Users/me/code/app"]
+profile = "work"               <span class="cm"># `mcc run` starts `work` here; set it with `mcc project set work`</span></pre></div>
         <p>A corrupt <code>config.toml</code> makes mcc exit with code 3 (invalid input) instead of guessing.</p>
       </section>
 
@@ -368,6 +391,27 @@ share_sessions = true          <span class="cm"># default: false; set it with `m
           <li><strong>Caveats:</strong> <code>mcc list</code> marks sharing profiles <code>(shared)</code>, and their session counts include every sharing profile's sessions. Claude Code's <code>cleanupPeriodDays</code> cleanup in any sharing profile applies to the shared sessions of all of them.</li>
         </ul>
         <p><strong>Upgrading:</strong> launchers and aliases created by an older mcc stay exactly as they were. Run <code>mcc refresh-launchers</code> once so that <code>&lt;alias&gt; --mcc-share</code> works. <code>mcc share</code> works without it.</p>
+      </section>
+
+      <section id="per-project">
+        <h2>Per-project profiles <a class="anchor" href="#per-project" aria-label="Link to Per-project profiles">#</a></h2>
+        <p>To keep a project on one account, give it a default profile with <code>mcc project set &lt;profile&gt;</code> and start Claude Code there with <code>mcc run</code>. A project is a directory, by default the top of the git repository; it covers everything below it, and the deepest project containing the current directory applies. Outside every project, the default profile (<code>~/.claude</code>) is the default.</p>
+        <p><code>mcc run</code> starts the project's default. <strong>It never switches to another account on its own.</strong> When the project's profile is at its 5-hour or weekly limit (100% used), it shows when the limit resets and every profile's usage, and asks which one to start. The project's profile is preselected.</p>
+        <div class="code"><pre><span class="p">$ </span>mcc run
+  ⚠ `work` (the default for ~/code/app) is at its 5-hour limit, resets in 35m
+? Which profile should start? ›
+❯ work — start it anyway (at its 5-hour limit, resets in 35m)
+  default — 5h 70%, week 10% used
+  lab — 5h 1%, week 1% used</pre></div>
+        <ul>
+          <li><strong><code>--profile NAME</code></strong> starts NAME without checking usage, this time only: the project's default doesn't change.</li>
+          <li><strong>Without a terminal</strong>, <code>mcc run</code> can't ask. At the limit it lists every profile's usage and stops with exit code 2; start one with <code>--profile</code>.</li>
+          <li><strong>Unknown usage:</strong> only the project profile's usage is fetched, unless it is at its limit. If it can't be read (offline, an expired login, <code>MCC_NO_USAGE=1</code>), that profile starts.</li>
+          <li><strong>Sessions:</strong> Claude Code keeps sessions per profile, so in another profile <code>--resume</code> only sees that profile's sessions, unless both profiles <a href="#session-sharing">share sessions</a>.</li>
+          <li><strong>Why there's no automatic switching:</strong> Anthropic's <a href="https://support.claude.com/en/articles/12004354-purchase-and-manage-seats-on-team-plans">Team</a> and <a href="https://support.claude.com/en/articles/13393991-purchase-and-manage-seats-on-enterprise-plans">Enterprise</a> seat rules say you can't route your work through another user's account to use their remaining usage. Its <a href="https://www.anthropic.com/legal/consumer-terms">Consumer Terms</a> also forbid bypassing its systems or protective measures. So which account to use when one is at its limit is always your call.</li>
+          <li><strong>In <code>mcc list</code>:</strong> a second table shows each project with its profile and account; <code>--long</code> cards have a <code>Default for</code> row, and <code>--json</code> a <code>project_defaults</code> array.</li>
+          <li><strong>Rename and delete:</strong> <code>mcc rename</code> updates the project defaults naming the profile, and <code>mcc delete</code> removes them.</li>
+        </ul>
       </section>
 
       <section id="usage-limits">
@@ -422,7 +466,7 @@ work       <span class="y">█████████</span><span class="d">░
         <h2>Alias rules <a class="anchor" href="#aliases" aria-label="Link to Alias rules">#</a></h2>
         <p>An alias must be 1–32 characters: lowercase letters, digits, <code>-</code> or <code>_</code>, starting with a letter. It is rejected if any of these already uses the name:</p>
         <ul>
-          <li>mcc's reserved names: <code>claude</code>, <code>mcc</code>, <code>default</code>, <code>help</code>, <code>all</code></li>
+          <li>mcc's reserved names: <code>claude</code>, <code>mcc</code>, <code>default</code>, <code>help</code>, <code>all</code>, <code>path</code>, <code>share</code>, <code>refresh-launchers</code>, <code>project</code>, <code>run</code></li>
           <li>shell keywords and builtins</li>
           <li>existing mcc profiles</li>
           <li>executables on <code>$PATH</code></li>
@@ -444,6 +488,7 @@ work       <span class="y">█████████</span><span class="d">░
             <tr><td>Config &amp; registry</td><td><code>~/.mcc/config.toml</code></td></tr>
             <tr><td>Log</td><td><code>~/.mcc/logs/mcc.log</code>; every run is appended here</td></tr>
             <tr><td>Shared sessions</td><td><code>~/.mcc/shared/projects</code>, only for profiles that opted in with <code>mcc share</code></td></tr>
+            <tr><td>Project defaults</td><td><code>[projects."&lt;dir&gt;"]</code> tables in <code>~/.mcc/config.toml</code>, written by <code>mcc project set</code></td></tr>
             <tr><td>rc file backups</td><td><code>~/.mcc/backups/</code></td></tr>
             <tr><td>Sync backups</td><td><code>&lt;profile&gt;/.mcc-backup/&lt;timestamp&gt;/</code></td></tr>
           </tbody>

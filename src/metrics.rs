@@ -45,6 +45,9 @@ pub struct ProfileMetrics {
     /// `mcc refresh-launchers`); true when there is nothing to refresh, as
     /// for the default profile or a profile without a launcher.
     pub launcher_current: bool,
+    /// Project directories where `mcc run` starts this profile (`mcc project
+    /// set`); filled in by `mcc list` from the config, not by `collect`.
+    pub project_defaults: Vec<String>,
     /// 5-hour/weekly usage; filled in by `mcc list` (network), not by `collect`.
     pub usage: Usage,
     /// The config dir as Claude Code sees it (`CLAUDE_CONFIG_DIR`).
@@ -178,6 +181,7 @@ fn collect(
         launcher_current: reg
             .and_then(|r| r.wrapper.as_deref())
             .is_none_or(|w| !shell::is_mcc_wrapper(w) || shell::launcher_is_current(w)),
+        project_defaults: Vec::new(),
         usage: Usage::default(),
         config_dir: dir.to_path_buf(),
         last_used_time,

@@ -136,12 +136,23 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &RenameArgs) -> Result<()> {
         renamed.wrapper = Some(wrapper.clone());
         cfg.profiles.remove(old);
         cfg.profiles.insert(new.to_string(), renamed);
+        let projects = cfg.projects.clone();
+        let repointed = cfg.rename_project_defaults(old, new);
         if let Err(e) = cfg.save(&paths.config_file) {
             cfg.profiles.remove(new);
             cfg.profiles.insert(old.to_string(), profile.clone());
+            cfg.projects = projects;
             return Err(e);
         }
-        step.ok(&paths.display(&paths.config_file));
+        let mut note = paths.display(&paths.config_file);
+        if repointed > 0 {
+            note.push_str(&format!(
+                "; {repointed} project default{} now use{} `{new}`",
+                if repointed == 1 { "" } else { "s" },
+                if repointed == 1 { "s" } else { "" },
+            ));
+        }
+        step.ok(&note);
         Ok(wrapper)
     })();
 

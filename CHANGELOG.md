@@ -4,6 +4,13 @@ All notable changes to mcc are recorded here. The format follows [Keep a Changel
 
 ## [Unreleased]
 
+### Added
+
+- Per-project profiles. `mcc project set PROFILE` makes PROFILE the one `mcc run` starts in the current git repository (or directory, or `--path DIR`). `mcc project unset` and `mcc project list [--json]` manage them. They are kept as `[projects."<dir>"]` tables in `~/.mcc/config.toml`. `mcc rename` updates them, and `mcc delete` removes the ones naming the deleted profile.
+- `mcc run [-- CLAUDE_ARGS]` starts Claude Code with the current project's default profile, or the default profile outside every project. mcc never switches accounts on its own. When that profile is at its 5-hour or weekly limit, `mcc run` shows every profile's usage and asks which one to start; without a terminal it stops (exit 2). `--profile NAME` starts NAME without checking usage. `--dry-run` prints the profile it would start. If the profile's usage can't be read, it starts.
+- `mcc list` shows the project defaults under the profile table (project, profile and account, with `← here` for the current directory). `--long` cards have a `Default for` row, and `--json` has a `project_defaults` array per profile.
+- `project` and `run` are reserved and can't be used as aliases.
+
 ## [0.3.0] - 2026-10-13
 
 Profiles can now opt in to session sharing with `mcc share ALIAS` or `ALIAS --mcc-share`, so `--resume` lists the sessions of every sharing profile, and `mcc refresh-launchers` updates launchers and shell aliases made by an older mcc.

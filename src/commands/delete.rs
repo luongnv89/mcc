@@ -190,9 +190,22 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &DeleteArgs) -> Result<()> {
     }
 
     let step = steps.start("Update registry");
-    if cfg.profiles.remove(alias).is_some() {
+    let registered = cfg.profiles.remove(alias).is_some();
+    let projects = cfg.remove_project_defaults(alias);
+    if registered || !projects.is_empty() {
         cfg.save(&paths.config_file)?;
-        step.ok("");
+        if projects.is_empty() {
+            step.ok("");
+        } else {
+            let dirs: Vec<String> = projects
+                .iter()
+                .map(|d| paths.display(Path::new(d)))
+                .collect();
+            step.ok(&format!(
+                "removed it as the project default of {}",
+                dirs.join(", ")
+            ));
+        }
     } else {
         step.skip("not registered");
     }

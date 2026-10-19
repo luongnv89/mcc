@@ -9,6 +9,7 @@ mod fsutil;
 mod log;
 mod metrics;
 mod paths;
+mod pick;
 mod shell;
 mod ui;
 mod usage;
@@ -82,8 +83,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     log_invocation();
 
     let explicit_init = matches!(cli.command, Command::Init(_));
-    // `<alias> --mcc-share` runs on every such launch: keep it free of setup.
-    let launch = matches!(&cli.command, Command::Share(a) if a.from_launch);
+    // `<alias> --mcc-share` and `mcc run` run on every launch: keep them free
+    // of setup.
+    let launch = matches!(&cli.command, Command::Share(a) if a.from_launch)
+        || matches!(cli.command, Command::Run(_));
     let mut cfg = config::Config::load(&paths.config_file)?;
     if cfg.env.is_none() && !explicit_init && !launch {
         ui::info("First run — detecting your environment (re-run anytime with `mcc init --force`)");
@@ -99,6 +102,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Sync(args) => commands::sync::run(&paths, &mut cfg, &args),
         Command::Rename(args) => commands::rename::run(&paths, &mut cfg, &args),
         Command::Share(args) => commands::share::run(&paths, &mut cfg, &args),
+        Command::Project(args) => commands::project::run(&paths, &mut cfg, &args),
+        Command::Run(args) => commands::run::run(&paths, &cfg, &args),
         Command::RefreshLaunchers(args) => commands::refresh_launchers::run(&paths, &cfg, &args),
         Command::Completions(_) => unreachable!("handled above"),
     }
