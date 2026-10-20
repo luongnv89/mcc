@@ -1,4 +1,5 @@
-//! `~/.mcc/config.toml`: detected environment, profile registry, sync settings.
+//! `~/.mcc/config.toml`: detected environment, profile registry, sync settings,
+//! and the profile each project starts with (`mcc project`, `mcc run`).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -19,6 +20,10 @@ pub struct Config {
     pub usage: UsageConfig,
     #[serde(default)]
     pub profiles: BTreeMap<String, Profile>,
+    /// Project directory (absolute, symlinks resolved) → the profile `mcc run`
+    /// starts there first. Left out of the file while empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub projects: BTreeMap<String, Project>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -59,6 +64,12 @@ pub struct Profile {
     pub share_sessions: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Project {
+    /// An mcc profile's name, or `default` for ~/.claude.
+    pub profile: String,
+}
+
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
         if !path.exists() {
@@ -85,6 +96,32 @@ impl Config {
         let text =
             format!("# mcc configuration — managed by `mcc`; safe to edit by hand.\n\n{body}");
         crate::fsutil::write_atomic(path, text.as_bytes())
+    }
+
+    /// Point the project defaults naming `old` at `new` (`mcc rename`).
+    /// Returns how many changed.
+    pub fn rename_project_defaults(&mut self, old: &str, new: &str) -> usize {
+        let mut n = 0;
+        for p in self.projects.values_mut().filter(|p| p.profile == old) {
+            p.profile = new.to_string();
+            n += 1;
+        }
+        n
+    }
+
+    /// Remove the project defaults naming `alias` (`mcc delete`). Returns
+    /// their project directories.
+    pub fn remove_project_defaults(&mut self, alias: &str) -> Vec<String> {
+        let gone: Vec<String> = self
+            .projects
+            .iter()
+            .filter(|(_, p)| p.profile == alias)
+            .map(|(dir, _)| dir.clone())
+            .collect();
+        for dir in &gone {
+            self.projects.remove(dir);
+        }
+        gone
     }
 }
 
@@ -142,6 +179,40 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("share_sessions = true"), "{text}");
         assert!(Config::load(&path).unwrap().profiles["work"].share_sessions);
+    }
+
+    #[test]
+    fn project_defaults_round_trip_and_follow_profiles() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut cfg = Config::default();
+        for (dir, profile) in [
+            ("/src/a", "work"),
+            ("/src/b", "default"),
+            ("/src/c", "work"),
+        ] {
+            cfg.projects.insert(
+                dir.into(),
+                Project {
+                    profile: profile.into(),
+                },
+            );
+        }
+        cfg.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("[projects.\"/src/a\"]\nprofile = \"work\"\n"),
+            "{text}"
+        );
+        let mut back = Config::load(&path).unwrap();
+        assert_eq!(back.projects, cfg.projects);
+
+        assert_eq!(back.rename_project_defaults("work", "job"), 2);
+        assert_eq!(back.projects["/src/a"].profile, "job");
+        assert_eq!(back.projects["/src/b"].profile, "default");
+        assert_eq!(back.remove_project_defaults("job"), ["/src/a", "/src/c"]);
+        assert_eq!(back.projects.keys().collect::<Vec<_>>(), ["/src/b"]);
+        assert!(back.remove_project_defaults("nope").is_empty());
     }
 
     #[test]

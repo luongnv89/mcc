@@ -17,6 +17,8 @@ const RESERVED_NAMES: &[&str] = &[
     "all",
     "share",
     "refresh-launchers",
+    "project",
+    "run",
     crate::shell::PATH_BLOCK,
 ];
 
@@ -378,6 +380,8 @@ mod tests {
         assert!(!conflicts("claude", &paths, &cfg, None).is_empty());
         assert!(!conflicts("share", &paths, &cfg, None).is_empty());
         assert!(!conflicts("refresh-launchers", &paths, &cfg, None).is_empty());
+        assert!(!conflicts("project", &paths, &cfg, None).is_empty());
+        assert!(!conflicts("run", &paths, &cfg, None).is_empty());
         assert!(!conflicts("path", &paths, &cfg, None).is_empty());
         assert!(!conflicts("export", &paths, &cfg, None).is_empty());
         assert!(!conflicts("taken", &paths, &cfg, None).is_empty());

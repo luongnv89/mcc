@@ -1,6 +1,7 @@
 //! `mcc list` — all profiles with their metrics (table, cards, or JSON).
 
 use std::io::Write;
+use std::path::Path;
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -20,6 +21,14 @@ pub fn run(paths: &Paths, cfg: &Config, args: &ListArgs) -> Result<()> {
             .iter()
             .map(|(name, p)| metrics::mcc_profile(name, p, paths)),
     );
+    for m in &mut all {
+        m.project_defaults = cfg
+            .projects
+            .iter()
+            .filter(|(_, p)| p.profile == m.name)
+            .map(|(dir, _)| dir.clone())
+            .collect();
+    }
     if !usage_disabled(args) {
         attach_usage(&mut all);
     }
@@ -32,10 +41,16 @@ pub fn run(paths: &Paths, cfg: &Config, args: &ListArgs) -> Result<()> {
         let now = Utc::now();
         let bar = card_bar(&all, now);
         for m in &all {
-            card(&mut out, m, bar, now)?;
+            card(&mut out, m, bar, now, paths)?;
         }
     } else {
         table(&mut out, &all)?;
+        if !cfg.projects.is_empty() {
+            writeln!(out)?;
+            for line in project_lines(paths, cfg, &all) {
+                writeln!(out, "{line}")?;
+            }
+        }
     }
     drop(out);
 
@@ -273,7 +288,78 @@ fn table_lines(all: &[ProfileMetrics], bar: usize, now: DateTime<Utc>) -> Vec<St
         .collect()
 }
 
-fn card(out: &mut impl Write, m: &ProfileMetrics, bar: usize, now: DateTime<Utc>) -> Result<()> {
+/// Under the table: which profile `mcc run` starts in each project, with
+/// its account. The project that applies in the current directory is marked.
+///
+/// ```text
+/// PROJECT      PROFILE  ACCOUNT
+/// ~/code/app   work     work@corp.com  ← here
+/// ~/code/site  default  me@example.com
+/// ```
+fn project_lines(paths: &Paths, cfg: &Config, all: &[ProfileMetrics]) -> Vec<String> {
+    let here = super::project::current_dir().ok();
+    let here = here
+        .as_deref()
+        .and_then(|d| super::project::lookup(cfg, d))
+        .map(|(dir, _)| dir);
+    let rows: Vec<[String; 4]> = cfg
+        .projects
+        .iter()
+        .map(|(dir, p)| {
+            let m = all.iter().find(|m| m.name == p.profile);
+            let missing = if Path::new(dir).is_dir() {
+                ""
+            } else {
+                " (missing)"
+            };
+            [
+                format!("{}{missing}", paths.display(Path::new(dir))),
+                match m {
+                    Some(_) => p.profile.clone(),
+                    None => format!("{} (no such profile)", p.profile),
+                },
+                m.and_then(|m| m.account.clone())
+                    .unwrap_or_else(|| "—".into()),
+                if Some(dir.as_str()) == here {
+                    "← here".into()
+                } else {
+                    String::new()
+                },
+            ]
+        })
+        .collect();
+    let head = ["PROJECT", "PROFILE", "ACCOUNT", ""].map(String::from);
+    let widths: Vec<usize> = (0..4)
+        .map(|i| {
+            rows.iter()
+                .chain([&head])
+                .map(|r| measure_text_width(&r[i]))
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+    let fmt_row = |cells: &[String; 4]| {
+        cells
+            .iter()
+            .zip(&widths)
+            .map(|(c, w)| format!("{c}{}", " ".repeat(w - measure_text_width(c))))
+            .collect::<Vec<_>>()
+            .join("  ")
+            .trim_end()
+            .to_string()
+    };
+    std::iter::once(style(fmt_row(&head)).bold().to_string())
+        .chain(rows.iter().map(fmt_row))
+        .collect()
+}
+
+fn card(
+    out: &mut impl Write,
+    m: &ProfileMetrics,
+    bar: usize,
+    now: DateTime<Utc>,
+    paths: &Paths,
+) -> Result<()> {
     let title = if m.is_default {
         format!("{} ★ (~/.claude)", m.name)
     } else {
@@ -331,6 +417,16 @@ fn card(out: &mut impl Write, m: &ProfileMetrics, bar: usize, now: DateTime<Utc>
             }
         ),
     )?;
+    // One project per line, so long paths stay readable.
+    for (i, dir) in m.project_defaults.iter().enumerate() {
+        let key = if i == 0 { "Default for" } else { "" };
+        let shown = paths.display(Path::new(dir));
+        if key.is_empty() {
+            writeln!(out, "    {:<16} {shown}", "")?;
+        } else {
+            row(out, key, shown)?;
+        }
+    }
     row(out, "Size", ui::human_size(m.size_bytes))?;
     row(out, "Last used", metrics::ago(m.last_used_time))?;
     if let Some(mode) = &m.mode {
