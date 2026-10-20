@@ -317,6 +317,9 @@ fn sync_one(
             "conflicts changed in the default and in the profile; see them with `mcc diff {alias}`, or overwrite them with `mcc sync {alias} --force` (backed up first)"
         ));
     }
+    if previous.is_none() {
+        warn_replaced(paths, alias, &dir, &plan, args.dry_run);
+    }
     let next = plan.manifest(previous.as_ref());
 
     if plan.actionable() == 0 {
@@ -391,6 +394,46 @@ fn sync_one(
         ),
     );
     Ok(())
+}
+
+/// Without a usable sync manifest the plan is two-way, so every path that
+/// differs from the default is taken from it, local edits included: list
+/// each path (and MCP server) whose profile content a sync replaces, and
+/// where it is backed up. Warnings, so `--quiet` still shows them; nothing
+/// when the sync only adds.
+fn warn_replaced(paths: &Paths, alias: &str, dir: &Path, plan: &Plan, dry_run: bool) {
+    let mut replaced: Vec<String> = plan
+        .changes
+        .iter()
+        .filter(|c| c.action == Action::Update)
+        .map(|c| c.rel.display().to_string())
+        .collect();
+    if let Some(m) = &plan.mcp {
+        replaced.extend(
+            m.updated
+                .iter()
+                .map(|k| format!("MCP server \"{k}\" (.claude.json)")),
+        );
+    }
+    if replaced.is_empty() {
+        return;
+    }
+    let backup = paths.display(&dir.join(copy::BACKUP_DIR));
+    ui::warn(&format!(
+        "\"{alias}\" has no usable sync record ({}), so this sync can't tell local edits from the default's changes: {} {}",
+        paths.display(&dir.join(manifest::FILE)),
+        plural(replaced.len(), "path", "paths"),
+        if dry_run {
+            format!(
+                "would be replaced by the default's version (a real sync backs up the profile's copy first, to {backup}/):"
+            )
+        } else {
+            format!("will be replaced by the default's version (backed up first, to {backup}/):")
+        }
+    ));
+    for r in &replaced {
+        ui::warn(&format!("  ~ {r}"));
+    }
 }
 
 fn print_plan(plan: &Plan, dry_run: bool) {
