@@ -421,3 +421,95 @@ fn statusline_is_a_reserved_alias() {
         .failure()
         .code(2);
 }
+
+#[test]
+fn symlinked_settings_stay_symlinks() {
+    let sb = sandbox();
+    let dotfiles = sb.path("dotfiles/settings.json");
+    std::fs::create_dir_all(dotfiles.parent().unwrap()).unwrap();
+    std::fs::rename(sb.path(".claude/settings.json"), &dotfiles).unwrap();
+    std::os::unix::fs::symlink(
+        "../dotfiles/settings.json",
+        sb.path(".claude/settings.json"),
+    )
+    .unwrap();
+    let before = sb.read("dotfiles/settings.json");
+    let is_link = |sb: &Sandbox| {
+        std::fs::symlink_metadata(sb.path(".claude/settings.json"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    };
+
+    install(&sb, &[]);
+    assert!(is_link(&sb));
+    assert!(
+        status_line(&sb, "dotfiles/settings.json")["command"]
+            .as_str()
+            .unwrap()
+            .ends_with("mcc statusline")
+    );
+
+    sb.mcc()
+        .args(["statusline", "uninstall"])
+        .assert()
+        .success();
+    assert!(is_link(&sb));
+    assert_eq!(
+        settings(&sb, "dotfiles/settings.json"),
+        json(before.as_bytes())
+    );
+}
+
+#[test]
+fn uninstall_keeps_the_record_of_an_unreadable_profile() {
+    let sb = sandbox();
+    let cfg = sb
+        .read(".mcc/config.toml")
+        .replace("exclude = []", "exclude = [\"settings\"]");
+    sb.write(".mcc/config.toml", &cfg);
+    let rel = ".mcc/profiles/work/settings.json";
+    sb.write(rel, r#"{"statusLine":{"command":"echo work-own"}}"#);
+    install(&sb, &["--yes"]);
+    let installed = sb.read(rel);
+    sb.write(rel, "{ broken");
+
+    let out = sb
+        .mcc()
+        .args(["statusline", "uninstall"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    assert!(String::from_utf8_lossy(&out.stderr).contains("left as is"));
+    assert!(sb.exists(".mcc/state/work/statusline.json"));
+    assert_eq!(
+        status_line(&sb, ".claude/settings.json"),
+        json!({"command": "~/.claude/statusline.sh"})
+    );
+
+    // Fixed by hand: a second uninstall still restores the profile's own.
+    sb.write(rel, &installed);
+    sb.mcc()
+        .args(["statusline", "uninstall"])
+        .assert()
+        .success();
+    assert_eq!(status_line(&sb, rel), json!({"command": "echo work-own"}));
+    assert!(!sb.exists(".mcc/state/work/statusline.json"));
+}
+
+#[test]
+fn rename_warns_when_the_new_state_dir_exists() {
+    let sb = sandbox();
+    sb.write(".mcc/state/work/usage.json", "{}");
+    sb.write(".mcc/state/job/usage.json", "{}");
+    let out = sb
+        .mcc()
+        .args(["rename", "work", "job"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    assert!(String::from_utf8_lossy(&out.stderr).contains("already exists"));
+    assert!(sb.exists(".mcc/state/work/usage.json"));
+}

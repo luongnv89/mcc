@@ -114,7 +114,11 @@ pub fn profile_for(paths: &Paths, cfg: &Config, config_dir: Option<&OsStr>) -> O
     let parent = dir.parent()?;
     if same_dir(parent, &paths.profiles_dir) {
         let name = dir.file_name()?.to_str()?;
-        if !name.is_empty() && !name.starts_with('.') {
+        if !name.is_empty()
+            && !name.starts_with('.')
+            && name != DEFAULT_PROFILE
+            && !cfg.profiles.contains_key(name)
+        {
             return Some(name.to_string());
         }
     }
@@ -402,8 +406,27 @@ fn read_settings(path: &Path) -> Result<Map<String, Value>> {
     }
 }
 
+/// Write a settings file in place. A symlinked file (e.g. from a dotfiles
+/// manager) stays a symlink: its target is written instead.
 fn write_settings(path: &Path, settings: &Map<String, Value>) -> Result<()> {
-    write_json(path, &Value::Object(settings.clone()))
+    write_json(&link_target(path), &Value::Object(settings.clone()))
+}
+
+/// The file a symlink finally points at (`path` itself when not a link).
+fn link_target(path: &Path) -> PathBuf {
+    let mut p = path.to_path_buf();
+    // Bounded, so a symlink loop can't spin forever.
+    for _ in 0..40 {
+        match std::fs::symlink_metadata(&p) {
+            Ok(m) if m.file_type().is_symlink() => match std::fs::read_link(&p) {
+                Ok(t) if t.is_absolute() => p = t,
+                Ok(t) => p = p.parent().unwrap_or(Path::new("/")).join(t),
+                Err(_) => break,
+            },
+            _ => break,
+        }
+    }
+    p
 }
 
 fn statusline_command(settings: &Map<String, Value>) -> Option<&str> {
@@ -482,6 +505,7 @@ fn install(paths: &Paths, cfg: &Config, prefix: bool, yes: bool) -> Result<()> {
     report(paths, "default profile", &settings, &outcome);
 
     let excluded = cfg.sync.exclude.iter().any(|g| g == "settings");
+    let mut warnings = 0;
     let profiles: Vec<(&String, &crate::config::Profile)> = cfg
         .profiles
         .iter()
@@ -525,8 +549,13 @@ fn install(paths: &Paths, cfg: &Config, prefix: bool, yes: bool) -> Result<()> {
                 false
             };
             if add {
-                let outcome = install_into(paths, alias, &path, &cmd)?;
-                report(paths, &format!("profile \"{alias}\""), &path, &outcome);
+                match install_into(paths, alias, &path, &cmd) {
+                    Ok(outcome) => report(paths, &format!("profile \"{alias}\""), &path, &outcome),
+                    Err(e) => {
+                        warnings += 1;
+                        ui::warn(&format!("profile \"{alias}\": {e:#} — not added"));
+                    }
+                }
             } else {
                 skipped.push(alias.as_str());
             }
@@ -539,8 +568,12 @@ fn install(paths: &Paths, cfg: &Config, prefix: bool, yes: bool) -> Result<()> {
         }
     }
     ui::result(
-        true,
-        "Claude Code shows the statusline from its next refresh",
+        warnings == 0,
+        &if warnings == 0 {
+            "Claude Code shows the statusline from its next refresh".to_string()
+        } else {
+            format!("statusline installed with {warnings} warning(s) — see above")
+        },
     );
     ui::kv(
         "Rate limits",
@@ -591,6 +624,9 @@ fn uninstall(paths: &Paths, cfg: &Config) -> Result<()> {
 
     let mut restored = 0;
     let mut warnings = 0;
+    // Records still needed because a target couldn't be read: dropping them
+    // would lose the only copy of its previous statusLine.
+    let mut keep: Vec<&str> = Vec::new();
     for (name, settings_path, dir) in &targets {
         let who = if dir.is_some() {
             format!("profile \"{name}\"")
@@ -604,8 +640,14 @@ fn uninstall(paths: &Paths, cfg: &Config) -> Result<()> {
         let mut settings = match read_settings(settings_path) {
             Ok(s) => s,
             Err(e) => {
-                ui::warn(&format!("{who}: {e:#} — left as is"));
+                ui::warn(&format!(
+                    "{who}: {e:#} — left as is; fix it and run `mcc statusline uninstall` again"
+                ));
                 warnings += 1;
+                keep.push(name);
+                if dir.is_some() {
+                    keep.push(DEFAULT_PROFILE);
+                }
                 continue;
             }
         };
@@ -667,7 +709,10 @@ fn uninstall(paths: &Paths, cfg: &Config) -> Result<()> {
                 .unwrap_or_default()
         ));
     }
-    for (name, _, _) in &targets {
+    for (name, _, _) in targets
+        .iter()
+        .filter(|(n, _, _)| !keep.contains(&n.as_str()))
+    {
         let rec = record_path(paths, name);
         if rec.exists() {
             fsutil::remove_any(&rec)?;
