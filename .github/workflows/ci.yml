@@ -54,10 +54,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # `brew audit` only takes formulae by name, so serve the formula
-      # from a throwaway local tap.
+      # from a throwaway local tap. No --online: a release commit points
+      # `url` at a tag that is pushed after it (see the formula header).
       - name: brew audit packaging/homebrew/mcc.rb
         run: |
           brew tap-new --no-git local/mcc
           tap="$(brew --repository local/mcc)"
           cp packaging/homebrew/mcc.rb "$tap/Formula/mcc.rb"
-          brew audit --strict --online local/mcc/mcc
+          brew audit --strict local/mcc/mcc
