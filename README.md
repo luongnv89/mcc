@@ -246,7 +246,7 @@ mcc completions fish > ~/.config/fish/completions/mcc.fish
 - edited, or deleted, only in the profile: kept, and reported as a **local edit**;
 - changed in both, or added on both sides: a **conflict**, kept and reported; `--force` overwrites it (after backing it up).
 
-`--dry-run` shows the same classification and writes nothing, not even the record. A profile without a record yet (created `--fresh` or by an older mcc) is compared two-way once: every difference is taken from the default, as before, and the record starts with that sync. The record belongs to its profile and is never copied. `mcc diff ALIAS` lists each differing path with its class and a line diff (`---` default, `+++` profile), and `mcc list` sums it up in its `SYNC` column (`--json`: `sync.behind`, `sync.local_edits`, `sync.conflicts`).
+`--dry-run` shows the same classification and writes nothing, not even the record. A profile without a record yet (created `--fresh` or by an older mcc), or with one that can't be read, is compared two-way once: every difference is taken from the default, as before, and the record starts with that sync. Because that sync can't tell your edits from the default's changes, it first warns with each path and MCP server it will replace and where they are backed up (`<profile>/.mcc-backup/`); `--dry-run` lists the same paths, and the warning shows even with `--quiet`. A sync that only adds files prints no warning. The record belongs to its profile and is never copied. `mcc diff ALIAS` lists each differing path with its class and a line diff (`---` default, `+++` profile), and `mcc list` sums it up in its `SYNC` column (`--json`: `sync.behind`, `sync.local_edits`, `sync.conflicts`).
 
 ### Changing settings: `mcc config`
 
