@@ -213,6 +213,26 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &RenameArgs) -> Result<()> {
         step.ok(&removed.join(", "));
     }
 
+    // What mcc keeps per profile (`mcc statusline`) follows the name.
+    let (old_state, new_state) = (paths.profile_state_dir(old), paths.profile_state_dir(new));
+    if old_state.exists() && new_state.exists() {
+        warnings += 1;
+        ui::warn(&format!(
+            "{} already exists — {} was left where it is",
+            paths.display(&new_state),
+            paths.display(&old_state)
+        ));
+    } else if old_state.exists()
+        && let Err(e) = std::fs::rename(&old_state, &new_state)
+    {
+        warnings += 1;
+        ui::warn(&format!(
+            "could not move {} to {}: {e}",
+            paths.display(&old_state),
+            paths.display(&new_state)
+        ));
+    }
+
     ui::result(
         warnings == 0,
         &format!(
