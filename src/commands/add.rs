@@ -174,6 +174,11 @@ fn login_steps(
         step.ok("");
     } else {
         step.fail("`claude auth login` did not finish");
+        if opts.email.is_some() || opts.sso {
+            ui::hint(
+                "--email and --sso need a Claude Code version whose `claude auth login` accepts them — update Claude Code, or retry without them",
+            );
+        }
     }
     let step = steps.start("Verify login");
     let status = c.status().unwrap_or_default();

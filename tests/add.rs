@@ -345,6 +345,42 @@ fn failed_login_keeps_profile_non_interactively() {
 }
 
 #[test]
+fn failed_login_with_email_or_sso_hints_at_claude_version() {
+    const HINT: &str = "--email and --sso need a Claude Code version";
+    let sb = Sandbox::new();
+    sb.seed_default();
+    let out = sb
+        .mcc()
+        .env("FAKE_LOGIN_FAIL", "1")
+        .args(["add", "work", "--fresh", "--email", "me@example.com"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(HINT))
+        .get_output()
+        .clone();
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!all.contains("me@example.com"), "address echoed: {all}");
+
+    sb.mcc()
+        .env("FAKE_LOGIN_FAIL", "1")
+        .args(["add", "sso", "--fresh", "--sso"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(HINT));
+
+    sb.mcc()
+        .env("FAKE_LOGIN_FAIL", "1")
+        .args(["add", "plain", "--fresh"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(HINT).not());
+}
+
+#[test]
 fn missing_claude_binary_blocks_login() {
     let sb = Sandbox::new();
     sb.seed_default();
