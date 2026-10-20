@@ -52,6 +52,10 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &AddArgs) -> Result<()> {
         ui::check_color(color)
             .map_err(|m| CliError::usage(m).hint("example: mcc add work --color blue"))?;
     }
+    if let Some(email) = &args.email {
+        check_email(email)
+            .map_err(|m| CliError::usage(m).hint("example: mcc add work --email me@example.com"))?;
+    }
     if !paths.default_dir.exists() {
         return add_default(paths, cfg, &env, args);
     }
@@ -104,25 +108,68 @@ fn add_default(paths: &Paths, cfg: &Config, env: &EnvInfo, args: &AddArgs) -> Re
         paths,
         config_dir: None,
     };
-    if let Some(account) = login_steps(&mut steps, &c, &paths.default_json, None)? {
+    if let Some(account) = login_steps(
+        &mut steps,
+        &c,
+        &login_options(args),
+        "claude",
+        &paths.default_json,
+        None,
+    )? {
         warn_if_duplicate(paths, cfg, None, &account);
     }
     ui::result(true, "default profile ready — start it with `claude`");
     Ok(())
 }
 
+/// `--email` and `--sso`, for `claude auth login`. `--email` was checked in
+/// `run`.
+fn login_options(args: &AddArgs) -> claude::LoginOptions<'_> {
+    claude::LoginOptions {
+        email: args.email.as_deref().map(str::trim),
+        sso: args.sso,
+    }
+}
+
+/// An `--email` value: one address, nothing that could read as an option.
+/// The value is not repeated in the message: emails are hidden by default
+/// (see `mcc list`), and the user can see what they typed.
+fn check_email(email: &str) -> std::result::Result<(), String> {
+    let t = email.trim();
+    if t.is_empty() {
+        return Err("--email is empty".into());
+    }
+    if t.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err("--email contains spaces or control characters".into());
+    }
+    match t.split_once('@') {
+        Some((user, domain))
+            if !user.is_empty()
+                && !user.starts_with('-')
+                && !domain.is_empty()
+                && !domain.contains('@') =>
+        {
+            Ok(())
+        }
+        _ => Err("--email is not an email address".into()),
+    }
+}
+
 /// Run login + verification steps. Returns the account logged in to, or
-/// `None` when the login did not complete. `state_json` is the profile's
-/// `.claude.json`; `theme_src` is a state file to take the UI theme from
-/// (the default profile's, when cloning).
+/// `None` when the login did not complete. `command` starts the profile (its
+/// alias, or `claude`); `state_json` is the profile's `.claude.json`;
+/// `theme_src` is a state file to take the UI theme from (the default
+/// profile's, when cloning).
 fn login_steps(
     steps: &mut ui::Steps,
     c: &Claude,
+    opts: &claude::LoginOptions,
+    command: &str,
     state_json: &Path,
     theme_src: Option<&Path>,
 ) -> Result<Option<Account>> {
     let step = steps.start("Log in (complete the sign-in in your browser)");
-    let ok = c.login()?;
+    let ok = c.login(opts)?;
     if ok {
         step.ok("");
     } else {
@@ -131,6 +178,7 @@ fn login_steps(
     let step = steps.start("Verify login");
     let status = c.status().unwrap_or_default();
     if status.logged_in {
+        let console = status.is_console();
         let account = logged_in_account(&status, state_json);
         let who = match (&account.email, &account.organization) {
             (Some(e), Some(o)) => format!("{e} ({o})"),
@@ -138,6 +186,9 @@ fn login_steps(
             _ => status.method.unwrap_or_else(|| "logged in".into()),
         };
         step.ok(&who);
+        if console {
+            warn_console(command);
+        }
         if let Err(e) = mark_onboarded(state_json, theme_src) {
             ui::warn(&format!(
                 "could not update {}: {e:#} — Claude Code may show its first-run setup once",
@@ -149,6 +200,18 @@ fn login_steps(
         step.warn("not logged in");
         Ok(None)
     }
+}
+
+/// A Console sign-in (API usage billing) is allowed, but Claude Code keeps
+/// it outside `CLAUDE_CONFIG_DIR`, so it isn't isolated per profile like a
+/// Claude subscription login. Never fails.
+fn warn_console(command: &str) {
+    ui::warn(
+        "this profile is signed in with an Anthropic Console account (API usage billing), not a Claude subscription — Claude Code stores a Console sign-in outside the profile's directory, so profiles don't keep it separate",
+    );
+    ui::hint(&format!(
+        "to sign in with a Claude subscription instead, run `{command} auth login --claudeai`"
+    ));
 }
 
 /// The account `claude auth status` reports, completed from the profile's
@@ -500,6 +563,8 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
             let account = match login_steps(
                 &mut steps,
                 &c,
+                &login_options(args),
+                &alias,
                 &profile_dir.join(".claude.json"),
                 clone.then_some(paths.default_json.as_path()),
             ) {
@@ -736,5 +801,24 @@ fn summary(paths: &Paths, cfg: &Config, alias: &str, clone: bool, logged_in: boo
                 paths.display(rc)
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn email_check() {
+        for ok in ["a@b.c", " a@b.c ", "first.last+tag@corp.example"] {
+            assert!(check_email(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "", "  ", "ab.c", "a b@c.d", "a@b\nc", "-a@b.c", "@b.c", "a@", "a@b@c",
+        ] {
+            assert!(check_email(bad).is_err(), "{bad:?}");
+        }
+        // The message never repeats the address.
+        assert!(!check_email("secret@").unwrap_err().contains("secret"));
     }
 }

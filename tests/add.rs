@@ -684,3 +684,128 @@ fn no_label_without_flag_and_no_account_without_login() {
     assert_eq!(cfg.matches("label = ").count(), 1, "{cfg}");
     assert!(account_section(&sb, "lab").contains("email = \"fake@example.com\""));
 }
+
+/// What the last `claude auth login` was passed, one argument per entry.
+fn login_args(sb: &Sandbox) -> Vec<String> {
+    sb.read("login-args")
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn email_and_sso_are_passed_to_claude_auth_login() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    sb.mcc().args(["add", "work", "--fresh"]).assert().success();
+    assert!(login_args(&sb).is_empty());
+
+    // Each its own argument, as typed; mcc itself doesn't print the address.
+    sb.mcc()
+        .args([
+            "add",
+            "lab",
+            "--fresh",
+            "--email",
+            "typed@corp.example",
+            "--sso",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("typed@corp.example").not());
+    assert_eq!(login_args(&sb), ["--email", "typed@corp.example", "--sso"]);
+
+    sb.mcc()
+        .args(["add", "side", "--fresh", "--sso"])
+        .assert()
+        .success();
+    assert_eq!(login_args(&sb), ["--sso"]);
+}
+
+#[test]
+fn email_is_passed_when_creating_the_default_profile() {
+    let sb = Sandbox::new();
+    sb.mcc()
+        .args(["add", "--yes", "--email=me@example.com"])
+        .assert()
+        .success();
+    assert_eq!(login_args(&sb), ["--email", "me@example.com"]);
+}
+
+#[test]
+fn rejects_an_invalid_email_and_login_flags_without_login() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    for bad in [
+        "",
+        "not-an-email",
+        "a b@c.d",
+        "-x@c.d",
+        "a@b@c",
+        "@c.d",
+        "a@",
+    ] {
+        sb.mcc()
+            .args(["add", "work", "--fresh", &format!("--email={bad}")])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("--email"));
+    }
+    for flags in [&["--email", "a@b.c"][..], &["--sso"][..]] {
+        sb.mcc()
+            .args(["add", "work", "--fresh", "--no-login"])
+            .args(flags)
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("cannot be used with"));
+    }
+    // Nothing was created, and claude was never asked to log in.
+    assert!(!sb.exists(".mcc/profiles/work"));
+    assert!(!sb.exists("login-args"));
+}
+
+#[test]
+fn warns_on_a_console_login_without_blocking() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    sb.mcc()
+        .args(["add", "work", "--fresh"])
+        .env("FAKE_AUTH_METHOD", "api_key")
+        .env("FAKE_API_KEY_SOURCE", "/login managed key")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Anthropic Console account"))
+        .stderr(predicate::str::contains("work auth login --claudeai"))
+        .stderr(predicate::str::contains("profile \"work\" is ready"));
+    assert!(account_section(&sb, "work").contains("fake@example.com"));
+
+    // A Claude subscription, or an API key from the environment: no warning.
+    sb.mcc()
+        .args(["add", "lab", "--fresh"])
+        .env("FAKE_EMAIL", "lab@example.com")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Console").not());
+    sb.mcc()
+        .args(["add", "side", "--fresh"])
+        .env("FAKE_EMAIL", "side@example.com")
+        .env("FAKE_AUTH_METHOD", "api_key")
+        .env("FAKE_API_KEY_SOURCE", "ANTHROPIC_API_KEY")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Console").not());
+}
+
+#[test]
+fn default_profile_warns_on_a_console_login() {
+    let sb = Sandbox::new();
+    sb.mcc()
+        .args(["add", "--yes"])
+        .env("FAKE_AUTH_METHOD", "api_key")
+        .env("FAKE_API_KEY_SOURCE", "/login managed key")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Anthropic Console account"))
+        .stderr(predicate::str::contains("`claude auth login --claudeai`"));
+}

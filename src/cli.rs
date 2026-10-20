@@ -113,7 +113,7 @@ pub enum Command {
 
     /// Add a Claude Code profile (creates the default one if ~/.claude is missing)
     #[command(
-        after_help = "Examples:\n  mcc add                       Interactive: asks for alias and setup\n  mcc add work --clone          Copy the default's setup (no credentials), then log in\n  mcc add lab --fresh --no-login\n  mcc add side --clone --label personal\n  mcc add work --clone --label \"Acme (work)\" --color blue\n\nAfter logging in, mcc records the account's email and organization under\n[profiles.ALIAS.account] in ~/.mcc/config.toml (shown by `mcc list`) and\nwarns when another profile is already logged in to the same account. It\nthen asks for an optional label, such as \"personal\" or the work\norganization; --label sets it without asking, and -y skips it. --color\nshows the profile's name in that color in `mcc list`, `mcc run` and the\n`mcc statusline --prefix` segment. `mcc config set profiles.ALIAS.label`\nand `profiles.ALIAS.color` change either later.\n\nAfter it finishes, start the profile with its alias, e.g. `work`."
+        after_help = "Examples:\n  mcc add                       Interactive: asks for alias and setup\n  mcc add work --clone          Copy the default's setup (no credentials), then log in\n  mcc add lab --fresh --no-login\n  mcc add side --clone --label personal\n  mcc add work --clone --label \"Acme (work)\" --color blue\n  mcc add work --clone --email me@acme.com --sso\n\n--email and --sso are passed to `claude auth login`: --email pre-fills the\naddress on the sign-in page and --sso forces the SSO flow. mcc does not\nprint the --email address itself. An Anthropic Console sign-in (API usage\nbilling) gets a warning: Claude Code stores it outside the profile's\ndirectory, so profiles don't keep it separate.\n\nAfter logging in, mcc records the account's email and organization under\n[profiles.ALIAS.account] in ~/.mcc/config.toml (shown by `mcc list`) and\nwarns when another profile is already logged in to the same account. It\nthen asks for an optional label, such as \"personal\" or the work\norganization; --label sets it without asking, and -y skips it. --color\nshows the profile's name in that color in `mcc list`, `mcc run` and the\n`mcc statusline --prefix` segment. `mcc config set profiles.ALIAS.label`\nand `profiles.ALIAS.color` change either later.\n\nAfter it finishes, start the profile with its alias, e.g. `work`."
     )]
     Add(AddArgs),
 
@@ -432,6 +432,14 @@ pub struct AddArgs {
     /// Skip `claude auth login` (log in later by running the alias)
     #[arg(long)]
     pub no_login: bool,
+
+    /// Pre-fill this email address on the sign-in page (passed to `claude auth login --email`)
+    #[arg(long, value_name = "ADDRESS", conflicts_with = "no_login")]
+    pub email: Option<String>,
+
+    /// Sign in through your organization's SSO (passed to `claude auth login --sso`)
+    #[arg(long, conflicts_with = "no_login")]
+    pub sso: bool,
 
     /// Link these items to the default's copy instead of copying them (see `mcc help link`)
     #[arg(
