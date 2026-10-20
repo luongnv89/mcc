@@ -159,7 +159,12 @@ fn collect(
     };
     let settings = read(dir.join("settings.json"));
     let state = read(state_json.to_path_buf());
-    let installed = read(dir.join("plugins/installed_plugins.json"));
+    // A profile sharing the default's plugins has the default's installed.
+    let plugins_root = match reg {
+        Some(r) if crate::plugins::shared(r) => crate::plugins::shared_root(paths),
+        _ => dir.join(crate::plugins::DIR),
+    };
+    let installed = read(plugins_root.join("installed_plugins.json"));
 
     let s = |v: &Option<Value>, ptr: &str| {
         v.as_ref()
@@ -395,6 +400,30 @@ mod tests {
         assert_eq!(m.account.as_deref(), Some("me@x.io"));
         assert_eq!(m.model.as_deref(), Some("opus"));
         assert!(m.warnings.is_empty());
+    }
+
+    #[test]
+    fn a_profile_sharing_plugins_counts_the_defaults_installed_plugins() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths::new(d.path().to_path_buf());
+        let root = paths.default_dir.join("plugins");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("installed_plugins.json"),
+            r#"{"version":2,"plugins":{"a@m":[],"b@m":[],"c@m":[]}}"#,
+        )
+        .unwrap();
+        let dir = paths.profile_dir("work");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut p: Profile = toml::from_str(&format!(
+            "dir = {:?}\nmode = \"clone\"\ncreated_at = \"x\"\nlink = [\"plugins\"]\n",
+            dir.to_str().unwrap()
+        ))
+        .unwrap();
+        assert_eq!(mcc_profile("work", &p, &paths).plugins_installed, 3);
+        // With its own plugins it counts its own (none here).
+        p.link.clear();
+        assert_eq!(mcc_profile("work", &p, &paths).plugins_installed, 0);
     }
 
     #[test]

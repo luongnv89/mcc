@@ -13,7 +13,7 @@ use crate::env_detect::{EnvInfo, dir_on_path};
 use crate::error::CliError;
 use crate::paths::Paths;
 use crate::txn::{self, Transaction};
-use crate::{fsutil, metrics, shell, ui, validate};
+use crate::{fsutil, metrics, plugins, shell, ui, validate};
 
 /// Something created during `add`, undone in reverse order on failure.
 enum Undo {
@@ -328,7 +328,7 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
     let clone = resolve_mode(args)?;
     // Checked before anything is created: each item can be linked and the
     // default has it.
-    let link = match (clone, args.link.is_empty()) {
+    let mut link = match (clone, args.link.is_empty()) {
         (_, true) => Vec::new(),
         (true, false) => super::link::check_new_links(paths, &args.link)?,
         (false, false) => {
@@ -339,6 +339,22 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
             .into());
         }
     };
+    // A clone shares the default's plugins unless asked for a copy (or
+    // plugins are excluded from sync altogether).
+    if args.copy_plugins && plugins::in_link(&link) {
+        return Err(
+            CliError::usage("--copy-plugins and --link plugins contradict each other")
+                .hint(format!("example: mcc add {alias} --clone --copy-plugins"))
+                .into(),
+        );
+    }
+    if clone
+        && !args.copy_plugins
+        && !plugins::in_link(&link)
+        && !cfg.sync.exclude.iter().any(|g| g == plugins::ITEM)
+    {
+        link.push(plugins::ITEM.into());
+    }
     let bin = if args.no_login {
         claude::find_binary(env.claude_bin.as_deref())
     } else {
@@ -372,8 +388,16 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
         });
         if clone {
             step.ok(&clone_setup(paths, cfg, &profile_dir, &link)?);
-            if !link.is_empty() {
-                ui::warn(&super::link::write_through_note(&alias, &link));
+            let symlinked: Vec<String> = link
+                .iter()
+                .filter(|l| *l != plugins::ITEM)
+                .cloned()
+                .collect();
+            if !symlinked.is_empty() {
+                ui::warn(&super::link::write_through_note(&alias, &symlinked));
+            }
+            if plugins::in_link(&link) {
+                ui::warn(&plugins::shared_note(&alias));
             }
         } else {
             step.skip("fresh profile");
@@ -388,6 +412,9 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
             &alias,
             &profile_dir,
             claude::find_binary(env.claude_bin.as_deref()).as_deref(),
+            plugins::in_link(&link)
+                .then(|| plugins::shared_root(paths))
+                .as_deref(),
         )?;
         undo.record(Undo::Wrapper(wrapper.clone()));
         if dir_on_path(&paths.local_bin) {
@@ -543,7 +570,10 @@ fn now() -> String {
 fn clone_setup(paths: &Paths, cfg: &Config, profile_dir: &Path, link: &[String]) -> Result<String> {
     let spec = copy::spec(None, &cfg.sync)?.without(link);
     // The same rewriter sync uses, so a clone and a sync write the same.
-    let rw = Rewriter::for_profile(paths, cfg, profile_dir)?;
+    let mut rw = Rewriter::for_profile(paths, cfg, profile_dir)?;
+    if plugins::in_link(link) {
+        rw = rw.sharing_plugins();
+    }
     let plan = copy::plan(
         &paths.default_dir,
         &paths.default_json,
@@ -569,11 +599,18 @@ fn clone_setup(paths: &Paths, cfg: &Config, profile_dir: &Path, link: &[String])
         .map(|(g, a, ..)| format!("{g} {a}"))
         .collect();
     let mcp = plan.mcp.as_ref().map_or(0, |m| m.added.len());
-    let linked = if link.is_empty() {
-        String::new()
-    } else {
-        format!("; linked: {}", link.join(", "))
-    };
+    let symlinked: Vec<&str> = link
+        .iter()
+        .map(String::as_str)
+        .filter(|l| *l != plugins::ITEM)
+        .collect();
+    let mut linked = String::new();
+    if !symlinked.is_empty() {
+        linked.push_str(&format!("; linked: {}", symlinked.join(", ")));
+    }
+    if plugins::in_link(link) {
+        linked.push_str("; plugins shared with the default");
+    }
     Ok(format!(
         "{} items ({}), {mcp} MCP servers{linked}; no credentials copied",
         plan.count(copy::Action::Add),

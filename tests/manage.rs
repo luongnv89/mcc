@@ -1090,7 +1090,11 @@ fn sync_prune_backs_up_removed_dirs() {
 fn sync_backs_up_a_file_standing_where_a_dir_goes() {
     let sb = Sandbox::new();
     sb.seed_default();
-    with_profile(&sb, "work", "--clone");
+    // The old full copy of the plugins (`--copy-plugins`, #47).
+    sb.mcc()
+        .args(["add", "work", "--clone", "--copy-plugins"])
+        .assert()
+        .success();
     std::fs::remove_dir_all(sb.path(".mcc/profiles/work/plugins")).unwrap();
     sb.write(".mcc/profiles/work/plugins", "my plugins notes");
     // The default changes a plugins file the profile deleted: a conflict.
@@ -1218,7 +1222,11 @@ fn sync_dry_run_writes_nothing_to_the_profile() {
 fn sync_never_writes_through_symlinked_profile_dir() {
     let sb = Sandbox::new();
     sb.seed_default();
-    with_profile(&sb, "work", "--clone");
+    // The old full copy of the plugins (`--copy-plugins`, #47).
+    sb.mcc()
+        .args(["add", "work", "--clone", "--copy-plugins"])
+        .assert()
+        .success();
     let link = sb.path(".mcc/profiles/work/plugins");
     let relink = || {
         std::fs::remove_dir_all(&link).unwrap();

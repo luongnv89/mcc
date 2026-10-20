@@ -364,16 +364,27 @@ impl Rewriter {
     /// dir, then `<to_dir>/settings.mcc.json`). Fails when the overlay is
     /// invalid, so nothing is written from a half-read overlay.
     pub fn for_profile(paths: &Paths, cfg: &Config, to_dir: &Path) -> Result<Self> {
-        let table = cfg
-            .profiles
-            .values()
-            .find(|p| p.dir == to_dir)
-            .and_then(|p| p.settings.as_ref());
+        let profile = cfg.profiles.values().find(|p| p.dir == to_dir);
+        let table = profile.and_then(|p| p.settings.as_ref());
         let overlay = settings_overlay(table, to_dir)?;
-        Ok(Self {
+        let rw = Self {
             overlay,
             ..Self::new(paths, to_dir, &cfg.sync)
+        };
+        Ok(if profile.is_some_and(crate::plugins::shared) {
+            rw.sharing_plugins()
+        } else {
+            rw
         })
+    }
+
+    /// This rewriter for a profile that shares the default's plugins: it has
+    /// no `plugins/` of its own, so `~/.claude/plugins/…` paths keep pointing
+    /// at the default's.
+    pub fn sharing_plugins(mut self) -> Self {
+        self.copied
+            .retain(|rel| !Path::new(rel).starts_with(crate::plugins::DIR));
+        self
     }
 
     /// Whether the profile has a settings overlay.
@@ -1381,6 +1392,19 @@ mod tests {
         };
         let rw = Rewriter::new(&paths, &paths.profile_dir("w"), &cfg);
         assert_eq!(rw.apply("~/.claude/hooks/h.sh"), "~/.claude/hooks/h.sh");
+        // A profile sharing the default's plugins has none of its own: its
+        // plugin paths keep pointing at the default, the rest is rewritten.
+        let rw = Rewriter::new(&paths, &paths.profile_dir("w"), &SyncConfig::default())
+            .sharing_plugins();
+        assert_eq!(
+            rw.apply("~/.claude/plugins/cache/m/p"),
+            "~/.claude/plugins/cache/m/p"
+        );
+        assert_eq!(
+            rw.apply("/h/.claude/plugins/installed_plugins.json"),
+            "/h/.claude/plugins/installed_plugins.json"
+        );
+        assert_eq!(rw.apply("~/.claude/skills"), "~/.mcc/profiles/w/skills");
     }
 
     #[test]

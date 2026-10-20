@@ -82,7 +82,13 @@ pub fn run(paths: &Paths, cfg: &Config, args: &RefreshLaunchersArgs) -> Result<(
             }
 
             let mut changed = false;
-            let script = shell::launcher_script(paths, name, &p.dir, claude_bin.as_deref());
+            let script = shell::launcher_script(
+                paths,
+                name,
+                &p.dir,
+                claude_bin.as_deref(),
+                crate::plugins::root_for(paths, p).as_deref(),
+            );
             if existing.as_deref() != Some(script.as_bytes()) {
                 undo.record(Undo::Wrapper(wrapper.clone(), existing));
                 shell::install_launcher(wrapper, &script)?;

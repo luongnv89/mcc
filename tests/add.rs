@@ -64,10 +64,11 @@ fn clone_profile_end_to_end() {
         "agents/reviewer.md",
         "commands/deploy.md",
         "hooks/notify.sh",
-        "plugins/cache/m/p1/1.0.0/plugin.json",
     ] {
         assert!(sb.exists(&format!("{p}/{f}")), "missing {f}");
     }
+    // Plugins are shared with the default, not copied (#47).
+    assert!(!sb.exists(&format!("{p}/plugins")));
     // State and credentials not copied (the fake login wrote its own).
     assert!(!sb.exists(&format!("{p}/history.jsonl")));
     assert!(!sb.exists(&format!("{p}/projects")));
@@ -95,16 +96,12 @@ fn clone_profile_end_to_end() {
         settings.contains("\"command\":\"~/.claude/statusline.sh\""),
         "{settings}"
     );
-    let plugins = sb.read(&format!("{p}/plugins/installed_plugins.json"));
-    assert!(
-        plugins.contains(&format!("{home}/.mcc/profiles/work/plugins/cache")),
-        "{plugins}"
-    );
 
     // Launcher + rc block + registry.
     let wrapper = sb.read(".local/bin/work");
     assert!(wrapper.contains("# managed-by: mcc"));
     assert!(wrapper.contains("export CLAUDE_CONFIG_DIR=\"$HOME/.mcc/profiles/work\""));
+    assert!(wrapper.contains("export CLAUDE_CODE_PLUGIN_CACHE_DIR=\"$HOME/.claude/plugins\""));
     let rc = sb.read(".zshrc");
     assert!(rc.starts_with("export EDITOR=vim\n"), "{rc}");
     assert!(rc.contains("# >>> mcc:work >>>\n"));
@@ -118,6 +115,7 @@ fn clone_profile_end_to_end() {
         cfg.contains("[profiles.work]") && cfg.contains("mode = \"clone\""),
         "{cfg}"
     );
+    assert!(cfg.contains("link = [\"plugins\"]"), "{cfg}");
 
     // The launcher actually runs claude with the profile dir.
     let out = std::process::Command::new(sb.path(".local/bin/work"))
@@ -145,6 +143,92 @@ fn clone_profile_end_to_end() {
         String::from_utf8_lossy(&out.stdout).contains("\"loggedIn\": true"),
         "{out:?}"
     );
+}
+
+#[test]
+fn clone_shares_plugins_through_the_launcher() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    sb.mcc()
+        .args(["add", "work", "--clone", "--no-login"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("plugins shared with the default"))
+        .stderr(predicate::str::contains("shared plugins: \"work\""));
+    let out = std::process::Command::new(sb.path(".local/bin/work"))
+        .arg("plugin-root")
+        .env("HOME", sb.home())
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin", sb.path("fakebin").display()),
+        )
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        format!("plugin root: {}", sb.path(".claude/plugins").display())
+    );
+}
+
+#[test]
+fn clone_with_copy_plugins_copies_them_as_before() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    sb.mcc()
+        .args(["add", "work", "--clone", "--no-login", "--copy-plugins"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("shared plugins").not());
+    let p = ".mcc/profiles/work";
+    assert!(sb.exists(&format!("{p}/plugins/cache/m/p1/1.0.0/plugin.json")));
+    let home = sb.home().display().to_string();
+    let plugins = sb.read(&format!("{p}/plugins/installed_plugins.json"));
+    assert!(
+        plugins.contains(&format!("{home}/.mcc/profiles/work/plugins/cache")),
+        "{plugins}"
+    );
+    assert!(
+        !sb.read(".local/bin/work")
+            .contains("export CLAUDE_CODE_PLUGIN_CACHE_DIR")
+    );
+    assert!(!sb.read(".mcc/config.toml").contains("plugins"));
+    // The launcher clears mcc's own value of the variable, never the user's.
+    let launch = |inherited: &str| {
+        let out = std::process::Command::new(sb.path(".local/bin/work"))
+            .arg("plugin-root")
+            .env("HOME", sb.home())
+            .env("CLAUDE_CODE_PLUGIN_CACHE_DIR", inherited)
+            .env(
+                "PATH",
+                format!("{}:/usr/bin:/bin", sb.path("fakebin").display()),
+            )
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    let root = sb.path(".claude/plugins").display().to_string();
+    assert_eq!(launch(&root), "plugin root: unset");
+    assert_eq!(launch("/opt/seed"), "plugin root: /opt/seed");
+}
+
+#[test]
+fn copy_plugins_contradicts_link_plugins() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    sb.mcc()
+        .args([
+            "add",
+            "work",
+            "--clone",
+            "--no-login",
+            "--copy-plugins",
+            "--link",
+            "plugins",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("contradict"));
+    assert!(!sb.exists(".mcc/profiles/work"));
 }
 
 #[test]

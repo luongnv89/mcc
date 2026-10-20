@@ -84,7 +84,8 @@ fn link_backs_up_the_copy_and_warns_about_write_through() {
         .collect();
     assert!(leftovers.is_empty(), "{leftovers:?}");
     assert!(!manifest_has(&sb, "skills/"));
-    assert_eq!(links(&sb), ["skills"]);
+    // A clone shares plugins from the start (#47).
+    assert_eq!(links(&sb), ["plugins", "skills"]);
 
     // Linking again is a no-op.
     sb.mcc()
@@ -196,7 +197,7 @@ fn off_replaces_the_link_with_a_copy_and_never_touches_the_default() {
     // agents stays linked; skills is recorded again for three-way sync.
     assert!(is_link(&sb.path(&format!("{WORK}/agents"))));
     assert!(manifest_has(&sb, "skills/"));
-    assert_eq!(links(&sb), ["agents"]);
+    assert_eq!(links(&sb), ["plugins", "agents"]);
 
     // The copy is in sync: an edit in the profile is now a local edit.
     sb.mcc()
@@ -232,7 +233,7 @@ fn clone_honors_link_mode() {
     assert!(sb.exists(&format!("{WORK}/agents/reviewer.md")));
     assert!(!manifest_has(&sb, "skills/"));
     assert!(manifest_has(&sb, "agents/"));
-    assert_eq!(links(&sb), ["skills", "claude-md"]);
+    assert_eq!(links(&sb), ["skills", "claude-md", "plugins"]);
     let status = sync_status(&sb);
     assert_eq!(status["behind"], 0, "{status}");
 
@@ -256,7 +257,7 @@ fn link_refusals() {
     with_profile(&sb, "work", "--clone");
     for (args, needle) in [
         (vec!["link", "work", "settings"], "settings can't be linked"),
-        (vec!["link", "work", "plugins"], "can't be linked"),
+        (vec!["link", "work", "hooks"], "can't be linked"),
         (vec!["link", "work", "nope"], "unknown item"),
         (vec!["link", "default", "skills"], "pick another profile"),
         (vec!["link", "work", "--off"], "name the items"),
@@ -312,7 +313,7 @@ fn failed_link_rolls_back() {
     assert_eq!(sb.read(".claude/agents/reviewer.md"), "agent");
     assert!(!sb.exists(".claude/agents/mine.md"));
     assert_eq!(manifest(&sb), before);
-    assert!(links(&sb).is_empty());
+    assert_eq!(links(&sb), ["plugins"]);
 }
 
 #[test]
@@ -349,4 +350,163 @@ fn link_refuses_a_profile_whose_dir_is_the_default() {
         assert!(!is_link(&agents));
         assert_eq!(sb.read(".claude/agents/reviewer.md"), "agent");
     }
+}
+
+/// `list --json`'s installed-plugins count for `work`.
+fn plugins_installed(sb: &Sandbox) -> serde_json::Value {
+    let out = stdout_of(sb.mcc().args(["list", "--json", "--no-usage"]));
+    let all: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
+    by_name(&all, "work")["plugins_installed"].clone()
+}
+
+/// Issue #47: an existing profile with its own copy of the plugins opts in to
+/// the default's. Its copy is moved to a backup, never deleted.
+#[test]
+fn link_plugins_moves_the_copy_to_a_backup_and_shares_the_defaults() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    sb.mcc()
+        .args(["add", "work", "--clone", "--copy-plugins"])
+        .assert()
+        .success();
+    sb.write(
+        &format!("{WORK}/plugins/data/p1/state"),
+        "work's plugin data",
+    );
+    assert!(manifest_has(&sb, "plugins/"));
+    assert!(links(&sb).is_empty());
+    let default_before = sb.read(".claude/plugins/installed_plugins.json");
+
+    sb.mcc()
+        .args(["link", "work", "plugins"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "Move the profile's plugins to a backup",
+        ))
+        .stderr(predicate::str::contains("shared plugins: \"work\""))
+        .stderr(predicate::str::contains(
+            "remove that folder to free the space",
+        ));
+
+    // The profile's own copy is in the backup, whole.
+    assert!(!sb.exists(&format!("{WORK}/plugins")));
+    let backups: Vec<_> = std::fs::read_dir(sb.path(&format!("{WORK}/.mcc-backup")))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(backups.len(), 1);
+    assert!(
+        backups[0]
+            .join("plugins/cache/m/p1/1.0.0/plugin.json")
+            .is_file()
+    );
+    assert_eq!(
+        std::fs::read_to_string(backups[0].join("plugins/data/p1/state")).unwrap(),
+        "work's plugin data"
+    );
+    // The default is untouched; the launcher points at it.
+    assert_eq!(
+        sb.read(".claude/plugins/installed_plugins.json"),
+        default_before
+    );
+    assert!(
+        sb.read(".local/bin/work")
+            .contains("export CLAUDE_CODE_PLUGIN_CACHE_DIR=\"$HOME/.claude/plugins\"\n")
+    );
+    assert_eq!(links(&sb), ["plugins"]);
+    assert!(!manifest_has(&sb, "plugins/"));
+    assert_eq!(plugins_installed(&sb), 2);
+
+    // Sync and diff leave plugins alone, and never copy them back.
+    sb.mcc()
+        .args(["sync", "work", "--prune", "--yes"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "linked to the default profile: plugins",
+        ));
+    assert!(!sb.exists(&format!("{WORK}/plugins")));
+    assert_eq!(sync_status(&sb)["behind"], 0);
+
+    sb.mcc()
+        .args(["link", "work"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("shared →"));
+
+    // Again: nothing to move, nothing changes.
+    sb.mcc()
+        .args(["link", "work", "plugins"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("the profile has no plugins/"));
+    assert_eq!(links(&sb), ["plugins"]);
+}
+
+#[test]
+fn link_plugins_off_copies_them_back_and_drops_the_variable() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    with_profile(&sb, "work", "--clone");
+    assert_eq!(links(&sb), ["plugins"]);
+    assert!(!sb.exists(&format!("{WORK}/plugins")));
+
+    sb.mcc()
+        .args(["link", "work", "plugins", "--off"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("has its own copy of the plugins"));
+    assert!(sb.exists(&format!("{WORK}/plugins/cache/m/p1/1.0.0/plugin.json")));
+    let home = sb.home().display().to_string();
+    assert!(
+        sb.read(&format!("{WORK}/plugins/installed_plugins.json"))
+            .contains(&format!("{home}/.mcc/profiles/work/plugins/cache"))
+    );
+    assert!(
+        !sb.read(".local/bin/work")
+            .contains("export CLAUDE_CODE_PLUGIN_CACHE_DIR")
+    );
+    assert!(links(&sb).is_empty());
+    assert!(manifest_has(&sb, "plugins/"));
+    assert_eq!(sync_status(&sb)["behind"], 0);
+
+    // Off again does nothing.
+    sb.mcc()
+        .args(["link", "work", "plugins", "--off"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("already has its own plugins"));
+}
+
+#[test]
+fn failed_link_plugins_rolls_back() {
+    use std::os::unix::fs::PermissionsExt;
+    let sb = Sandbox::new();
+    sb.seed_default();
+    sb.mcc()
+        .args(["add", "work", "--clone", "--copy-plugins"])
+        .assert()
+        .success();
+    let launcher = sb.read(".local/bin/work");
+    let before = manifest(&sb);
+    // ~/.mcc read-only: the plugins are moved, then saving config.toml fails.
+    let mcc_dir = sb.path(".mcc");
+    std::fs::set_permissions(&mcc_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let out = sb.mcc().args(["link", "work", "plugins"]).output().unwrap();
+    std::fs::set_permissions(&mcc_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(sb.exists(&format!("{WORK}/plugins/cache/m/p1/1.0.0/plugin.json")));
+    assert!(
+        !sb.exists(&format!("{WORK}/.mcc-backup")) || {
+            std::fs::read_dir(sb.path(&format!("{WORK}/.mcc-backup")))
+                .unwrap()
+                .count()
+                == 0
+        }
+    );
+    assert_eq!(sb.read(".local/bin/work"), launcher);
+    assert_eq!(manifest(&sb), before);
+    assert!(links(&sb).is_empty());
 }

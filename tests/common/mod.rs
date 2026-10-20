@@ -35,6 +35,7 @@ case "$1 $2" in
   "auth logout")
     # Like the real claude (2.1.x): exits 0 even when nothing was logged in.
     rm -f "$dir/.credentials.json"; echo "Successfully logged out." ;;
+  "plugin-root "*) echo "plugin root: ${CLAUDE_CODE_PLUGIN_CACHE_DIR:-unset}" ;;
   *) echo "fake claude $*" ;;
 esac
 "#;

@@ -103,14 +103,14 @@ mcc delete job              # remove it completely
 | Command | What it does | Key options |
 |---|---|---|
 | `mcc init` | Detect OS, arch, terminal, shell, rc file, the `claude` binary, and whether `~/.local/bin` is on PATH (and offer to add it) | `--force`, `--shell zsh\|bash\|fish` |
-| `mcc add [ALIAS]` | Create the default profile, or a new profile with its own command; records the account and its organization, warns when another profile already uses that account, and asks for an optional label | `--clone`, `--fresh`, `--link ITEMS`, `--no-login`, `--label LABEL`, `-y` |
+| `mcc add [ALIAS]` | Create the default profile, or a new profile with its own command; records the account and its organization, warns when another profile already uses that account, and asks for an optional label. A clone shares the default's plugins instead of copying them | `--clone`, `--fresh`, `--link ITEMS`, `--copy-plugins`, `--no-login`, `--label LABEL`, `-y` |
 | `mcc list` (`ls`) | Show every profile with metrics and 5-hour/weekly usage | `--json`, `--json-v2`, `-l/--long`, `--no-usage` |
 | `mcc usage [PROFILE]` | Show each profile's 5-hour and weekly usage in a table (`default` or `claude` for the default profile) | `--json`, `--json-v2`, `--show-email`, `--hide-email` |
 | `mcc sync [ALIAS]` | Copy the default's setup into a profile (default → profile only), keeping edits made in the profile | `--all`, `--dry-run`, `--prune`, `--force`, `--only ITEMS`, `-y` |
 | `mcc diff ALIAS` | Show how a profile differs from the default's setup, path by path, as `sync` classifies it | `--only ITEMS` |
 | `mcc rename ALIAS NEW` (`mv`) | Rename a profile and its command; directory and login are kept | |
 | `mcc share ALIAS` | Share the profile's sessions with the other sharing profiles of its group (off by default; see [Sharing sessions](#sharing-sessions-between-profiles)) | `--off`, `--group NAME`, `--allow-cross-org` |
-| `mcc link ALIAS [ITEMS]` | Link read-mostly items (`skills`, `agents`, `commands`, `output-styles`, `claude-md`) to the default's copy instead of copying them; edits write through to the default (off by default; see [Linking read-mostly items](#linking-read-mostly-items-mcc-link)) | `--off` |
+| `mcc link ALIAS [ITEMS]` | Link read-mostly items (`skills`, `agents`, `commands`, `output-styles`, `claude-md`) to the default's copy instead of copying them; edits write through to the default (off by default; see [Linking read-mostly items](#linking-read-mostly-items-mcc-link)). `plugins` shares the default's plugins (see [Sharing plugins](#sharing-plugins-mcc-link-alias-plugins)) | `--off` |
 | `mcc project set PROFILE` | Make PROFILE the one `mcc run` starts in this project (see [Per-project profiles](#per-project-profiles-mcc-project-and-mcc-run)); also `unset` and `list` | `--path DIR`, `--allow PROFILE`, `list --json`, `list --json-v2` |
 | `mcc run [-- CLAUDE_ARGS]` | Start Claude Code with the current project's profile; at its limit, ask whether to wait (the default) or start it anyway | `--profile NAME`, `--dry-run` |
 | `mcc env [PROFILE]` | Print the shell line that sets `CLAUDE_CONFIG_DIR` for the project's profile (or PROFILE), for `eval` or direnv (see [Using a project's profile everywhere](#using-a-projects-profile-everywhere-mcc-env-and-mcc-exec)) | `--shell zsh\|bash\|fish` |
@@ -210,7 +210,7 @@ mcc completions fish > ~/.config/fish/completions/mcc.fish
 | `keybindings` | `keybindings.json` |
 | `statusline` | `statusline.conf` |
 | `agents`, `skills`, `commands`, `hooks`, `output-styles` | those directories |
-| `plugins` | `plugins/installed_plugins.json`, `plugins/known_marketplaces.json`, `plugins/marketplaces/`, `plugins/cache/` |
+| `plugins` | `plugins/installed_plugins.json`, `plugins/known_marketplaces.json`, `plugins/marketplaces/`, `plugins/cache/` (only for a profile that keeps its own copy: a clone [shares the default's plugins](#sharing-plugins-mcc-link-alias-plugins) instead) |
 | `mcp` | the `mcpServers` entry from `~/.claude.json` (merged; the rest of the profile's state is kept) |
 
 **Never copied:** credentials, account identity (`oauthAccount`, `userID`), history, projects/sessions, todos, telemetry, caches, file history. (Sessions can be *shared* instead, opt-in, with `mcc share`; see below.)
@@ -270,8 +270,8 @@ mcc add lab --clone --link skills      # clone, linking skills/ instead of copyi
 - Turning link mode on backs up the profile's own copy first (it may hold local edits) to `<profile>/.mcc-backup/<timestamp>/`, and drops its entries from the sync record (`.mcc-sync.json`).
 - `mcc sync` and `mcc diff` leave linked items alone: they are never compared, copied, pruned (not even with `--prune`) or recorded, so they never show up as behind, local edits or conflicts in `mcc list`. A sync warns when a linked item is no longer the link.
 - `--off` removes only the symlink, never the default's files it points at, copies the default's item in its place, and records it so the next sync is three-way again.
-- Each run is all or nothing: if a step fails, what was already changed is undone.
-- `settings` can't be linked (each profile's `settings.json` is merged with its [overlay](#per-profile-settings-overlays)), and neither can `keybindings`, `statusline`, `hooks`, `plugins` or `mcp`.
+- Each run is all or nothing: if a step fails, what was already changed is undone. `plugins` (see below) is applied as a separate step after the other items, so a run like `mcc link work skills plugins` that fails while sharing plugins keeps `skills` linked.
+- `settings` can't be linked (each profile's `settings.json` is merged with its [overlay](#per-profile-settings-overlays)), and neither can `keybindings`, `statusline`, `hooks` or `mcp`. `plugins` is shared a different way, described next.
 
 The setting is kept per profile in `~/.mcc/config.toml`; set it with `mcc link`, which also creates the symlinks (editing the key by hand does nothing on its own):
 
@@ -279,6 +279,29 @@ The setting is kept per profile in `~/.mcc/config.toml`; set it with `mcc link`,
 [profiles.work]
 link = ["skills", "agents"]   # default: none
 ```
+
+### Sharing plugins: `mcc link ALIAS plugins`
+
+A full copy of the default's plugin files in every profile adds up (about 88 MB per profile on one real setup). Instead, a profile can use the default's plugins directly. **`mcc add --clone` does this by default** (`--copy-plugins` gives the clone its own copy, as before); profiles made by an older mcc keep their copy until you opt in:
+
+```sh
+mcc link work plugins          # share ~/.claude/plugins with work; its own copy goes to a backup
+mcc link work plugins --off    # give work its own copy of the plugins again
+mcc add lab --clone --copy-plugins   # clone with a full copy of the plugins
+```
+
+**How it works.** Claude Code reads every plugin file from one *plugins root*, by default `<CLAUDE_CONFIG_DIR>/plugins`. The documented `CLAUDE_CODE_PLUGIN_CACHE_DIR` variable ([env vars](https://code.claude.com/docs/en/env-vars)) replaces that root; despite its name it is the whole root, not only the cache. mcc sets it to `~/.claude/plugins` for a sharing profile, in its launcher (`~/.local/bin/<alias>`), and in `mcc run`, `mcc exec` and `mcc env`. No symlink is made, and `~/.claude/plugins` is never moved or rewritten by mcc.
+
+**Exactly what is shared** (checked against Claude Code 2.1.286; other versions may treat `CLAUDE_CODE_PLUGIN_CACHE_DIR` differently, see the caveat below): everything in the plugins root, which is `installed_plugins.json` (which plugins are installed, and where), `known_marketplaces.json` and `marketplaces/` (the registered marketplaces), `cache/` (the plugin files), `data/` (each plugin's persistent `${CLAUDE_PLUGIN_DATA}`), `store/`, and `synced/` (plugins synced from claude.ai, kept per account and organization). **What stays per profile:** which plugins are *enabled*, because `enabledPlugins` lives in the profile's `settings.json` (so an [overlay](#per-profile-settings-overlays) can turn a plugin on or off for one profile), plus everything outside the plugins root.
+
+Trade-offs:
+
+- **Verified on one Claude Code version.** The behavior above was verified on Claude Code 2.1.286; other versions may treat `CLAUDE_CODE_PLUGIN_CACHE_DIR` differently. If a sharing profile shows no plugins, `mcc link ALIAS plugins --off` gives it its own copy again (or clone with `--copy-plugins`).
+- **Write-through.** Installing, updating or uninstalling a plugin or marketplace in a sharing profile does it for the default and every sharing profile. A plugin installed from one profile is installed (not enabled) everywhere; one uninstalled from one profile is gone for every profile that still has it enabled. Plugin data is shared too.
+- **Only when mcc starts it.** The variable reaches Claude Code through the profile's command, its shell alias (which runs the launcher), `mcc run`, `mcc exec` and `eval "$(mcc env)"`. A profile started any other way, such as `CLAUDE_CONFIG_DIR=~/.mcc/profiles/work claude` or an IDE configured with only `CLAUDE_CONFIG_DIR`, uses its own `plugins/`, which is empty: set `CLAUDE_CODE_PLUGIN_CACHE_DIR` there as well. For a profile with its own plugins, `mcc run`, `mcc exec`, `mcc env` and launchers written by this version (`mcc refresh-launchers` updates older ones) clear the variable only when it holds `~/.claude/plugins` (mcc's own value, e.g. left by `eval "$(mcc env work)"`); a value you set yourself is left alone.
+- **`sync` and `diff` leave plugins alone** for a sharing profile, like linked items: nothing under `plugins/` is copied, compared, pruned or recorded, and paths to `~/.claude/plugins/…` in its settings are not rewritten. `mcc list` counts the default's installed plugins for it.
+
+**Moving an existing profile over is opt-in and keeps a backup.** `mcc link work plugins` moves the profile's own `plugins/` (it may hold plugins or plugin data the default lacks) to `<profile>/.mcc-backup/<timestamp>/plugins` with a rename, so nothing is copied or deleted, then rewrites the launcher and records `"plugins"` in `link`. The space is freed when you remove that backup folder; mcc prints its path and size. If a step fails, the move and the launcher are undone. Profiles whose shell alias predates launchers need `mcc refresh-launchers <alias>` once (mcc says so). `--off` moves any `plugins/` the profile has to a backup, copies the default's plugins in (paths rewritten, recorded for three-way sync), and removes the variable from the launcher. Restart the profile's running sessions after either.
 
 ### Per-profile settings overlays
 

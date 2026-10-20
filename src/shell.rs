@@ -43,12 +43,18 @@ pub const SHARE_FLAG: &str = "--mcc-share";
 /// if that fails, claude is not started. Without the flag the script does
 /// exactly what launchers did before session sharing existed, and the
 /// `CLAUDE_CONFIG_DIR` line is unchanged: the keychain login is keyed on it.
+///
+/// With `plugin_root` (a profile sharing the default's plugins) the script
+/// also exports `CLAUDE_CODE_PLUGIN_CACHE_DIR`; without it the script unsets
+/// that variable only when it holds the default's plugins root (mcc's own
+/// value, as `mcc run` and `mcc exec` do), keeping a value of the user's.
 pub fn wrapper_script(
     paths: &Paths,
     alias: &str,
     profile_dir: &Path,
     claude_bin: Option<&Path>,
     mcc_bin: Option<&Path>,
+    plugin_root: Option<&Path>,
 ) -> String {
     let fallback = match claude_bin {
         Some(bin) => format!("exec {} \"$@\"", sh_quote(&bin.to_string_lossy())),
@@ -64,12 +70,27 @@ pub fn wrapper_script(
          # Claude Code profile \"{alias}\". Remove with: mcc delete {alias}\n\
          # Start it with {SHARE_FLAG} to share its sessions (see: mcc help share).\n\
          export CLAUDE_CONFIG_DIR=\"{dir}\"\n\
+         {plugins}\
          case \"$1\" in\n  {SHARE_FLAG})\n    shift\n    \
          if command -v mcc >/dev/null 2>&1; then mcc {share}\n    \
          else {mcc_fallback}; fi ;;\nesac\n\
          if command -v claude >/dev/null 2>&1; then exec claude \"$@\"; fi\n\
          {fallback}\n",
-        dir = paths.shell_expr(profile_dir)
+        dir = paths.shell_expr(profile_dir),
+        plugins = match plugin_root {
+            Some(r) => format!(
+                "export {}=\"{}\"\n",
+                crate::plugins::ENV,
+                paths.shell_expr(r)
+            ),
+            // mcc's own value (left by `eval "$(mcc env work)"`, say) is
+            // cleared; a value of the user's is passed on.
+            None => format!(
+                "[ \"${{{var}:-}}\" = \"{root}\" ] && unset {var}\n",
+                var = crate::plugins::ENV,
+                root = paths.shell_expr(&crate::plugins::shared_root(paths))
+            ),
+        },
     )
 }
 
@@ -84,9 +105,17 @@ pub fn launcher_script(
     alias: &str,
     profile_dir: &Path,
     claude_bin: Option<&Path>,
+    plugin_root: Option<&Path>,
 ) -> String {
     let mcc_bin = std::env::current_exe().ok();
-    wrapper_script(paths, alias, profile_dir, claude_bin, mcc_bin.as_deref())
+    wrapper_script(
+        paths,
+        alias,
+        profile_dir,
+        claude_bin,
+        mcc_bin.as_deref(),
+        plugin_root,
+    )
 }
 
 /// Write an executable launcher script to `path`.
@@ -100,11 +129,12 @@ pub fn write_wrapper(
     alias: &str,
     profile_dir: &Path,
     claude_bin: Option<&Path>,
+    plugin_root: Option<&Path>,
 ) -> Result<PathBuf> {
     let path = paths.wrapper(alias);
     install_launcher(
         &path,
-        &launcher_script(paths, alias, profile_dir, claude_bin),
+        &launcher_script(paths, alias, profile_dir, claude_bin, plugin_root),
     )?;
     Ok(path)
 }
@@ -411,12 +441,33 @@ mod tests {
             &dir,
             Some(Path::new("/opt/it's/claude")),
             Some(Path::new("/opt/bin/mcc")),
+            None,
         );
         assert!(w.starts_with("#!/bin/sh\n# managed-by: mcc\n# mcc-launcher: 2\n"));
         assert!(w.contains("export CLAUDE_CONFIG_DIR=\"$HOME/.mcc/profiles/work\"\n"));
         assert!(w.contains("if command -v claude >/dev/null 2>&1; then exec claude \"$@\"; fi\n"));
         assert!(w.contains("exec '/opt/it'\\''s/claude' \"$@\"\n"), "{w}");
-        assert!(wrapper_script(&paths, "work", &dir, None, None).contains("exit 127"));
+        assert!(wrapper_script(&paths, "work", &dir, None, None, None).contains("exit 127"));
+        // Without shared plugins the launcher only clears mcc's own value.
+        assert!(w.contains(
+            "[ \"${CLAUDE_CODE_PLUGIN_CACHE_DIR:-}\" = \"$HOME/.claude/plugins\" ] && unset CLAUDE_CODE_PLUGIN_CACHE_DIR\n"
+        ), "{w}");
+        assert!(!w.contains("export CLAUDE_CODE_PLUGIN_CACHE_DIR"));
+    }
+
+    #[test]
+    fn launcher_of_a_profile_sharing_plugins_exports_the_plugins_root() {
+        let paths = Paths::new(PathBuf::from("/h"));
+        let dir = paths.profile_dir("work");
+        let root = crate::plugins::shared_root(&paths);
+        let w = wrapper_script(&paths, "work", &dir, None, None, Some(&root));
+        assert!(
+            w.contains(
+                "export CLAUDE_CONFIG_DIR=\"$HOME/.mcc/profiles/work\"\n\
+                 export CLAUDE_CODE_PLUGIN_CACHE_DIR=\"$HOME/.claude/plugins\"\ncase "
+            ),
+            "{w}"
+        );
     }
 
     /// The launcher every profile had before session sharing (v0.2.0).
@@ -436,6 +487,7 @@ mod tests {
             &dir,
             Some(Path::new("/opt/claude")),
             Some(Path::new("/opt/bin/mcc")),
+            None,
         );
         // The CLAUDE_CONFIG_DIR export (the keychain service is a hash of the
         // value it produces) and the exec lines are byte-identical to v0.2.0.
@@ -451,14 +503,16 @@ mod tests {
             w.ends_with(&format!("{}\n{}\n", legacy[4], legacy[5])),
             "{w}"
         );
-        // The only addition on the launch path is the `--mcc-share` branch,
-        // placed between the export and the exec lines.
+        // The only additions on the launch path are clearing mcc's own
+        // plugins root (#47) and the `--mcc-share` branch, placed between the
+        // export and the exec lines.
         let added: Vec<&str> = w.lines().filter(|l| !legacy.contains(l)).collect();
         assert_eq!(
             added,
             [
                 "# mcc-launcher: 2",
                 "# Start it with --mcc-share to share its sessions (see: mcc help share).",
+                "[ \"${CLAUDE_CODE_PLUGIN_CACHE_DIR:-}\" = \"$HOME/.claude/plugins\" ] && unset CLAUDE_CODE_PLUGIN_CACHE_DIR",
                 "case \"$1\" in",
                 "  --mcc-share)",
                 "    shift",
@@ -468,7 +522,7 @@ mod tests {
             ],
             "{w}"
         );
-        let no_mcc = wrapper_script(&paths, "work", &dir, None, None);
+        let no_mcc = wrapper_script(&paths, "work", &dir, None, None, None);
         assert!(no_mcc.contains("else echo \"mcc not found on PATH\" >&2; exit 127; fi ;;"));
     }
 
@@ -481,7 +535,7 @@ mod tests {
         std::fs::write(&w, LEGACY_WRAPPER).unwrap();
         assert!(is_mcc_wrapper(&w) && !launcher_is_current(&w));
         let dir = paths.profile_dir("work");
-        std::fs::write(&w, wrapper_script(&paths, "work", &dir, None, None)).unwrap();
+        std::fs::write(&w, wrapper_script(&paths, "work", &dir, None, None, None)).unwrap();
         assert!(is_mcc_wrapper(&w) && launcher_is_current(&w));
 
         let rc = d.path().join(".zshrc");

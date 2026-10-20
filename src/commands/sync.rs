@@ -522,6 +522,16 @@ pub fn backup_rels(dir: &Path, rels: impl IntoIterator<Item = PathBuf>) -> Resul
     if rels.is_empty() {
         return Ok(None);
     }
+    let dest = new_backup_dir(dir)?;
+    for rel in rels {
+        fsutil::copy_path(&dir.join(&rel), &dest.join(&rel))?;
+    }
+    Ok(Some(dest))
+}
+
+/// A new, empty, private `<dir>/.mcc-backup/<timestamp>/` (with a `.N`
+/// suffix when that name is taken).
+pub fn new_backup_dir(dir: &Path) -> Result<PathBuf> {
     let root = dir.join(copy::BACKUP_DIR);
     std::fs::create_dir_all(&root).with_context(|| format!("creating {}", root.display()))?;
     fsutil::set_private_dir(&root)?;
@@ -539,8 +549,5 @@ pub fn backup_rels(dir: &Path, rels: impl IntoIterator<Item = PathBuf>) -> Resul
         }
     }
     fsutil::set_private_dir(&dest)?;
-    for rel in rels {
-        fsutil::copy_path(&dir.join(&rel), &dest.join(&rel))?;
-    }
-    Ok(Some(dest))
+    Ok(dest)
 }

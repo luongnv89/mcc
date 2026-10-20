@@ -198,15 +198,17 @@ pub enum Command {
     ))]
     Share(ShareArgs),
 
-    /// Link read-mostly items to the default profile's copy instead of copying them (off by default)
+    /// Link read-mostly items (or share plugins) with the default profile instead of copying them
     #[command(after_help = concat!(
-        "Items: claude-md, agents, skills, commands, output-styles\n",
+        "Items: claude-md, agents, skills, commands, output-styles, plugins\n",
         "\n",
         "Examples:\n",
         "  mcc link work                 Show which items `work` links\n",
         "  mcc link work skills,agents   Link `work`'s skills/ and agents/ to the default's\n",
         "  mcc link work skills --off    Give `work` its own copy of skills/ again\n",
         "  mcc add lab --clone --link skills   Clone, linking skills/ instead of copying it\n",
+        "  mcc link work plugins         Use the default's plugins instead of a copy\n",
+        "  mcc link work plugins --off   Give `work` its own copy of the plugins again\n",
         "\n",
         "A linked item is a symlink to the default profile's (~/.claude/skills), so\n",
         "every profile that links it sees the same files: nothing is duplicated and\n",
@@ -221,6 +223,19 @@ pub enum Command {
         "never the default's files it points at, and copies the default's item in its\n",
         "place. A failed step undoes the whole change. settings can't be linked: each\n",
         "profile's settings.json is merged with its own overlay.\n",
+        "\n",
+        "plugins is shared, not symlinked: the profile's launcher (and `mcc run`,\n",
+        "`mcc exec`, `mcc env`) sets CLAUDE_CODE_PLUGIN_CACHE_DIR to ~/.claude/plugins,\n",
+        "the plugins root Claude Code then uses instead of <profile>/plugins. That root\n",
+        "holds installed_plugins.json, known_marketplaces.json, marketplaces/, cache/\n",
+        "and each plugin's data/, so all of it is shared. Which plugins are enabled\n",
+        "stays per profile (enabledPlugins in settings.json and its overlay), but\n",
+        "installing, updating or uninstalling a plugin in one profile does it for\n",
+        "every profile sharing plugins and the default. A profile started without\n",
+        "the variable (e.g. `CLAUDE_CONFIG_DIR=... claude`) has no plugins. Linking\n",
+        "moves the profile's own plugins/ to <profile>/.mcc-backup/<timestamp>/\n",
+        "(remove it to free the space); `mcc add --clone` shares plugins unless\n",
+        "--copy-plugins is given.\n",
         "\n",
         "The setting is kept per profile in ~/.mcc/config.toml (default: none linked):\n",
         "\n",
@@ -388,6 +403,10 @@ pub struct AddArgs {
         conflicts_with = "fresh"
     )]
     pub link: Vec<String>,
+
+    /// Give the clone its own copy of the default's plugins instead of sharing them (see `mcc help link`)
+    #[arg(long, conflicts_with = "fresh")]
+    pub copy_plugins: bool,
 
     /// Label the account, e.g. "personal" or the work organization (asked if omitted)
     #[arg(long, value_name = "LABEL")]

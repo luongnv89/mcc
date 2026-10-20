@@ -11,6 +11,7 @@ mod manifest;
 mod metrics;
 mod paths;
 mod pick;
+mod plugins;
 mod shell;
 mod txn;
 mod ui;
