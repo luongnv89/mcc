@@ -125,7 +125,7 @@ pub fn profile_for(paths: &Paths, cfg: &Config, config_dir: Option<&OsStr>) -> O
     None
 }
 
-fn expand_tilde(paths: &Paths, p: &Path) -> PathBuf {
+pub(crate) fn expand_tilde(paths: &Paths, p: &Path) -> PathBuf {
     match p.strip_prefix("~") {
         Ok(rest) => paths.home.join(rest),
         Err(_) => p.to_path_buf(),
@@ -133,7 +133,7 @@ fn expand_tilde(paths: &Paths, p: &Path) -> PathBuf {
 }
 
 /// Equal paths, ignoring trailing slashes, `.` parts and symlinks.
-fn same_dir(a: &Path, b: &Path) -> bool {
+pub(crate) fn same_dir(a: &Path, b: &Path) -> bool {
     let norm = |p: &Path| p.components().collect::<PathBuf>();
     if norm(a) == norm(b) {
         return true;
@@ -427,6 +427,15 @@ fn link_target(path: &Path) -> PathBuf {
         }
     }
     p
+}
+
+/// Whether the settings file at `path` sets the shim as its statusLine
+/// (`false` when it is missing or unreadable).
+pub(crate) fn shim_set_in(path: &Path) -> bool {
+    read_settings(path)
+        .ok()
+        .and_then(|s| statusline_command(&s).map(is_shim))
+        .unwrap_or(false)
 }
 
 fn statusline_command(settings: &Map<String, Value>) -> Option<&str> {

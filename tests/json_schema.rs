@@ -96,6 +96,19 @@ fn project_list_json_v2_wraps_the_projects() {
 }
 
 #[test]
+fn doctor_json_v2_wraps_the_checks() {
+    let sb = sandbox();
+    let bare = out(&sb, &["doctor", "--json"]);
+    assert!(!bare.as_array().expect("a bare array").is_empty());
+    let raw = stdout_of(
+        sb.mcc()
+            .env("MCC_NO_USAGE", "1")
+            .args(["doctor", "--json-v2"]),
+    );
+    assert_envelope(&raw, "checks", &bare);
+}
+
+#[test]
 fn json_and_json_v2_conflict() {
     let sb = sandbox();
     for args in [
@@ -103,6 +116,7 @@ fn json_and_json_v2_conflict() {
         &["list", "--long", "--json-v2"][..],
         &["usage", "--json", "--json-v2"][..],
         &["project", "list", "--json", "--json-v2"][..],
+        &["doctor", "--json", "--json-v2"][..],
     ] {
         sb.mcc()
             .args(args)

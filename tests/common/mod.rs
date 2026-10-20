@@ -16,7 +16,11 @@ const FAKE_CLAUDE: &str = r#"#!/bin/sh
 # Fake claude for tests: login writes a credentials file, logout removes it.
 # `auth status` reports $FAKE_EMAIL (default fake@example.com) and, when
 # $FAKE_ORG_NAME is set, its organization ($FAKE_ORG_ID, $FAKE_ORG_NAME).
+# With $FAKE_CONFIG_DIRECTORY set it also reports `configDirectory` (Claude
+# Code 2.1.268+): the directory it uses.
 dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+cfgdir=""
+[ -n "$FAKE_CONFIG_DIRECTORY" ] && cfgdir=", \"configDirectory\": \"$dir\""
 case "$1 $2" in
   "--version "*) echo "9.9.9 (Claude Code)" ;;
   "auth login")
@@ -28,9 +32,9 @@ case "$1 $2" in
     if [ -f "$dir/.credentials.json" ]; then
       org=""
       [ -n "$FAKE_ORG_NAME" ] && org=", \"orgId\": \"$FAKE_ORG_ID\", \"orgName\": \"$FAKE_ORG_NAME\""
-      echo "{\"loggedIn\": true, \"authMethod\": \"claude.ai\", \"email\": \"${FAKE_EMAIL:-fake@example.com}\"$org}"
+      echo "{\"loggedIn\": true, \"authMethod\": \"claude.ai\", \"email\": \"${FAKE_EMAIL:-fake@example.com}\"$org$cfgdir}"
     else
-      echo '{"loggedIn": false, "authMethod": "none"}'
+      echo "{\"loggedIn\": false, \"authMethod\": \"none\"$cfgdir}"
     fi ;;
   "auth logout")
     # Like the real claude (2.1.x): exits 0 even when nothing was logged in.

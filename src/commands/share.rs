@@ -36,7 +36,7 @@ pub const SHARE_TOS_NOTE: &str = crate::cli::share_tos_note!();
 pub const SHARE_TOS_REMINDER: &str = crate::cli::share_tos_reminder!();
 
 /// What a profile's `projects/` currently is.
-enum Projects {
+pub(crate) enum Projects {
     /// A symlink to the shared store: already sharing.
     Shared,
     /// A symlink somewhere else: never touched.
@@ -47,7 +47,7 @@ enum Projects {
     Missing,
 }
 
-fn projects_state(projects: &Path, store: &Path) -> Result<Projects> {
+pub(crate) fn projects_state(projects: &Path, store: &Path) -> Result<Projects> {
     match std::fs::symlink_metadata(projects) {
         Ok(m) if m.file_type().is_symlink() => {
             let target = std::fs::read_link(projects)
@@ -516,7 +516,7 @@ fn enable(
     // the registry included, succeeded.
     let staged = profile
         .dir
-        .join(format!(".projects.mcc-share-{}", std::process::id()));
+        .join(format!("{SHARE_STAGING}{}", std::process::id()));
     let mut undo: Transaction<Undo> = Transaction::new();
     let result = (|| -> Result<Merge> {
         let mut merge = Merge {
@@ -678,7 +678,7 @@ fn disable(paths: &Paths, cfg: &mut Config, alias: &str, profile: &Profile) -> R
     // Copy next to the link first, so a failure leaves the link in place.
     let copy = profile
         .dir
-        .join(format!(".projects.mcc-unshare-{}", std::process::id()));
+        .join(format!("{UNSHARE_STAGING}{}", std::process::id()));
     fsutil::remove_any(&copy)?;
     let files = match copy_tree(&store, &copy) {
         Ok(n) => n,
@@ -768,19 +768,28 @@ fn create_store(paths: &Paths, store: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Prefix of the staging directory an `mcc share` merges from.
+pub(crate) const SHARE_STAGING: &str = ".projects.mcc-share-";
+
+/// Prefix of the copy an `mcc share --off` renames to `projects`.
+pub(crate) const UNSHARE_STAGING: &str = ".projects.mcc-unshare-";
+
 /// `.projects.mcc-share-<pid>` directories directly inside `profile_dir`:
 /// what an `mcc share` interrupted mid-merge left behind. Symlinks are skipped.
 fn leftover_stagings(profile_dir: &Path) -> Result<Vec<PathBuf>> {
+    leftover_dirs(profile_dir, SHARE_STAGING)
+}
+
+/// `<prefix><pid>` directories directly inside `profile_dir`, sorted.
+/// Symlinks are skipped.
+pub(crate) fn leftover_dirs(profile_dir: &Path, prefix: &str) -> Result<Vec<PathBuf>> {
     let mut found = Vec::new();
     for entry in std::fs::read_dir(profile_dir)
         .with_context(|| format!("reading {}", profile_dir.display()))?
     {
         let entry = entry?;
         let name = entry.file_name();
-        let Some(pid) = name
-            .to_str()
-            .and_then(|n| n.strip_prefix(".projects.mcc-share-"))
-        else {
+        let Some(pid) = name.to_str().and_then(|n| n.strip_prefix(prefix)) else {
             continue;
         };
         // `file_type` does not follow symlinks.

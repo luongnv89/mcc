@@ -52,7 +52,12 @@
           <h2>Unreleased</h2>
           <span class="pill pill-muted">main</span>
         </div>
-        <p style="margin:0">Nothing yet beyond 0.3.0. Follow <a href="https://github.com/luongnv89/mcc/commits/main">commits on <code>main</code></a> for work in progress.</p>
+        <p>Work in progress since 0.3.0; <a href="https://github.com/luongnv89/mcc/blob/main/CHANGELOG.md">CHANGELOG.md</a> lists every change, and <a href="https://github.com/luongnv89/mcc/commits/main">commits on <code>main</code></a> show the rest.</p>
+
+        <h3>Added</h3>
+        <ul>
+          <li><code>mcc doctor [PROFILE]</code> checks every profile's setup and prints a fix for each problem: launcher present and current, alias block present, <code>~/.local/bin</code> on <code>PATH</code>, <code>claude auth status</code> reporting the profile's directory (<code>configDirectory</code>, Claude Code 2.1.268+) and a login, token expiry (only with <code>[usage] live = true</code>), session-sharing links and leftovers of an interrupted <code>mcc share</code>, profile directory mode 0700, drift against the default, the <code>mcc statusline</code> shim, and a <code>CLAUDE_CONFIG_DIR</code> set for every shell in an rc file. It is read-only, exits 1 when it finds a problem, and takes <code>--json</code> / <code>--json-v2</code>. <code>doctor</code> is reserved as an alias. <span class="ref"><a href="https://github.com/luongnv89/mcc/issues/44">#44</a></span></li>
+        </ul>
       </article>
 
       <article class="release" id="v0.3.0">

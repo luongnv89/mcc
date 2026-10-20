@@ -272,6 +272,7 @@ fn rejects_invalid_and_conflicting_aliases() {
     reject("Work", "not a valid alias");
     reject("1abc", "not a valid alias");
     reject("claude", "reserved by mcc");
+    reject("doctor", "reserved by mcc");
     reject("export", "shell keyword or builtin");
     reject("ls", "a command named \"ls\" exists");
     reject("cus_luong", "alias \"cus_luong\" is defined in ~/.zshrc");

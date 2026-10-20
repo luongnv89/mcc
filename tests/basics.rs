@@ -49,6 +49,7 @@ fn every_subcommand_has_help() {
         "refresh-launchers",
         "project",
         "run",
+        "doctor",
         "completions",
     ] {
         sb.mcc()
