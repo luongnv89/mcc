@@ -232,6 +232,15 @@ fn forget(m: &mut Manifest, rels: &[PathBuf]) {
         .retain(|k, _| !rels.iter().any(|r| Path::new(k).starts_with(r)));
 }
 
+/// Whether `dir` is the default profile's directory, or one of the two lies
+/// inside the other (after resolving symlinks), so linking would touch the
+/// default's real files.
+fn overlaps_default(paths: &Paths, dir: &Path) -> bool {
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let (dir, default) = (canon(dir), canon(&paths.default_dir));
+    dir.starts_with(&default) || default.starts_with(&dir)
+}
+
 pub fn run(paths: &Paths, cfg: &mut Config, args: &LinkArgs) -> Result<()> {
     let alias = args.alias.as_str();
     if matches!(alias, "default" | "claude") {
@@ -252,6 +261,17 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &LinkArgs) -> Result<()> {
         ))
         .hint(format!(
             "remove the stale entry with `mcc delete {alias} --yes`"
+        ))
+        .into());
+    }
+    if overlaps_default(paths, &dir) {
+        return Err(CliError::usage(format!(
+            "profile \"{alias}\" uses {}, which overlaps the default profile's {}; link mode would change the default's real files",
+            paths.display(&dir),
+            paths.display(&paths.default_dir)
+        ))
+        .hint(format!(
+            "point \"{alias}\" at its own directory in `mcc config edit`, or pick another profile"
         ))
         .into());
     }

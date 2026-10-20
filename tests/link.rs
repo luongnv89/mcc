@@ -314,3 +314,39 @@ fn failed_link_rolls_back() {
     assert_eq!(manifest(&sb), before);
     assert!(links(&sb).is_empty());
 }
+
+#[test]
+fn link_refuses_a_profile_whose_dir_is_the_default() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    with_profile(&sb, "work", "--clone");
+    // Hand-edit the profile's dir to the default's (directly, then via a
+    // symlink, then a parent of it).
+    let cfg = sb.read(".mcc/config.toml");
+    let work = sb.path(WORK).display().to_string();
+    assert!(cfg.contains(&work));
+    std::os::unix::fs::symlink(sb.path(".claude"), sb.path("alias-of-claude")).unwrap();
+    for dir in [
+        sb.path(".claude"),
+        sb.path("alias-of-claude"),
+        sb.home().to_path_buf(),
+    ] {
+        sb.write(
+            ".mcc/config.toml",
+            &cfg.replace(&work, &dir.display().to_string()),
+        );
+        for args in [
+            &["link", "work", "agents"][..],
+            &["link", "work", "agents", "--off"],
+        ] {
+            sb.mcc()
+                .args(args)
+                .assert()
+                .failure()
+                .stderr(predicate::str::contains("overlaps the default profile"));
+        }
+        let agents = sb.path(".claude/agents");
+        assert!(!is_link(&agents));
+        assert_eq!(sb.read(".claude/agents/reviewer.md"), "agent");
+    }
+}
