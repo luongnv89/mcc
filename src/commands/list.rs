@@ -49,6 +49,13 @@ pub fn run(paths: &Paths, cfg: &Config, args: &ListArgs) -> Result<()> {
     if !show_email {
         all.iter_mut().for_each(hide_email);
     }
+    // A label with control characters, hand-written in the config file,
+    // could drive the terminal: leave it out (null in JSON).
+    for m in &mut all {
+        if m.label.as_deref().is_some_and(super::has_control) {
+            m.label = None;
+        }
+    }
 
     let mut out = std::io::stdout().lock();
     if args.json || args.json_v2 {

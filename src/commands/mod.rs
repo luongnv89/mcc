@@ -73,14 +73,43 @@ pub fn unknown_profile(alias: &str) -> anyhow::Error {
 
 /// The label shown for profile `alias` outside `mcc list` (`mcc run`, the
 /// statusline): `None` when it has none (the default profile never has one),
-/// and while emails are hidden for a label containing one, as `mcc list`
-/// hides it.
+/// while emails are hidden for a label containing one, as `mcc list` hides
+/// it, and for a label with control characters (hand-written in the config
+/// file; `mcc add` and `mcc config set` refuse them), which could drive the
+/// terminal.
 pub(crate) fn shown_label<'a>(cfg: &'a crate::config::Config, alias: &str) -> Option<&'a str> {
     let label = cfg.profiles.get(alias)?.label.as_deref()?;
-    (cfg.show_email() || !label.contains('@')).then_some(label)
+    (!has_control(label) && (cfg.show_email() || !label.contains('@'))).then_some(label)
+}
+
+/// Whether `s` contains control characters (ESC, BEL, newline, ...), which
+/// `add::check_label` refuses in a label.
+pub(crate) fn has_control(s: &str) -> bool {
+    s.chars().any(char::is_control)
 }
 
 /// Profile `alias`'s color, as set; `None` for the default profile.
 pub(crate) fn profile_color<'a>(cfg: &'a crate::config::Config, alias: &str) -> Option<&'a str> {
     cfg.profiles.get(alias)?.color.as_deref()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(label: &str) -> crate::config::Config {
+        let label = toml::Value::String(label.into());
+        toml::from_str(&format!(
+            "[profiles.work]\ndir = \"/d\"\nmode = \"clone\"\ncreated_at = \"t\"\nlabel = {label}\n"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn shown_label_hides_a_label_with_control_characters() {
+        assert_eq!(shown_label(&config("Acme"), "work"), Some("Acme"));
+        for bad in ["Acme\u{1b}]0;pwned\u{7}\u{1b}[2J", "Acme\nwork", "\u{7}"] {
+            assert_eq!(shown_label(&config(bad), "work"), None, "{bad:?}");
+        }
+    }
 }

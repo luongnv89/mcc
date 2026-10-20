@@ -268,7 +268,7 @@ pub(crate) fn check_label(label: &str) -> std::result::Result<(), String> {
     if t.chars().count() > LABEL_MAX {
         return Err(format!("the label is longer than {LABEL_MAX} characters"));
     }
-    if t.chars().any(char::is_control) {
+    if super::has_control(t) {
         return Err("the label contains control characters".into());
     }
     Ok(())

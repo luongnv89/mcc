@@ -194,3 +194,28 @@ fn statusline_prefix_has_the_label_and_the_color() {
     assert!(colored.contains("\u{1b}[34"), "{colored:?}");
     assert_eq!(console::strip_ansi_codes(&colored), "[work · Acme (work)]");
 }
+
+#[test]
+fn a_label_with_control_characters_is_never_printed() {
+    let sb = sandbox();
+    set(&sb, "profiles.work.label", "Acme");
+    // Hand-written in the config file: mcc itself refuses such a label.
+    let cfg = sb.read(CONFIG).replace(
+        "label = \"Acme\"",
+        r#"label = "Acme\u001b]0;pwned\u0007\u001b[2J""#,
+    );
+    assert!(cfg.contains("pwned"), "{cfg}");
+    sb.write(CONFIG, &cfg);
+
+    for no_color in [true, false] {
+        let line = render(&sb, no_color);
+        assert!(line.starts_with("[work"), "{line:?}");
+        assert!(!line.contains("\u{1b}]"), "{line:?}");
+        assert!(!line.contains('\u{7}'), "{line:?}");
+        assert!(!line.contains("pwned"), "{line:?}");
+    }
+    let long = stdout_of(sb.mcc().args(["list", "--long"]));
+    assert!(!long.contains("pwned"), "{long:?}");
+    let table = stdout_of(sb.mcc().arg("list"));
+    assert!(!table.contains("pwned"), "{table:?}");
+}
