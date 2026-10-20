@@ -118,6 +118,7 @@ mcc delete job              # remove it completely
 | `mcc config get\|set\|edit\|path` | Read or change `~/.mcc/config.toml` without hand-editing TOML; `set` and `edit` check values and leave the file unchanged when one is invalid (see [Changing settings](#changing-settings-mcc-config)) | `get KEY`, `set KEY VALUE`, `edit`, `path` |
 | `mcc statusline install` | Opt-in: show the active profile in Claude Code's status line and cache each profile's rate limits (see [Status line](#status-line-mcc-statusline)); it edits the default profile's `settings.json`; also `uninstall` | `--prefix`, `-y/--yes` |
 | `mcc refresh-launchers [ALIAS...]` | Rewrite launchers and shell aliases from the current templates (all profiles when none are given); needed once so `<alias> --mcc-share` works for profiles made by an older mcc | |
+| `mcc doctor [PROFILE]` | Check every profile's setup (launcher, alias, PATH, login, config directory, sharing, permissions, drift, a global `CLAUDE_CONFIG_DIR`) and print a fix for each problem; read-only, exits 1 when it finds one (see [Checking your setup](#checking-your-setup-mcc-doctor)) | `--json`, `--json-v2` |
 | `mcc delete ALIAS` (`rm`) | Log out and remove a profile | `-y/--yes`, `--keep-auth` |
 | `mcc completions SHELL` | Print a completion script | `bash`, `zsh`, `fish`, `elvish`, `powershell` |
 | `mcc help [COMMAND]` | Usage and examples | |
@@ -160,17 +161,18 @@ mcc run --dry-run                     # print the profile `mcc run` would start,
 eval "$(mcc env)"                     # point CLAUDE_CONFIG_DIR at this project's profile (also in .envrc)
 mcc exec --all -- claude plugin list  # run a command once per profile
 mcc refresh-launchers                 # update launchers made by an older mcc
+mcc doctor                            # check every profile's setup; prints a fix for each problem
 mcc delete sandbox --yes
 ```
 
 ### JSON output and its schema version
 
-`mcc list`, `mcc usage` and `mcc project list` print JSON for scripts in two shapes:
+`mcc list`, `mcc usage`, `mcc project list` and `mcc doctor` print JSON for scripts in two shapes:
 
 | Flag | Shape | Schema | Read it with |
 |---|---|---|---|
-| `--json` | a bare array, one object per profile (per project for `project list`) | 1, implicit | `jq '.[]'` |
-| `--json-v2` | `{"schema": 2, "profiles": [...]}` (`"projects"` for `project list`), the same objects as `--json` | 2, in the `schema` field | `jq '.profiles[]'`, `jq '.projects[]'` |
+| `--json` | a bare array, one object per profile (per project for `project list`, per check for `doctor`) | 1, implicit | `jq '.[]'` |
+| `--json-v2` | `{"schema": 2, "profiles": [...]}` (`"projects"` for `project list`, `"checks"` for `doctor`), the same objects as `--json` | 2, in the `schema` field | `jq '.profiles[]'`, `jq '.projects[]'`, `jq '.checks[]'` |
 
 The contract: within a schema, fields may be added to the objects but are never renamed, removed or given another type. A change that breaks a shape gets a new schema number and a new flag, and the old flag keeps working. Scripts that should notice such a change can use `--json-v2` and check `schema` first, e.g. `mcc list --json-v2 | jq -e '.schema == 2' >/dev/null`.
 
@@ -581,11 +583,34 @@ mcc statusline uninstall          # put the previous statusLine back
 
 `mcc rename` moves a profile's `~/.mcc/state/<alias>/` with it and `mcc delete` removes it.
 
+### Checking your setup: `mcc doctor`
+
+`mcc doctor` checks every profile, the default included, and prints a fix for each problem it finds. It only reads: it never writes `~/.mcc/config.toml` (not even the first-run setup), takes no lock, and changes no file. `mcc doctor work` checks one profile.
+
+| Check | Fix it prints |
+|---|---|
+| mcc is set up, `claude` is found | `mcc init`; install Claude Code or set `MCC_CLAUDE_BIN` |
+| `~/.local/bin` is on PATH | `source ~/.zshrc` when the rc file already adds it, else `mcc init --force` (or the line to add) |
+| No rc file sets `CLAUDE_CONFIG_DIR` for every shell (`export`, a bare assignment, fish's `set -gx`); comments, aliases and mcc's own blocks are ignored. Such a line makes plain `claude` stop starting the default profile | remove line N from the rc file |
+| `CLAUDE_CONFIG_DIR` set in the current shell (a warning: expected inside `mcc exec` or after `eval "$(mcc env)"`) | `unset CLAUDE_CONFIG_DIR` |
+| The profile's directory exists, with mode 0700 | `mcc delete ALIAS`; `chmod 700 DIR` |
+| Its launcher is there, written by mcc, executable, starts the profile's directory, sets the plugins root exactly when the profile shares plugins, and is current | `mcc refresh-launchers ALIAS`; `chmod +x`; move a file mcc didn't write out of the way |
+| Its alias block is in the rc file it was added to | the block to paste (no command adds it back) |
+| `claude auth status` reports the profile's directory as `configDirectory` (Claude Code 2.1.268 or later; skipped before), run through the profile's launcher | `mcc refresh-launchers ALIAS` |
+| It is logged in | `mcc exec ALIAS -- claude auth login` (`claude auth login` for the default) |
+| Its OAuth token hasn't expired (a warning), checked only with `[usage] live = true` and `MCC_NO_USAGE` unset, the setting under which mcc reads tokens | `mcc exec ALIAS -- claude auth login` |
+| Its `projects/` links to its sharing group's store exactly when sharing is on, and the store exists | `mcc share ALIAS`, `mcc share ALIAS --off` |
+| No `.projects.mcc-share-*` or `.projects.mcc-unshare-*` left by an interrupted `mcc share` | `mcc share ALIAS` for a sharing profile, else what to move or remove |
+| Drift against the default, as `mcc list` shows it (a warning; local edits are kept by design and linked items, overlays and shared plugins never count) | `mcc sync ALIAS`, or `mcc sync ALIAS --force` for conflicts |
+| With the `mcc statusline` shim installed, each profile's `settings.json` has it too unless its overlay sets a `statusLine` (a warning) | `mcc sync ALIAS --only settings`, or `mcc statusline install --yes` when settings aren't synced |
+
+Each finding is `ok`, `warn`, `problem` or `skipped` (with the reason). mcc exits 1 when there is at least one problem, after printing them all; warnings don't fail it. `--json` prints the findings as a bare array of `{"profile", "check", "status", "message", "fix"}` objects (`profile` is `null` for the checks every profile shares, `fix` is `null` when there is nothing to do), and `--json-v2` wraps it as `{"schema": 2, "checks": [...]}`.
+
 ### Alias validation
 
 An alias must be 1–32 characters: lowercase letters, digits, `-` or `_`, starting with a letter. It is rejected if any of these already uses the name:
 
-- mcc's reserved names: `claude`, `mcc`, `default`, `help`, `all`, `path`, `share`, `refresh-launchers`, `project`, `run`, `statusline`
+- mcc's reserved names: `claude`, `mcc`, `default`, `help`, `all`, `path`, `share`, `refresh-launchers`, `project`, `run`, `statusline`, `doctor`
 - shell keywords and builtins
 - existing mcc profiles, and the old name of a renamed profile (its directory still uses that name; the error names the profile)
 - executables on `$PATH`
@@ -610,7 +635,7 @@ An alias must be 1–32 characters: lowercase letters, digits, `-` or `_`, start
 | Code | Meaning |
 |---|---|
 | 0 | Success |
-| 1 | Runtime error (I/O failure, `claude` missing, …) |
+| 1 | Runtime error (I/O failure, `claude` missing, …), or `mcc doctor` found a problem |
 | 2 | Usage error (bad arguments, invalid or taken alias, confirmation needed without a terminal) |
 | 3 | Invalid input (corrupt `config.toml` or JSON) |
 | 130 | Interrupted (Ctrl+C) |

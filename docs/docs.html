@@ -68,6 +68,7 @@
               <li><a href="#cmd-run">run</a></li>
               <li><a href="#cmd-statusline">statusline</a></li>
               <li><a href="#cmd-refresh-launchers">refresh-launchers</a></li>
+              <li><a href="#cmd-doctor">doctor</a></li>
               <li><a href="#cmd-delete">delete</a></li>
               <li><a href="#cmd-completions">completions</a></li>
               <li><a href="#global-flags">Global flags</a></li>
@@ -162,6 +163,7 @@
             <tr><td><a href="#configuration"><code>mcc config get|set|edit|path</code></a></td><td>Read or change <code>~/.mcc/config.toml</code>; invalid values and edits leave the file unchanged</td><td><code>get KEY</code>, <code>set KEY VALUE</code>, <code>edit</code>, <code>path</code></td></tr>
             <tr><td><a href="#cmd-statusline"><code>mcc statusline install</code></a></td><td>Opt-in: show the active profile in Claude Code's status line and cache each profile's rate limits; also <code>uninstall</code></td><td><code>--prefix</code>, <code>-y</code></td></tr>
             <tr><td><a href="#cmd-refresh-launchers"><code>mcc refresh-launchers [ALIAS...]</code></a></td><td>Rewrite launchers and shell aliases from the current templates</td><td></td></tr>
+            <tr><td><a href="#cmd-doctor"><code>mcc doctor [PROFILE]</code></a></td><td>Check every profile's setup and print a fix for each problem; read-only, exits 1 when it finds one</td><td><code>--json</code>, <code>--json-v2</code></td></tr>
             <tr><td><a href="#cmd-delete"><code>mcc delete ALIAS</code></a> (<code>rm</code>)</td><td>Log out and remove a profile</td><td><code>-y</code>, <code>--keep-auth</code></td></tr>
             <tr><td><a href="#cmd-completions"><code>mcc completions SHELL</code></a></td><td>Print a shell completion script</td><td><code>bash</code>, <code>zsh</code>, <code>fish</code>, <code>elvish</code>, <code>powershell</code></td></tr>
             <tr><td><code>mcc help [COMMAND]</code></td><td>Usage and examples for any command</td><td></td></tr>
@@ -335,6 +337,22 @@ lab        lab      —               —     <span class="d">unavailable       
         <p>Rewrites the launcher and shell alias of the given profiles (all of them when none are given) from the current templates, so that <code>&lt;alias&gt; --mcc-share</code> works for profiles created by an older mcc: the alias then runs the launcher instead of calling <code>claude</code> directly. <code>CLAUDE_CONFIG_DIR</code> stays exactly the same, so logins are kept. mcc never rewrites existing launchers on its own. Launchers that are already current are left alone, and launchers mcc didn't write are skipped. If a step fails, the previous launchers and aliases are restored.</p>
         <div class="code"><pre><span class="p">$ </span>mcc refresh-launchers
 <span class="p">$ </span>mcc refresh-launchers work lab</pre></div>
+
+        <h3 id="cmd-doctor"><code>mcc doctor</code> <a class="anchor" href="#cmd-doctor" aria-label="Link to mcc doctor">#</a></h3>
+        <p class="synopsis">mcc doctor [PROFILE] [--json | --json-v2]</p>
+        <p>Checks every profile, the default included (or only PROFILE; <code>default</code> or <code>claude</code> for <code>~/.claude</code>), and prints a fix for each problem. It only reads: no <code>~/.mcc/config.toml</code> write (not even the first-run setup), no lock, no file changed.</p>
+        <ul>
+          <li>Setup: mcc is initialized (<code>mcc init</code>), <code>claude</code> is found, <code>~/.local/bin</code> is on <code>PATH</code> (<code>source</code> the rc file, or <code>mcc init --force</code>).</li>
+          <li>No rc file sets <code>CLAUDE_CONFIG_DIR</code> for every shell (<code>export</code>, a bare assignment, fish's <code>set -gx</code>; comments, aliases and mcc's own blocks are ignored): such a line makes plain <code>claude</code> stop starting the default profile. The fix names the line to remove. <code>CLAUDE_CONFIG_DIR</code> set in the current shell is a warning (<code>unset CLAUDE_CONFIG_DIR</code>).</li>
+          <li>Per profile: its directory exists with mode 0700 (<code>mcc delete</code>, <code>chmod 700</code>); its launcher is there, mcc's, executable, starts its directory, sets the plugins root exactly when it shares plugins, and is current (<code>mcc refresh-launchers ALIAS</code>); its alias block is in its rc file (the block to paste).</li>
+          <li><code>claude auth status</code>, run through the launcher, reports the profile's directory as <code>configDirectory</code> (Claude Code 2.1.268 or later; skipped before) and a login (<code>mcc exec ALIAS -- claude auth login</code>). Token expiry is a warning, checked only with <code>[usage] live = true</code> and <code>MCC_NO_USAGE</code> unset.</li>
+          <li>Session sharing: <code>projects/</code> links to the group's store exactly when sharing is on and the store exists, and no <code>.projects.mcc-share-*</code> or <code>.projects.mcc-unshare-*</code> is left by an interrupted <code>mcc share</code> (<code>mcc share ALIAS</code>, <code>--off</code>).</li>
+          <li>Drift against the default, as <code>mcc list</code> shows it (a warning: <code>mcc sync ALIAS</code>, <code>--force</code> for conflicts), and, with the <code>mcc statusline</code> shim installed, the shim in each profile's settings unless its overlay sets a <code>statusLine</code> (<code>mcc sync ALIAS --only settings</code>).</li>
+        </ul>
+        <p>Each finding is <code>ok</code>, <code>warn</code>, <code>problem</code> or <code>skipped</code>. mcc exits 1 when there is a problem, after printing them all. <code>--json</code> prints a bare array of <code>{"profile", "check", "status", "message", "fix"}</code> objects; <code>--json-v2</code> wraps it as <code>{"schema": 2, "checks": [...]}</code>.</p>
+        <div class="code"><pre><span class="p">$ </span>mcc doctor
+<span class="p">$ </span>mcc doctor work
+<span class="p">$ </span>mcc doctor --json | jq '.[] | select(.status == "problem")'</pre></div>
 
         <h3 id="cmd-delete"><code>mcc delete</code> <a class="anchor" href="#cmd-delete" aria-label="Link to mcc delete">#</a></h3>
         <p class="synopsis">mcc delete ALIAS [-y] [--keep-auth]   <span style="color:var(--muted)">alias: mcc rm</span></p>
@@ -523,7 +541,7 @@ work       <span class="y">█████████</span><span class="d">░
         <h2>Alias rules <a class="anchor" href="#aliases" aria-label="Link to Alias rules">#</a></h2>
         <p>An alias must be 1–32 characters: lowercase letters, digits, <code>-</code> or <code>_</code>, starting with a letter. It is rejected if any of these already uses the name:</p>
         <ul>
-          <li>mcc's reserved names: <code>claude</code>, <code>mcc</code>, <code>default</code>, <code>help</code>, <code>all</code>, <code>path</code>, <code>share</code>, <code>refresh-launchers</code>, <code>project</code>, <code>run</code>, <code>statusline</code></li>
+          <li>mcc's reserved names: <code>claude</code>, <code>mcc</code>, <code>default</code>, <code>help</code>, <code>all</code>, <code>path</code>, <code>share</code>, <code>refresh-launchers</code>, <code>project</code>, <code>run</code>, <code>statusline</code>, <code>doctor</code></li>
           <li>shell keywords and builtins</li>
           <li>existing mcc profiles</li>
           <li>executables on <code>$PATH</code></li>
@@ -577,7 +595,7 @@ work       <span class="y">█████████</span><span class="d">░
           <thead><tr><th>Code</th><th>Meaning</th></tr></thead>
           <tbody>
             <tr><td><code>0</code></td><td>Success</td></tr>
-            <tr><td><code>1</code></td><td>Runtime error (I/O failure, <code>claude</code> missing, …)</td></tr>
+            <tr><td><code>1</code></td><td>Runtime error (I/O failure, <code>claude</code> missing, …), or <code>mcc doctor</code> found a problem</td></tr>
             <tr><td><code>2</code></td><td>Usage error (bad arguments, invalid or taken alias, confirmation needed without a terminal)</td></tr>
             <tr><td><code>3</code></td><td>Invalid input (corrupt <code>config.toml</code> or JSON)</td></tr>
             <tr><td><code>130</code></td><td>Interrupted (Ctrl+C)</td></tr>
@@ -594,7 +612,7 @@ work       <span class="y">█████████</span><span class="d">░
         <h3><code>claude</code> isn't detected</h3>
         <p>Point mcc at the binary with <code>MCC_CLAUDE_BIN=/path/to/claude</code>, or put it on your <code>PATH</code> and run <code>mcc init --force</code>.</p>
         <h3>Something went wrong</h3>
-        <p>Every run is logged to <code>~/.mcc/logs/mcc.log</code>; add <code>--verbose</code> to see the same detail in the terminal. Your rc file backups are in <code>~/.mcc/backups/</code>. If you think you've found a bug, <a href="https://github.com/luongnv89/mcc/issues/new/choose">open an issue</a>. Report security problems privately as described in <a href="https://github.com/luongnv89/mcc/blob/main/SECURITY.md">SECURITY.md</a>.</p>
+        <p>Run <code>mcc doctor</code> first: it checks every profile's setup and prints a fix for each problem. Every run is logged to <code>~/.mcc/logs/mcc.log</code>; add <code>--verbose</code> to see the same detail in the terminal. Your rc file backups are in <code>~/.mcc/backups/</code>. If you think you've found a bug, <a href="https://github.com/luongnv89/mcc/issues/new/choose">open an issue</a>. Report security problems privately as described in <a href="https://github.com/luongnv89/mcc/blob/main/SECURITY.md">SECURITY.md</a>.</p>
       </section>
 
       <section id="uninstall">
