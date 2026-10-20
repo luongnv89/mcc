@@ -14,6 +14,11 @@ use crate::paths::Paths;
 /// the Ctrl+C handler lets the child handle the signal in that window.
 pub static CHILD_RUNNING: AtomicBool = AtomicBool::new(false);
 
+/// Set by the Ctrl+C handler when Ctrl+C arrives while `CHILD_RUNNING`, so a
+/// loop over children (`mcc exec --all`) stops even when the child handled
+/// the signal and exited normally.
+pub static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
 /// Locate the claude binary: `MCC_CLAUDE_BIN`, then a remembered path, then `$PATH`.
 pub fn find_binary(remembered: Option<&Path>) -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("MCC_CLAUDE_BIN").filter(|v| !v.is_empty()) {

@@ -91,10 +91,14 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     log_invocation();
 
     let explicit_init = matches!(cli.command, Command::Init(_));
-    // `<alias> --mcc-share` and `mcc run` run on every launch: keep them free
-    // of setup.
+    // `<alias> --mcc-share`, `mcc run` and `mcc env` (direnv) run on every
+    // launch, and `mcc exec` must not hold the lock its command may need:
+    // keep them free of setup.
     let launch = matches!(&cli.command, Command::Share(a) if a.from_launch)
-        || matches!(cli.command, Command::Run(_));
+        || matches!(
+            cli.command,
+            Command::Run(_) | Command::Env(_) | Command::Exec(_)
+        );
     // Held from before the config is loaded until mcc exits, so concurrent
     // runs never lose each other's changes.
     let mut lock = if writes_config(&cli.command) {
@@ -150,6 +154,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Share(args) => commands::share::run(&paths, &mut cfg, &args),
         Command::Project(args) => commands::project::run(&paths, &mut cfg, &args),
         Command::Run(args) => commands::run::run(&paths, &cfg, &args),
+        Command::Env(args) => commands::env::run(&paths, &cfg, &args),
+        Command::Exec(args) => commands::exec::run(&paths, &cfg, &args),
         Command::RefreshLaunchers(args) => commands::refresh_launchers::run(&paths, &cfg, &args),
         Command::Statusline(args) => commands::statusline::run(&paths, &cfg, &args),
         Command::Completions(_) => unreachable!("handled above"),
@@ -194,6 +200,9 @@ fn writes_config(command: &Command) -> bool {
         | Command::Run(_)
         | Command::RefreshLaunchers(_)
         | Command::Completions(_) => false,
+        // Never locked: `mcc exec` runs commands that may run mcc commands
+        // which take the lock themselves.
+        Command::Env(_) | Command::Exec(_) => false,
     }
 }
 
@@ -213,6 +222,7 @@ fn log_invocation() {
 fn install_ctrlc_handler() {
     let _ = ctrlc::set_handler(|| {
         if claude::CHILD_RUNNING.load(Ordering::SeqCst) {
+            claude::INTERRUPTED.store(true, Ordering::SeqCst);
             return;
         }
         let term = console::Term::stderr();

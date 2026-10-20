@@ -19,6 +19,8 @@ const RESERVED_NAMES: &[&str] = &[
     "refresh-launchers",
     "project",
     "run",
+    "env",
+    "exec",
     "statusline",
     crate::shell::PATH_BLOCK,
 ];
