@@ -25,10 +25,17 @@ fn end(id: &str) -> String {
     format!("# <<< mcc:{id} <<<")
 }
 
-/// Marks a launcher written from the current template (one that understands
-/// `--mcc-share`). Launchers without it predate session sharing and are only
-/// rewritten by `mcc refresh-launchers`.
-pub const LAUNCHER_MARKER: &str = "# mcc-launcher: 2";
+/// Marks a launcher written from the current template, version
+/// [`LAUNCHER_VERSION`]. Older launchers are only rewritten by
+/// `mcc refresh-launchers`: version 2 understands `--mcc-share`, version 3
+/// also shows the launch banner; launchers without a marker predate both.
+pub const LAUNCHER_MARKER: &str = "# mcc-launcher: 3";
+
+/// The version [`LAUNCHER_MARKER`] stands for.
+pub const LAUNCHER_VERSION: u32 = 3;
+
+/// The first launcher version that understands `--mcc-share`.
+pub const SHARE_LAUNCHER_VERSION: u32 = 2;
 
 /// The launch flag that turns on session sharing. Only the wrapper knows it:
 /// it is stripped before claude starts.
@@ -43,6 +50,12 @@ pub const SHARE_FLAG: &str = "--mcc-share";
 /// if that fails, claude is not started. Without the flag the script does
 /// exactly what launchers did before session sharing existed, and the
 /// `CLAUDE_CONFIG_DIR` line is unchanged: the keychain login is keyed on it.
+///
+/// When its stderr is a terminal the script then runs
+/// `mcc launch-banner <alias>`, which prints the launch banner when
+/// `[launch] banner` is on. mcc's stdout goes to the script's stderr and
+/// mcc's own errors are discarded, so the banner never reaches Claude Code's
+/// stdout (`<alias> -p … | jq`) and an mcc without the command stays quiet.
 ///
 /// With `plugin_root` (a profile sharing the default's plugins) the script
 /// also exports `CLAUDE_CODE_PLUGIN_CACHE_DIR`; without it the script unsets
@@ -65,6 +78,14 @@ pub fn wrapper_script(
         Some(bin) => format!("{} {share}", sh_quote(&bin.to_string_lossy())),
         None => "echo \"mcc not found on PATH\" >&2; exit 127".to_string(),
     };
+    let banner = format!("launch-banner {} >&2 2>/dev/null", sh_quote(alias));
+    let banner_fallback = match mcc_bin {
+        Some(bin) => {
+            let bin = sh_quote(&bin.to_string_lossy());
+            format!("\n  elif [ -x {bin} ]; then {bin} {banner}")
+        }
+        None => String::new(),
+    };
     format!(
         "#!/bin/sh\n{WRAPPER_MARKER}\n{LAUNCHER_MARKER}\n\
          # Claude Code profile \"{alias}\". Remove with: mcc delete {alias}\n\
@@ -74,6 +95,8 @@ pub fn wrapper_script(
          case \"$1\" in\n  {SHARE_FLAG})\n    shift\n    \
          if command -v mcc >/dev/null 2>&1; then mcc {share}\n    \
          else {mcc_fallback}; fi ;;\nesac\n\
+         if [ -t 2 ]; then\n  \
+         if command -v mcc >/dev/null 2>&1; then mcc {banner}{banner_fallback}\n  fi\nfi\n\
          if command -v claude >/dev/null 2>&1; then exec claude \"$@\"; fi\n\
          {fallback}\n",
         dir = paths.shell_expr(profile_dir),
@@ -146,11 +169,26 @@ pub fn is_mcc_wrapper(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// The template version of the launcher at `path`, from its
+/// `# mcc-launcher: N` line: 0 for a launcher without one (or no file).
+pub fn launcher_version(path: &Path) -> u32 {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find_map(|l| l.strip_prefix("# mcc-launcher: ")?.trim().parse().ok())
+        })
+        .unwrap_or(0)
+}
+
 /// True when the launcher at `path` was written from the current template.
 pub fn launcher_is_current(path: &Path) -> bool {
-    std::fs::read_to_string(path)
-        .map(|s| s.lines().any(|l| l == LAUNCHER_MARKER))
-        .unwrap_or(false)
+    launcher_version(path) >= LAUNCHER_VERSION
+}
+
+/// True when the launcher at `path` understands `--mcc-share`.
+pub fn launcher_supports_share(path: &Path) -> bool {
+    launcher_version(path) >= SHARE_LAUNCHER_VERSION
 }
 
 /// The rc block body defining the alias for one profile. With a launcher the
@@ -460,7 +498,7 @@ mod tests {
             Some(Path::new("/opt/bin/mcc")),
             None,
         );
-        assert!(w.starts_with("#!/bin/sh\n# managed-by: mcc\n# mcc-launcher: 2\n"));
+        assert!(w.starts_with("#!/bin/sh\n# managed-by: mcc\n# mcc-launcher: 3\n"));
         assert!(w.contains("export CLAUDE_CONFIG_DIR=\"$HOME/.mcc/profiles/work\"\n"));
         assert!(w.contains("if command -v claude >/dev/null 2>&1; then exec claude \"$@\"; fi\n"));
         assert!(w.contains("exec '/opt/it'\\''s/claude' \"$@\"\n"), "{w}");
@@ -521,13 +559,13 @@ mod tests {
             "{w}"
         );
         // The only additions on the launch path are clearing mcc's own
-        // plugins root (#47) and the `--mcc-share` branch, placed between the
-        // export and the exec lines.
+        // plugins root (#47), the `--mcc-share` branch and the launch banner
+        // (#59), placed between the export and the exec lines.
         let added: Vec<&str> = w.lines().filter(|l| !legacy.contains(l)).collect();
         assert_eq!(
             added,
             [
-                "# mcc-launcher: 2",
+                "# mcc-launcher: 3",
                 "# Start it with --mcc-share to share its sessions (see: mcc help share).",
                 "[ \"${CLAUDE_CODE_PLUGIN_CACHE_DIR:-}\" = \"$HOME/.claude/plugins\" ] && unset CLAUDE_CODE_PLUGIN_CACHE_DIR",
                 "case \"$1\" in",
@@ -536,11 +574,22 @@ mod tests {
                 "    if command -v mcc >/dev/null 2>&1; then mcc share 'work' --from-launch || exit $?",
                 "    else '/opt/bin/mcc' share 'work' --from-launch || exit $?; fi ;;",
                 "esac",
+                "if [ -t 2 ]; then",
+                "  if command -v mcc >/dev/null 2>&1; then mcc launch-banner 'work' >&2 2>/dev/null",
+                "  elif [ -x '/opt/bin/mcc' ]; then '/opt/bin/mcc' launch-banner 'work' >&2 2>/dev/null",
+                "  fi",
+                "fi",
             ],
             "{w}"
         );
         let no_mcc = wrapper_script(&paths, "work", &dir, None, None, None);
         assert!(no_mcc.contains("else echo \"mcc not found on PATH\" >&2; exit 127; fi ;;"));
+        assert!(
+            no_mcc.contains(
+                "if [ -t 2 ]; then\n  if command -v mcc >/dev/null 2>&1; then mcc launch-banner 'work' >&2 2>/dev/null\n  fi\nfi\n"
+            ),
+            "{no_mcc}"
+        );
     }
 
     #[test]
@@ -551,9 +600,17 @@ mod tests {
         assert!(!launcher_is_current(&w));
         std::fs::write(&w, LEGACY_WRAPPER).unwrap();
         assert!(is_mcc_wrapper(&w) && !launcher_is_current(&w));
+        assert!(!launcher_supports_share(&w));
+        assert_eq!(launcher_version(&w), 0);
+        // A launcher from before the banner still understands --mcc-share.
+        std::fs::write(&w, "#!/bin/sh\n# managed-by: mcc\n# mcc-launcher: 2\n").unwrap();
+        assert!(launcher_supports_share(&w) && !launcher_is_current(&w));
+        assert_eq!(launcher_version(&w), 2);
         let dir = paths.profile_dir("work");
         std::fs::write(&w, wrapper_script(&paths, "work", &dir, None, None, None)).unwrap();
         assert!(is_mcc_wrapper(&w) && launcher_is_current(&w));
+        assert!(launcher_supports_share(&w));
+        assert_eq!(launcher_version(&w), LAUNCHER_VERSION);
 
         let rc = d.path().join(".zshrc");
         assert_eq!(block_body(&rc, "work"), None);

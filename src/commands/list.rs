@@ -100,7 +100,7 @@ pub fn run(paths: &Paths, cfg: &Config, args: &ListArgs) -> Result<()> {
     Ok(())
 }
 
-/// Footnotes (stderr) for session sharing and launchers that predate it.
+/// Footnotes (stderr) for session sharing and out-of-date launchers.
 fn sharing_notes(all: &[ProfileMetrics]) {
     if all.iter().any(|m| m.share_sessions) {
         ui::info(
@@ -110,9 +110,9 @@ fn sharing_notes(all: &[ProfileMetrics]) {
     let stale = all.iter().filter(|m| !m.launcher_current).count();
     if stale > 0 {
         ui::hint(&format!(
-            "{stale} launcher{} predate{} session sharing — run `mcc refresh-launchers` so `<alias> --mcc-share` works",
+            "{stale} launcher{} {} out of date — run `mcc refresh-launchers` so `<alias> --mcc-share` and the launch banner work",
             if stale == 1 { "" } else { "s" },
-            if stale == 1 { "s" } else { "" },
+            if stale == 1 { "is" } else { "are" },
         ));
     }
 }

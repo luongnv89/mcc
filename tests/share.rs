@@ -658,7 +658,7 @@ fn legacy_launchers_stay_as_they_are_until_refreshed() {
         .assert()
         .success()
         .stderr(predicate::str::contains(
-            "1 launcher predates session sharing — run `mcc refresh-launchers`",
+            "1 launcher is out of date — run `mcc refresh-launchers`",
         ));
     let o = sb
         .mcc()
@@ -690,7 +690,7 @@ fn refresh_launchers_upgrades_old_launchers() {
             "1 refreshed, 1 already up to date, 0 skipped",
         ));
     let wrapper = sb.read(".local/bin/work");
-    assert!(wrapper.contains("# mcc-launcher: 2"), "{wrapper}");
+    assert!(wrapper.contains("# mcc-launcher: 3"), "{wrapper}");
     assert!(
         wrapper.contains("export CLAUDE_CONFIG_DIR=\"$HOME/.mcc/profiles/work\"\n"),
         "{wrapper}"

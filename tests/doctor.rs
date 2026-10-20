@@ -744,3 +744,53 @@ fn one_profile_only() {
         .code(2)
         .stderr(predicate::str::contains("no profile named \"ghost\""));
 }
+
+#[test]
+fn launchers_from_before_sharing_or_the_banner_are_out_of_date() {
+    let sb = healthy();
+    let current = sb.read(".local/bin/work");
+    assert!(current.contains("# mcc-launcher: 3\n"), "{current}");
+
+    // Version 2 understands --mcc-share, but can't show the launch banner.
+    sb.write(
+        ".local/bin/work",
+        &current.replace("# mcc-launcher: 3\n", "# mcc-launcher: 2\n"),
+    );
+    let all = findings(&sb, &[]);
+    let f = one(&all, Some("work"), "launcher");
+    assert_eq!(f["status"], "warn", "{f}");
+    assert!(
+        f["message"]
+            .as_str()
+            .unwrap()
+            .contains("predates the launch banner"),
+        "{f}"
+    );
+    assert_eq!(f["fix"], "mcc refresh-launchers work");
+
+    // Without a version it predates session sharing too.
+    sb.write(
+        ".local/bin/work",
+        &current.replace("# mcc-launcher: 3\n", ""),
+    );
+    let all = findings(&sb, &[]);
+    let f = one(&all, Some("work"), "launcher");
+    assert_eq!(f["status"], "warn", "{f}");
+    assert!(
+        f["message"]
+            .as_str()
+            .unwrap()
+            .contains("predates session sharing"),
+        "{f}"
+    );
+
+    // A warning: doctor still passes, and refresh-launchers makes it current.
+    passing(&sb);
+    sb.mcc()
+        .args(["refresh-launchers", "work"])
+        .assert()
+        .success();
+    let all = findings(&sb, &[]);
+    assert_eq!(one(&all, Some("work"), "launcher")["status"], "ok");
+    assert_eq!(sb.read(".local/bin/work"), current);
+}

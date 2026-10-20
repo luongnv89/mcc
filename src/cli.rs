@@ -325,9 +325,13 @@ pub enum Command {
     )]
     Statusline(StatuslineArgs),
 
+    /// Print the launch banner of a profile (called by its launcher)
+    #[command(name = "launch-banner", hide = true)]
+    LaunchBanner(LaunchBannerArgs),
+
     /// Rewrite profiles' launchers and shell aliases from the current templates
     #[command(
-        after_help = "Examples:\n  mcc refresh-launchers          Every profile\n  mcc refresh-launchers work lab Only these profiles\n\nNeeded once for profiles created by an older mcc, so that `<alias> --mcc-share`\nworks: the shell alias then runs the launcher (~/.local/bin/<alias>) instead of\nclaude directly. CLAUDE_CONFIG_DIR stays exactly the same, so logins are kept.\nmcc never rewrites existing launchers on its own. Launchers that are already\ncurrent are left alone, and files mcc didn't write are skipped."
+        after_help = "Examples:\n  mcc refresh-launchers          Every profile\n  mcc refresh-launchers work lab Only these profiles\n\nNeeded once for profiles created by an older mcc, so that `<alias> --mcc-share`\nworks (the shell alias then runs the launcher, ~/.local/bin/<alias>, instead of\nclaude directly) and the launcher can show the launch banner ([launch] banner). CLAUDE_CONFIG_DIR stays exactly the same, so logins are kept.\nmcc never rewrites existing launchers on its own. Launchers that are already\ncurrent are left alone, and files mcc didn't write are skipped."
     )]
     RefreshLaunchers(RefreshLaunchersArgs),
 
@@ -372,6 +376,8 @@ pub enum Command {
         "  sync.extra             extra paths to sync, relative to the config dir\n",
         "  privacy.show_email     true or false (account emails in list and usage)\n",
         "  usage.live             true or false\n",
+        "  launch.banner          true or false (a one-line banner on stderr when a\n",
+        "                         profile starts)\n",
         "  profiles.ALIAS.label   1–64 characters (\"\" removes it)\n",
         "  profiles.ALIAS.color   black, red, green, yellow, blue, magenta, cyan or\n",
         "                         white (\"\" removes it)\n",
@@ -688,6 +694,12 @@ pub struct ExecArgs {
     /// The command and its arguments, after `--`
     #[arg(last = true, required = true, value_name = "COMMAND")]
     pub command: Vec<OsString>,
+}
+
+#[derive(Debug, Args)]
+pub struct LaunchBannerArgs {
+    /// The profile starting
+    pub alias: String,
 }
 
 #[derive(Debug, Args)]

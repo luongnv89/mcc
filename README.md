@@ -117,7 +117,7 @@ mcc delete job              # remove it completely
 | `mcc exec PROFILE -- CMD...` | Run a command with a profile's `CLAUDE_CONFIG_DIR` and return its exit status; `--all` runs it once per profile and reports each result | `--all` |
 | `mcc config get\|set\|edit\|path` | Read or change `~/.mcc/config.toml` without hand-editing TOML; `set` and `edit` check values and leave the file unchanged when one is invalid (see [Changing settings](#changing-settings-mcc-config)) | `get KEY`, `set KEY VALUE`, `edit`, `path` |
 | `mcc statusline install` | Opt-in: show the active profile in Claude Code's status line and cache each profile's rate limits (see [Status line](#status-line-mcc-statusline)); it edits the default profile's `settings.json`; also `uninstall` | `--prefix`, `-y/--yes` |
-| `mcc refresh-launchers [ALIAS...]` | Rewrite launchers and shell aliases from the current templates (all profiles when none are given); needed once so `<alias> --mcc-share` works for profiles made by an older mcc | |
+| `mcc refresh-launchers [ALIAS...]` | Rewrite launchers and shell aliases from the current templates (all profiles when none are given); needed once so `<alias> --mcc-share` and the [launch banner](#launch-banner-opt-in) work for profiles made by an older mcc | |
 | `mcc doctor [PROFILE]` | Check every profile's setup (launcher, alias, PATH, login, config directory, sharing, permissions, drift, a global `CLAUDE_CONFIG_DIR`) and print a fix for each problem; read-only, exits 1 when it finds one (see [Checking your setup](#checking-your-setup-mcc-doctor)) | `--json`, `--json-v2` |
 | `mcc delete ALIAS` (`rm`) | Log out and remove a profile | `-y/--yes`, `--keep-auth` |
 | `mcc completions SHELL` | Print a completion script | `bash`, `zsh`, `fish`, `elvish`, `powershell` |
@@ -244,7 +244,7 @@ mcc config edit                                   # open the file in $VISUAL or 
 mcc config path                                   # print the file's path
 ```
 
-`set` accepts `sync.exclude`, `sync.extra`, `privacy.show_email` (also under its old name, `usage.show_email`), `usage.live`, `profiles.ALIAS.label` and `profiles.ALIAS.color`, and checks each value as the command that uses it would: an unknown sync item, a path outside the config dir, a value that isn't `true` or `false`, an invalid label or an unknown color is refused with exit 2 or 3, and the file is left unchanged. Keys that other commands manage point you to them (`mcc share`, `mcc link`, `mcc project`, `mcc init --force`). `get` reads any key, dotted as in TOML (`projects."/Users/me/app".profile`); a key that isn't set exits 1. Comments and formatting are kept.
+`set` accepts `sync.exclude`, `sync.extra`, `privacy.show_email` (also under its old name, `usage.show_email`), `usage.live`, `launch.banner`, `profiles.ALIAS.label` and `profiles.ALIAS.color`, and checks each value as the command that uses it would: an unknown sync item, a path outside the config dir, a value that isn't `true` or `false`, an invalid label or an unknown color is refused with exit 2 or 3, and the file is left unchanged. Keys that other commands manage point you to them (`mcc share`, `mcc link`, `mcc project`, `mcc init --force`). `get` reads any key, dotted as in TOML (`projects."/Users/me/app".profile`); a key that isn't set exits 1. Comments and formatting are kept.
 
 `edit` opens a copy of the file and saves it only when it is valid mcc config (it parses, and sync items, `link` items, labels, colors and `share_group` names pass the same checks); otherwise it offers to edit again, or leaves the file unchanged. mcc holds no lock while the editor is open, so other mcc commands, launches included, keep working; if one of them changes the file meanwhile, nothing is saved and your edited copy is kept next to it. `edit` also works on a file that no longer parses, so it can fix one. `get` and `path` never take the lock; `set` holds it like any other write.
 
@@ -506,6 +506,10 @@ A profile can also have a `color`, so the account in use is obvious at a glance:
 mcc config set profiles.work.label "Corp (work)"   # "" removes it
 mcc config set profiles.work.color green           # "" removes it
 ```
+
+#### Launch banner (opt-in)
+
+With `[launch] banner = true` (`mcc config set launch.banner true`), starting a profile from its command (its launcher, `~/.local/bin/<alias>`) or with `mcc run` prints one line on stderr naming it: its name in its color, its label, and the 5-hour and weekly usage `mcc statusline` cached, e.g. `▶ work · Acme · 5h 42% · week 18%`. Parts that aren't known are left out, and labels are shown as `mcc run` shows them. It is off by default. The banner is printed only when stderr is a terminal (and not with `mcc run --quiet`), and never on stdout, so `work -p "…" | jq` sees only Claude Code's output. Starting a profile stays fast and offline: the banner reads only `~/.mcc/config.toml` and the usage cache, never the network, a token or the Keychain, even with `[usage] live = true`, and `MCC_NO_USAGE` leaves the usage out. Launchers written before this version don't show it; run `mcc refresh-launchers` once (`mcc doctor` says which ones are out of date).
 
 ### Usage limits: `mcc list` and `mcc usage`
 

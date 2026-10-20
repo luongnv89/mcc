@@ -698,7 +698,7 @@ fn enable_plugins(paths: &Paths, cfg: &mut Config, alias: &str, dir: &Path) -> R
     let was_current = cfg.profiles[alias]
         .wrapper
         .as_deref()
-        .is_some_and(shell::launcher_is_current);
+        .is_some_and(shell::launcher_supports_share);
     let mut steps = ui::Steps::new(3);
     let mut undo: Transaction<Undo> = Transaction::new();
     let mut backup = None;

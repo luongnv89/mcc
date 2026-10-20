@@ -144,6 +144,13 @@ impl Sandbox {
         cmd
     }
 
+    /// `program` run with the sandboxed environment, in the sandbox HOME.
+    pub fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+        let mut cmd = std::process::Command::new(program);
+        cmd.env_clear().envs(self.env()).current_dir(self.home());
+        cmd
+    }
+
     /// A realistic default profile at ~/.claude + ~/.claude.json.
     pub fn seed_default(&self) {
         let home = self.home().display().to_string();

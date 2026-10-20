@@ -642,7 +642,7 @@ fn check_launcher(d: &mut Doctor, name: &str, p: &Profile) {
             refresh.clone(),
         );
     }
-    if !shell::launcher_is_current(w) {
+    if !shell::launcher_supports_share(w) {
         ok = false;
         d.push_cmd(
             "launcher",
@@ -650,6 +650,16 @@ fn check_launcher(d: &mut Doctor, name: &str, p: &Profile) {
             format!(
                 "the launcher {shown} predates session sharing (`{name} {}` doesn't work)",
                 shell::SHARE_FLAG
+            ),
+            refresh,
+        );
+    } else if !shell::launcher_is_current(w) {
+        ok = false;
+        d.push_cmd(
+            "launcher",
+            Level::Warn,
+            format!(
+                "the launcher {shown} predates the launch banner (`[launch] banner` doesn't show it)"
             ),
             refresh,
         );

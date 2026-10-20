@@ -88,6 +88,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         // lock, no first-run setup, and it never writes config.toml.
         return commands::statusline::render(&paths::Paths::from_env()?, args.prefix);
     }
+    if let Command::LaunchBanner(args) = &cli.command {
+        // Run by a launcher on every start: no logging, no lock, no
+        // first-run setup, nothing written, and never an error.
+        commands::banner::run(&args.alias);
+        return Ok(());
+    }
     let paths = paths::Paths::from_env()?;
     if let Command::Doctor(args) = &cli.command {
         // Read-only, even on first use: no lock, no first-run setup, and
@@ -182,7 +188,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Exec(args) => commands::exec::run(&paths, &cfg, &args),
         Command::RefreshLaunchers(args) => commands::refresh_launchers::run(&paths, &cfg, &args),
         Command::Statusline(args) => commands::statusline::run(&paths, &cfg, &args),
-        Command::Completions(_) | Command::Config(_) | Command::Doctor(_) => {
+        Command::Completions(_)
+        | Command::Config(_)
+        | Command::Doctor(_)
+        | Command::LaunchBanner(_) => {
             unreachable!("handled above")
         }
     }
@@ -233,6 +242,8 @@ fn writes_config(command: &Command) -> bool {
         | Command::Completions(_) => false,
         // Read-only, and never locked: it reports, it doesn't fix.
         Command::Doctor(_) => false,
+        // Runs on every launch: reads the config, never writes it.
+        Command::LaunchBanner(_) => false,
         // Never locked: `mcc exec` runs commands that may run mcc commands
         // which take the lock themselves.
         Command::Env(_) | Command::Exec(_) => false,
