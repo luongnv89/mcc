@@ -14,6 +14,7 @@
 #
 # Other settings:
 #   MCC_VERSION=v0.4.0    install that release instead of the latest one
+#                         (a source build then builds that tag)
 #   MCC_RELEASE_URL=URL   download from URL/<asset> (a mirror) instead of
 #                         the GitHub release
 #
@@ -52,6 +53,18 @@ case "$arch" in
 esac
 ok "platform: $os $arch"
 
+# The release to install: a tag such as v0.4.0, or empty for the latest one.
+version="${MCC_VERSION:-}"
+if [ -n "$version" ]; then
+  case "$version" in
+    v*) ;;
+    *) version="v$version" ;;
+  esac
+  case "$version" in
+    *[!A-Za-z0-9._-]*) fail "invalid MCC_VERSION: $version" "use a release tag such as v0.4.0" ;;
+  esac
+fi
+
 # Prints the SHA-256 of file $1, or nothing when no tool is available.
 sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -70,17 +83,9 @@ install_prebuilt() {
 
   target="$target_arch-$target_os"
   asset="mcc-$target.tar.gz"
-  version="${MCC_VERSION:-}"
   if [ -n "${MCC_RELEASE_URL:-}" ]; then
     base="$MCC_RELEASE_URL"
   elif [ -n "$version" ]; then
-    case "$version" in
-      v*) ;;
-      *) version="v$version" ;;
-    esac
-    case "$version" in
-      *[!A-Za-z0-9._-]*) fail "invalid MCC_VERSION: $version" "use a release tag such as v0.4.0" ;;
-    esac
     base="$REPO_URL/releases/download/$version"
   else
     base="$REPO_URL/releases/latest/download"
@@ -121,7 +126,8 @@ install_prebuilt() {
   bin_dir="$install_dir"
 }
 
-# 2b. Build with cargo (local checkout if we're in one, else from GitHub).
+# 2b. Build with cargo (local checkout if we're in one, else from GitHub at
+# the requested release tag, or the default branch when none was given).
 install_from_source() {
   if ! command -v cargo >/dev/null 2>&1; then
     fail "cargo (the Rust toolchain) is required to build mcc from source" "install it from https://rustup.rs, then re-run this script"
@@ -130,6 +136,9 @@ install_from_source() {
   if [ -n "$in_checkout" ]; then
     info "building from $script_dir"
     cargo install --path "$script_dir" --locked --force
+  elif [ -n "$version" ]; then
+    info "building $version from $REPO_URL"
+    cargo install --git "$REPO_URL" --tag "$version" --locked --force
   else
     info "building from $REPO_URL"
     cargo install --git "$REPO_URL" --locked --force
@@ -161,6 +170,17 @@ case ":$PATH:" in
   *":$bin_dir:"*) ;;
   *) info "add $bin_dir to your PATH to run \`mcc\` directly" ;;
 esac
+
+# Older versions of this script installed into ~/.cargo/bin; an mcc left
+# there (or anywhere earlier on PATH) would hide the one just installed.
+found="$(command -v mcc 2>/dev/null || true)"
+if [ -n "$found" ] && [ "$found" != "$bin_dir/mcc" ]; then
+  case "$found" in
+    */.cargo/bin/mcc | "${CARGO_HOME:-$HOME/.cargo}/bin/mcc") remove="run \`cargo uninstall mcc\`" ;;
+    *) remove="remove it" ;;
+  esac
+  info "another mcc at $found comes first on your PATH and shadows $bin_dir/mcc; $remove"
+fi
 
 if ! command -v claude >/dev/null 2>&1; then
   info "Claude Code (\`claude\`) was not found — install it before adding profiles"
