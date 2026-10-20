@@ -819,16 +819,36 @@ fn group_store(sb: &Sandbox, group: &str) -> PathBuf {
     sb.path(&format!(".mcc/shared/groups/{group}/projects"))
 }
 
-/// A fresh profile logged in to organization `org` (`org_id`), or to a
-/// personal account when `org` is `None`.
-fn add_in_org(sb: &Sandbox, alias: &str, org: Option<(&str, &str)>) {
+/// A fresh profile logged in to organization `(name, uuid, type)`, with
+/// the `oauthAccount` Claude Code writes to its `.claude.json` (where the
+/// organization type comes from), or to an account without any
+/// organization when `org` is `None`.
+fn add_in_org(sb: &Sandbox, alias: &str, org: Option<(&str, &str, &str)>) {
     let mut cmd = sb.mcc();
     cmd.args(["add", alias, "--fresh"]);
-    if let Some((name, id)) = org {
+    if let Some((name, id, _)) = org {
         cmd.env("FAKE_ORG_NAME", name).env("FAKE_ORG_ID", id);
     }
     cmd.assert().success();
+    if let Some((name, id, ty)) = org {
+        let rel = format!(".mcc/profiles/{alias}/.claude.json");
+        let mut state = if sb.exists(&rel) {
+            json(sb.read(&rel).as_bytes())
+        } else {
+            serde_json::json!({})
+        };
+        state["oauthAccount"] = serde_json::json!({
+            "emailAddress": "fake@example.com",
+            "organizationName": name,
+            "organizationUuid": id,
+            "organizationType": ty,
+            "billingType": "stripe_subscription",
+        });
+        sb.write(&rel, &state.to_string());
+    }
 }
+
+const TEAM: &str = "claude_team";
 
 #[test]
 fn group_uses_a_store_of_its_own() {
@@ -866,6 +886,17 @@ fn group_uses_a_store_of_its_own() {
         sb.path(".mcc/profiles/lab/projects/-tmp-proj/session1.jsonl")
             .is_file()
     );
+    // Group names are one group whatever the case.
+    with_profile(&sb, "upper", "--fresh");
+    sb.mcc()
+        .args(["share", "upper", "--group", "ALPHA"])
+        .assert()
+        .success();
+    assert_eq!(
+        link_target(&sb, ".mcc/profiles/upper/projects"),
+        group_store(&sb, "alpha")
+    );
+    assert!(profile_section(&sb, "upper").contains("share_group = \"alpha\""));
     // `--group default` is the default group.
     sb.mcc()
         .args(["share", "side", "--group", "default"])
@@ -951,9 +982,9 @@ fn invalid_group_names_are_usage_errors() {
 fn sharing_across_organizations_needs_allow_cross_org() {
     let sb = Sandbox::new();
     sb.seed_default();
-    add_in_org(&sb, "acme", Some(("Acme", "org-acme")));
-    add_in_org(&sb, "acme2", Some(("Acme Inc", "org-acme")));
-    add_in_org(&sb, "beta", Some(("Beta", "org-beta")));
+    add_in_org(&sb, "acme", Some(("Acme", "org-acme", TEAM)));
+    add_in_org(&sb, "acme2", Some(("Acme Inc", "org-acme", TEAM)));
+    add_in_org(&sb, "beta", Some(("Beta", "org-beta", "claude_enterprise")));
     sb.mcc().args(["share", "acme"]).assert().success();
     // The same organization (by UUID): shared.
     sb.mcc().args(["share", "acme2"]).assert().success();
@@ -1002,8 +1033,13 @@ fn sharing_across_organizations_needs_allow_cross_org() {
 fn organization_to_personal_is_the_strictest() {
     let sb = Sandbox::new();
     sb.seed_default();
-    add_in_org(&sb, "work", Some(("Acme", "org-acme")));
-    add_in_org(&sb, "home", None);
+    add_in_org(&sb, "work", Some(("Acme", "org-acme", TEAM)));
+    // A personal Max plan: Claude Code gives it an organization of its own.
+    add_in_org(
+        &sb,
+        "home",
+        Some(("fake@example.com's Organization", "org-home", "claude_max")),
+    );
     sb.mcc().args(["share", "work"]).assert().success();
     // Organization sessions would reach a personal account: refused…
     sb.mcc()
@@ -1011,7 +1047,10 @@ fn organization_to_personal_is_the_strictest() {
         .assert()
         .code(3)
         .stderr(predicate::str::contains("consumer terms"))
-        .stderr(predicate::str::contains("\"work\" (organization Acme)"));
+        .stderr(predicate::str::contains("\"work\" (organization Acme)"))
+        .stderr(predicate::str::contains(
+            "profile \"home\" (a personal account)",
+        ));
     // …and --allow-cross-org alone is not enough without a terminal.
     sb.mcc()
         .args(["share", "home", "--allow-cross-org"])
@@ -1043,7 +1082,7 @@ fn unknown_accounts_fail_safe() {
     let sb = Sandbox::new();
     sb.seed_default();
     add_in_org(&sb, "home", None);
-    add_in_org(&sb, "work", Some(("Acme", "org-acme")));
+    add_in_org(&sb, "work", Some(("Acme", "org-acme", TEAM)));
     sb.mcc()
         .args(["add", "blank", "--fresh", "--no-login"])
         .assert()
@@ -1077,7 +1116,7 @@ fn unknown_accounts_fail_safe() {
 fn profiles_sharing_the_global_store_keep_their_sessions() {
     let sb = Sandbox::new();
     sb.seed_default();
-    add_in_org(&sb, "work", Some(("Acme", "org-acme")));
+    add_in_org(&sb, "work", Some(("Acme", "org-acme", TEAM)));
     add_in_org(&sb, "home", None);
     // What an older mcc left: both linked to ~/.mcc/shared/projects, with
     // `share_sessions = true` and nothing else.

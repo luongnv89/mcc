@@ -21,7 +21,7 @@ use anyhow::{Context, Result};
 use walkdir::WalkDir;
 
 use crate::cli::ShareArgs;
-use crate::config::{Account, Config, OrgMatch, Profile};
+use crate::config::{Account, AccountKind, Config, OrgMatch, Profile};
 use crate::error::CliError;
 use crate::paths::Paths;
 use crate::{fsutil, metrics, shell, ui};
@@ -126,10 +126,13 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &ShareArgs) -> Result<()> {
 const GROUP_MAX: usize = 64;
 
 /// A group name is 1–64 ASCII letters, digits, `-`, `_` or `.`, starting
-/// with a letter or digit, so it is a plain directory name. `default` is the
-/// default group (`None`).
+/// with a letter or digit, so it is a plain directory name. It is
+/// lowercased: on a case-insensitive filesystem (macOS by default) `Acme`
+/// and `acme` would be one store, so they must be one group. `default` is
+/// the default group (`None`).
 fn check_group(name: &str) -> Result<Option<String>> {
-    if name == "default" {
+    let lower = name.to_ascii_lowercase();
+    if lower == "default" {
         return Ok(None);
     }
     let ok = name.len() <= GROUP_MAX
@@ -141,7 +144,7 @@ fn check_group(name: &str) -> Result<Option<String>> {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'));
     if ok {
-        Ok(Some(name.to_string()))
+        Ok(Some(lower))
     } else {
         Err(CliError::usage(format!("invalid group name \"{name}\""))
             .hint(format!(
@@ -151,44 +154,44 @@ fn check_group(name: &str) -> Result<Option<String>> {
     }
 }
 
+/// The same group, ignoring case (see [`check_group`]).
+fn same_group(a: &Option<String>, b: &Option<String>) -> bool {
+    a.as_deref().map(str::to_ascii_lowercase) == b.as_deref().map(str::to_ascii_lowercase)
+}
+
 /// A group as people read it.
 fn group_name(group: &Option<String>) -> &str {
     group.as_deref().unwrap_or("default")
 }
 
-/// What a profile is, for the cross-organization guard.
+/// A profile's account, for the cross-organization guard.
 #[derive(Debug, Clone)]
-enum OrgId {
-    /// Logged in to an organization (its name or UUID is known).
-    Org(Account),
-    /// Logged in without an organization: a personal account.
-    Personal,
-    /// No account known (never logged in, or `--no-login`).
-    Unknown,
+struct OrgId {
+    account: Account,
+    kind: AccountKind,
 }
 
 impl OrgId {
     fn of(account: &Account) -> Self {
-        if account.has_org() {
-            OrgId::Org(account.clone())
-        } else if !account.is_anonymous() {
-            OrgId::Personal
-        } else {
-            OrgId::Unknown
+        OrgId {
+            kind: account.kind(),
+            account: account.clone(),
         }
     }
 
     fn describe(&self) -> String {
-        match self {
-            OrgId::Org(a) => format!(
-                "organization {}",
-                a.organization
-                    .as_deref()
-                    .or(a.organization_uuid.as_deref())
-                    .unwrap_or("?")
-            ),
-            OrgId::Personal => "a personal account".into(),
-            OrgId::Unknown => "an unknown account".into(),
+        let org = || {
+            self.account
+                .organization
+                .as_deref()
+                .or(self.account.organization_uuid.as_deref())
+                .unwrap_or("?")
+        };
+        match self.kind {
+            AccountKind::Organization => format!("organization {}", org()),
+            AccountKind::Personal => "a personal account".into(),
+            AccountKind::Unclassified => format!("organization {} of unknown type", org()),
+            AccountKind::Unknown => "an unknown account".into(),
         }
     }
 }
@@ -197,28 +200,31 @@ impl OrgId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Risk {
     None,
-    /// Neither profile is in an organization, but at least one account is
-    /// unknown, so they can't be told to be the same kind.
+    /// Neither profile is in a work organization, but at least one account
+    /// is unknown, so they can't be told to be the same kind.
     Unknown,
-    /// Two different organizations (or ones that can't be compared).
+    /// Two different work organizations.
     CrossOrg,
-    /// An organization and a personal (or unknown) account: work sessions
-    /// would become resumable under consumer terms. The strictest case.
+    /// A work organization and a personal (or unknown) account: work
+    /// sessions would become resumable under consumer terms. The strictest
+    /// case, also used whenever an organization of unknown type is involved.
     OrgToPersonal,
 }
 
 fn pair_risk(a: &OrgId, b: &OrgId) -> Risk {
-    match (a, b) {
-        (OrgId::Personal, OrgId::Personal) => Risk::None,
-        (OrgId::Org(x), OrgId::Org(y)) => {
-            if x.org_match(y) == OrgMatch::Same {
-                Risk::None
-            } else {
-                Risk::CrossOrg
-            }
-        }
-        (OrgId::Org(_), _) | (_, OrgId::Org(_)) => Risk::OrgToPersonal,
-        _ => Risk::Unknown,
+    use AccountKind::*;
+    if a.account.has_org()
+        && b.account.has_org()
+        && a.account.org_match(&b.account) == OrgMatch::Same
+    {
+        return Risk::None;
+    }
+    match (a.kind, b.kind) {
+        (Personal, Personal) => Risk::None,
+        (Organization, Organization) => Risk::CrossOrg,
+        (Unknown, Personal | Unknown) | (Personal, Unknown) => Risk::Unknown,
+        // A work organization, or one that may be, with anything else.
+        _ => Risk::OrgToPersonal,
     }
 }
 
@@ -234,7 +240,9 @@ fn group_risks(
     let others = cfg
         .profiles
         .iter()
-        .filter(|(name, p)| name.as_str() != alias && p.share_sessions && &p.share_group == group)
+        .filter(|(name, p)| {
+            name.as_str() != alias && p.share_sessions && same_group(&p.share_group, group)
+        })
         .map(|(name, p)| {
             let id = OrgId::of(&metrics::profile_account(p));
             let risk = pair_risk(&me, &id);
@@ -421,7 +429,7 @@ fn enable(
     args: &ShareArgs,
 ) -> Result<()> {
     let from_launch = args.from_launch;
-    if profile.share_sessions && &profile.share_group != group {
+    if profile.share_sessions && !same_group(&profile.share_group, group) {
         return Err(CliError::input(format!(
             "profile \"{alias}\" already shares its sessions in group \"{}\", not \"{}\"",
             group_name(&profile.share_group),
@@ -848,11 +856,12 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<usize> {
 mod tests {
     use super::*;
 
-    fn org(name: &str, id: Option<&str>) -> OrgId {
+    fn org(name: &str, id: Option<&str>, ty: Option<&str>) -> OrgId {
         OrgId::of(&Account {
             email: Some("me@x.com".into()),
             organization: Some(name.into()),
             organization_uuid: id.map(Into::into),
+            organization_type: ty.map(Into::into),
             ..Account::default()
         })
     }
@@ -867,22 +876,48 @@ mod tests {
     #[test]
     fn pair_risk_ranks_org_to_personal_highest() {
         let unknown = OrgId::of(&Account::default());
-        assert!(matches!(unknown, OrgId::Unknown));
-        let acme = org("Acme", Some("o1"));
-        assert_eq!(pair_risk(&acme, &org("Acme Inc", Some("o1"))), Risk::None);
-        assert_eq!(pair_risk(&personal(), &personal()), Risk::None);
-        assert_eq!(pair_risk(&acme, &org("Acme", Some("o2"))), Risk::CrossOrg);
-        assert_eq!(pair_risk(&acme, &org("Beta", None)), Risk::CrossOrg);
+        let team = Some("claude_team");
+        let acme = org("Acme", Some("o1"), team);
+        // A personal plan, shaped like Claude Code reports it: with an
+        // organization of its own.
+        let max = org("me's Organization", Some("o9"), Some("claude_max"));
+        let pro = org("you's Organization", Some("o8"), Some("claude_pro"));
         assert_eq!(
-            pair_risk(&org("Acme", None), &org("acme", None)),
+            pair_risk(&acme, &org("Acme Inc", Some("o1"), team)),
             Risk::None
         );
+        assert_eq!(pair_risk(&personal(), &personal()), Risk::None);
+        assert_eq!(pair_risk(&max, &pro), Risk::None);
+        assert_eq!(pair_risk(&max, &personal()), Risk::None);
+        assert_eq!(
+            pair_risk(&acme, &org("Acme", Some("o2"), team)),
+            Risk::CrossOrg
+        );
+        assert_eq!(
+            pair_risk(&acme, &org("Beta", None, Some("claude_enterprise"))),
+            Risk::CrossOrg
+        );
         // Either direction, and an unknown account counts as personal.
+        assert_eq!(pair_risk(&acme, &max), Risk::OrgToPersonal);
+        assert_eq!(pair_risk(&max, &acme), Risk::OrgToPersonal);
         assert_eq!(pair_risk(&acme, &personal()), Risk::OrgToPersonal);
-        assert_eq!(pair_risk(&personal(), &acme), Risk::OrgToPersonal);
         assert_eq!(pair_risk(&unknown, &acme), Risk::OrgToPersonal);
         assert_eq!(pair_risk(&unknown, &personal()), Risk::Unknown);
+        assert_eq!(pair_risk(&unknown, &max), Risk::Unknown);
         assert_eq!(pair_risk(&unknown, &unknown), Risk::Unknown);
+        // An organization of unknown type may be a work one: strictest,
+        // unless it is the very same organization.
+        let untyped = org("Gamma", Some("o3"), None);
+        assert_eq!(pair_risk(&untyped, &max), Risk::OrgToPersonal);
+        assert_eq!(pair_risk(&untyped, &acme), Risk::OrgToPersonal);
+        assert_eq!(
+            pair_risk(&untyped, &org("Delta", Some("o4"), None)),
+            Risk::OrgToPersonal
+        );
+        assert_eq!(
+            pair_risk(&untyped, &org("Gamma", Some("o3"), team)),
+            Risk::None
+        );
         assert!(Risk::OrgToPersonal > Risk::CrossOrg && Risk::CrossOrg > Risk::Unknown);
     }
 
@@ -905,9 +940,14 @@ mod tests {
     #[test]
     fn group_names() {
         assert_eq!(check_group("default").unwrap(), None);
-        for ok in ["work", "Acme-1", "a.b_c", "9"] {
+        for ok in ["work", "a.b_c", "9"] {
             assert_eq!(check_group(ok).unwrap().as_deref(), Some(ok));
         }
+        // One group whatever the case, as on a case-insensitive filesystem.
+        assert_eq!(check_group("Acme-1").unwrap().as_deref(), Some("acme-1"));
+        assert_eq!(check_group("DEFAULT").unwrap(), None);
+        assert!(same_group(&Some("Acme".into()), &Some("acme".into())));
+        assert!(!same_group(&Some("acme".into()), &None));
         for bad in ["", ".", "..", "-x", "a/b", "a b", "é", &"x".repeat(65)] {
             assert!(check_group(bad).is_err(), "{bad:?}");
         }

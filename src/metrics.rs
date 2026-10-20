@@ -103,6 +103,7 @@ fn account_from_state(state: &Value) -> Option<Account> {
         uuid: s("accountUuid"),
         organization: s("organizationName"),
         organization_uuid: s("organizationUuid"),
+        organization_type: s("organizationType"),
         recorded_at: None,
     };
     (a != Account::default()).then_some(a)
@@ -328,13 +329,14 @@ mod tests {
         let state = serde_json::json!({"oauthAccount": {
             "emailAddress": "a@x.com", "accountUuid": "u1",
             "organizationName": "Acme", "organizationUuid": "org-1",
-            "organizationRole": "admin"
+            "organizationRole": "admin", "organizationType": "claude_team"
         }});
         let a = account_from_state(&state).unwrap();
         assert_eq!(a.email.as_deref(), Some("a@x.com"));
         assert_eq!(a.uuid.as_deref(), Some("u1"));
         assert_eq!(a.organization.as_deref(), Some("Acme"));
         assert_eq!(a.organization_uuid.as_deref(), Some("org-1"));
+        assert_eq!(a.organization_type.as_deref(), Some("claude_team"));
         assert_eq!(a.recorded_at, None);
         assert!(account_from_state(&serde_json::json!({"oauthAccount": {}})).is_none());
         assert!(account_from_state(&serde_json::json!({"theme": "dark"})).is_none());

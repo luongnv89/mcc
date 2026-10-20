@@ -122,6 +122,11 @@ pub struct Account {
     pub organization: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub organization_uuid: Option<String>,
+    /// Claude Code's `organizationType`, such as `claude_max` (a personal
+    /// plan) or `claude_team`. Personal plans have an organization too, so
+    /// this is what tells them from a work organization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organization_type: Option<String>,
     /// When mcc recorded it (RFC 3339).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recorded_at: Option<String>,
@@ -137,6 +142,30 @@ impl Account {
     /// True when an organization (name or UUID) is known.
     pub fn has_org(&self) -> bool {
         self.organization.is_some() || self.organization_uuid.is_some()
+    }
+
+    /// What kind of account this is, for the session-sharing guard.
+    pub fn kind(&self) -> AccountKind {
+        if self.is_anonymous() && !self.has_org() {
+            return AccountKind::Unknown;
+        }
+        if !self.has_org() {
+            return AccountKind::Personal;
+        }
+        match self
+            .organization_type
+            .as_deref()
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("claude_free" | "claude_pro" | "claude_max" | "free" | "pro" | "max") => {
+                AccountKind::Personal
+            }
+            Some("claude_team" | "claude_enterprise" | "team" | "enterprise") => {
+                AccountKind::Organization
+            }
+            _ => AccountKind::Unclassified,
+        }
     }
 
     /// How this account's organization compares with `other`'s: equal
@@ -203,9 +232,25 @@ impl Account {
             uuid: self.uuid.or(other.uuid),
             organization: self.organization.or(other.organization),
             organization_uuid: self.organization_uuid.or(other.organization_uuid),
+            organization_type: self.organization_type.or(other.organization_type),
             recorded_at: self.recorded_at.or(other.recorded_at),
         }
     }
+}
+
+/// What kind of account a profile is logged in to ([`Account::kind`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountKind {
+    /// A work organization: Team or Enterprise.
+    Organization,
+    /// A personal plan (Free, Pro, Max), or an account without any
+    /// organization.
+    Personal,
+    /// In an organization whose type is unknown (not recorded, or a type
+    /// mcc doesn't know): it may be a work organization.
+    Unclassified,
+    /// No account known: never logged in, or `--no-login`.
+    Unknown,
 }
 
 /// How two accounts' organizations compare ([`Account::org_match`]).
@@ -767,6 +812,7 @@ mod tests {
             uuid: None,
             organization: Some("Acme".into()),
             organization_uuid: Some("org-1".into()),
+            organization_type: Some("claude_team".into()),
             recorded_at: Some("2026-10-20T00:00:00+02:00".into()),
         });
         cfg.profiles.insert("work".into(), work);
@@ -848,6 +894,30 @@ mod tests {
             a(None, Some("o1")).org_match(&a(Some("Acme"), None)),
             Unknown
         );
+    }
+
+    #[test]
+    fn kind_tells_personal_plans_from_work_organizations() {
+        let a = |org: Option<&str>, ty: Option<&str>| Account {
+            email: Some("me@x.com".into()),
+            organization_uuid: org.map(Into::into),
+            organization_type: ty.map(Into::into),
+            ..Account::default()
+        };
+        use AccountKind::*;
+        assert_eq!(Account::default().kind(), Unknown);
+        assert_eq!(a(None, None).kind(), Personal);
+        // Personal plans have an organization of their own.
+        assert_eq!(a(Some("o1"), Some("claude_max")).kind(), Personal);
+        assert_eq!(a(Some("o1"), Some("claude_pro")).kind(), Personal);
+        assert_eq!(a(Some("o1"), Some("claude_team")).kind(), Organization);
+        assert_eq!(
+            a(Some("o1"), Some("claude_enterprise")).kind(),
+            Organization
+        );
+        // An organization of unknown type may be a work one.
+        assert_eq!(a(Some("o1"), None).kind(), Unclassified);
+        assert_eq!(a(Some("o1"), Some("something_new")).kind(), Unclassified);
     }
 
     #[test]

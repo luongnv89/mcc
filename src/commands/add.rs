@@ -162,6 +162,7 @@ fn logged_in_account(status: &claude::AuthStatus, state_json: &Path) -> Account 
         uuid: None,
         organization: status.org_name.clone(),
         organization_uuid: status.org_id.clone(),
+        organization_type: None,
         recorded_at: None,
     };
     let state = metrics::account_info(state_json)
