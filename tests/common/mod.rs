@@ -14,6 +14,8 @@ use tempfile::TempDir;
 
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 # Fake claude for tests: login writes a credentials file, logout removes it.
+# `auth status` reports $FAKE_EMAIL (default fake@example.com) and, when
+# $FAKE_ORG_NAME is set, its organization ($FAKE_ORG_ID, $FAKE_ORG_NAME).
 dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 case "$1 $2" in
   "--version "*) echo "9.9.9 (Claude Code)" ;;
@@ -24,7 +26,9 @@ case "$1 $2" in
     echo "Login successful." ;;
   "auth status")
     if [ -f "$dir/.credentials.json" ]; then
-      echo '{"loggedIn": true, "authMethod": "claude.ai", "email": "fake@example.com"}'
+      org=""
+      [ -n "$FAKE_ORG_NAME" ] && org=", \"orgId\": \"$FAKE_ORG_ID\", \"orgName\": \"$FAKE_ORG_NAME\""
+      echo "{\"loggedIn\": true, \"authMethod\": \"claude.ai\", \"email\": \"${FAKE_EMAIL:-fake@example.com}\"$org}"
     else
       echo '{"loggedIn": false, "authMethod": "none"}'
     fi ;;

@@ -84,6 +84,76 @@ pub struct Profile {
     /// reminder instead. Left out of the file until then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub share_note_acknowledged_at: Option<String>,
+    /// A short label for the account, such as "personal" or the work
+    /// organization, asked by `mcc add` (or `--label`). Left out of the file
+    /// while unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The account `mcc add` saw after logging in, as `[profiles.ALIAS.account]`.
+    /// Left out of the file until then (`--no-login`, or a profile added
+    /// before mcc recorded it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<Account>,
+}
+
+/// A Claude Code account, as its state file (`oauthAccount` in
+/// `.claude.json`) or `claude auth status` describes it. Every field is
+/// optional: older Claude Code versions report less, and a field that is
+/// unknown is left out of the file.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Account {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    /// Claude Code's `accountUuid`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uuid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organization: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organization_uuid: Option<String>,
+    /// When mcc recorded it (RFC 3339).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorded_at: Option<String>,
+}
+
+impl Account {
+    /// True when neither an email nor an account UUID is known, so the
+    /// account can't be told apart from any other.
+    pub fn is_anonymous(&self) -> bool {
+        self.email.is_none() && self.uuid.is_none()
+    }
+
+    /// The same login: equal account UUIDs when both are known, else equal
+    /// emails (ignoring case). Unknown never matches.
+    pub fn same_login(&self, other: &Account) -> bool {
+        match (&self.uuid, &other.uuid) {
+            (Some(a), Some(b)) => a == b,
+            _ => match (&self.email, &other.email) {
+                (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+                _ => false,
+            },
+        }
+    }
+
+    /// Fill the fields this one lacks from `recorded` when it describes the
+    /// same login, or when this one can't be told apart (no email, no UUID).
+    pub fn or_recorded(self, recorded: Option<Account>) -> Account {
+        match recorded {
+            Some(r) if self.is_anonymous() || self.same_login(&r) => self.or(r),
+            _ => self,
+        }
+    }
+
+    /// Fill the fields this one lacks from `other`.
+    pub fn or(self, other: Account) -> Account {
+        Account {
+            email: self.email.or(other.email),
+            uuid: self.uuid.or(other.uuid),
+            organization: self.organization.or(other.organization),
+            organization_uuid: self.organization_uuid.or(other.organization_uuid),
+            recorded_at: self.recorded_at.or(other.recorded_at),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -372,6 +442,8 @@ mod tests {
                 last_sync: None,
                 share_sessions: true,
                 share_note_acknowledged_at: None,
+                label: None,
+                account: None,
             },
         );
         cfg.save(&path).unwrap();
@@ -504,6 +576,8 @@ mod tests {
             last_sync: None,
             share_sessions: false,
             share_note_acknowledged_at: None,
+            label: None,
+            account: None,
         }
     }
 
@@ -612,6 +686,67 @@ mod tests {
         let ino = std::fs::metadata(&path).unwrap().ino();
         Config::load(&path).unwrap().save(&path).unwrap();
         assert_eq!(std::fs::metadata(&path).unwrap().ino(), ino);
+    }
+
+    /// Issue #39: the label and recorded account round-trip as
+    /// `label = …` and a `[profiles.ALIAS.account]` table.
+    #[test]
+    fn label_and_account_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut cfg = Config::default();
+        let mut work = work_profile();
+        work.label = Some("Acme (work)".into());
+        work.account = Some(Account {
+            email: Some("dev@acme.test".into()),
+            uuid: None,
+            organization: Some("Acme".into()),
+            organization_uuid: Some("org-1".into()),
+            recorded_at: Some("2026-10-20T00:00:00+02:00".into()),
+        });
+        cfg.profiles.insert("work".into(), work);
+        cfg.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("label = \"Acme (work)\"\n"), "{text}");
+        assert!(
+            text.contains("[profiles.work.account]\nemail = \"dev@acme.test\"\n"),
+            "{text}"
+        );
+        assert!(!text.contains("uuid = \"\""), "{text}");
+        assert_eq!(Config::load(&path).unwrap().profiles, cfg.profiles);
+    }
+
+    #[test]
+    fn same_login_prefers_uuids_then_emails() {
+        let a = |email: Option<&str>, uuid: Option<&str>| Account {
+            email: email.map(Into::into),
+            uuid: uuid.map(Into::into),
+            ..Account::default()
+        };
+        assert!(a(Some("A@x.com"), None).same_login(&a(Some("a@X.com"), None)));
+        assert!(!a(Some("a@x.com"), None).same_login(&a(Some("b@x.com"), None)));
+        // UUIDs decide when both are known, whatever the emails say.
+        assert!(a(Some("a@x.com"), Some("u1")).same_login(&a(Some("b@x.com"), Some("u1"))));
+        assert!(!a(Some("a@x.com"), Some("u1")).same_login(&a(Some("a@x.com"), Some("u2"))));
+        assert!(a(Some("a@x.com"), Some("u1")).same_login(&a(Some("a@x.com"), None)));
+        // Unknown never matches.
+        assert!(!a(None, None).same_login(&a(None, None)));
+        assert!(a(None, None).is_anonymous());
+        assert!(!a(Some("a@x.com"), None).is_anonymous());
+
+        let merged = Account {
+            organization: Some("Acme".into()),
+            ..a(Some("a@x.com"), None)
+        }
+        .or(Account {
+            organization: Some("Other".into()),
+            organization_uuid: Some("org-1".into()),
+            ..a(Some("b@x.com"), Some("u1"))
+        });
+        assert_eq!(merged.email.as_deref(), Some("a@x.com"));
+        assert_eq!(merged.uuid.as_deref(), Some("u1"));
+        assert_eq!(merged.organization.as_deref(), Some("Acme"));
+        assert_eq!(merged.organization_uuid.as_deref(), Some("org-1"));
     }
 
     #[test]

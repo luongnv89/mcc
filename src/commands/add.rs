@@ -7,12 +7,12 @@ use serde_json::{Map, Value};
 
 use crate::claude::{self, Claude};
 use crate::cli::AddArgs;
-use crate::config::{Config, Profile, SyncConfig};
+use crate::config::{Account, Config, Profile, SyncConfig};
 use crate::copy::{self, Rewriter};
 use crate::env_detect::{EnvInfo, dir_on_path};
 use crate::error::CliError;
 use crate::paths::Paths;
-use crate::{fsutil, shell, ui, validate};
+use crate::{fsutil, metrics, shell, ui, validate};
 
 /// Something created during `add`, undone in reverse order on failure.
 enum Undo {
@@ -52,14 +52,19 @@ fn rollback(paths: &Paths, cfg: &mut Config, undo: Vec<Undo>) {
 
 pub fn run(paths: &Paths, cfg: &mut Config, args: &AddArgs) -> Result<()> {
     let env = cfg.env.clone().expect("init runs before commands");
+    if let Some(label) = &args.label {
+        check_label(label).map_err(|m| {
+            CliError::usage(m).hint("example: mcc add work --label \"Acme (work)\"")
+        })?;
+    }
     if !paths.default_dir.exists() {
-        return add_default(paths, &env, args);
+        return add_default(paths, cfg, &env, args);
     }
     add_profile(paths, cfg, &env, args)
 }
 
 /// No `~/.claude` yet: this account becomes the default profile (`claude`).
-fn add_default(paths: &Paths, env: &EnvInfo, args: &AddArgs) -> Result<()> {
+fn add_default(paths: &Paths, cfg: &Config, env: &EnvInfo, args: &AddArgs) -> Result<()> {
     ui::header("Add the default Claude Code profile");
     ui::info(&format!(
         "{} does not exist yet, so this account becomes the default profile, started with `claude`.",
@@ -69,6 +74,9 @@ fn add_default(paths: &Paths, env: &EnvInfo, args: &AddArgs) -> Result<()> {
         ui::warn(&format!(
             "alias \"{alias}\" is not used for the default profile — run `mcc add {alias}` afterwards to add a second account"
         ));
+    }
+    if args.label.is_some() {
+        ui::warn("--label is not used for the default profile; it applies to profiles mcc adds");
     }
     if ui::is_interactive()
         && !args.yes
@@ -98,20 +106,23 @@ fn add_default(paths: &Paths, env: &EnvInfo, args: &AddArgs) -> Result<()> {
         paths,
         config_dir: None,
     };
-    login_steps(&mut steps, &c, &paths.default_json, None)?;
+    if let Some(account) = login_steps(&mut steps, &c, &paths.default_json, None)? {
+        warn_if_duplicate(paths, cfg, None, &account);
+    }
     ui::result(true, "default profile ready — start it with `claude`");
     Ok(())
 }
 
-/// Run login + verification steps. Returns Ok(true) when logged in.
-/// `state_json` is the profile's `.claude.json`; `theme_src` is a state file to
-/// take the UI theme from (the default profile's, when cloning).
+/// Run login + verification steps. Returns the account logged in to, or
+/// `None` when the login did not complete. `state_json` is the profile's
+/// `.claude.json`; `theme_src` is a state file to take the UI theme from
+/// (the default profile's, when cloning).
 fn login_steps(
     steps: &mut ui::Steps,
     c: &Claude,
     state_json: &Path,
     theme_src: Option<&Path>,
-) -> Result<bool> {
+) -> Result<Option<Account>> {
     let step = steps.start("Log in (complete the sign-in in your browser)");
     let ok = c.login()?;
     if ok {
@@ -122,10 +133,12 @@ fn login_steps(
     let step = steps.start("Verify login");
     let status = c.status().unwrap_or_default();
     if status.logged_in {
-        let who = status
-            .email
-            .or(status.method)
-            .unwrap_or_else(|| "logged in".into());
+        let account = logged_in_account(&status, state_json);
+        let who = match (&account.email, &account.organization) {
+            (Some(e), Some(o)) => format!("{e} ({o})"),
+            (Some(e), None) => e.clone(),
+            _ => status.method.unwrap_or_else(|| "logged in".into()),
+        };
         step.ok(&who);
         if let Err(e) = mark_onboarded(state_json, theme_src) {
             ui::warn(&format!(
@@ -133,11 +146,143 @@ fn login_steps(
                 state_json.display()
             ));
         }
-        Ok(true)
+        Ok(Some(account))
     } else {
         step.warn("not logged in");
-        Ok(false)
+        Ok(None)
     }
+}
+
+/// The account `claude auth status` reports, completed from the profile's
+/// state file (`oauthAccount`: account and organization UUIDs) when that
+/// describes the same login.
+fn logged_in_account(status: &claude::AuthStatus, state_json: &Path) -> Account {
+    let reported = Account {
+        email: status.email.clone(),
+        uuid: None,
+        organization: status.org_name.clone(),
+        organization_uuid: status.org_id.clone(),
+        recorded_at: None,
+    };
+    let state = metrics::account_info(state_json)
+        .filter(|s| reported.email.is_none() || s.email.is_none() || reported.same_login(s))
+        .unwrap_or_default();
+    Account {
+        recorded_at: Some(now()),
+        ..reported.or(state)
+    }
+}
+
+/// The other profiles' accounts: what each state file says now, else what
+/// `mcc add` recorded. `alias` is the profile being added (`None` for the
+/// default profile), which is left out.
+fn other_accounts(paths: &Paths, cfg: &Config, alias: Option<&str>) -> Vec<(String, Account)> {
+    let mut out = Vec::new();
+    if alias.is_some()
+        && let Some(a) = metrics::account_info(&paths.default_json)
+    {
+        out.push(("default".to_string(), a));
+    }
+    for (name, p) in &cfg.profiles {
+        if Some(name.as_str()) == alias {
+            continue;
+        }
+        let a = metrics::account_info(&p.dir.join(".claude.json"))
+            .unwrap_or_default()
+            .or_recorded(p.account.clone());
+        if !a.is_anonymous() {
+            out.push((name.clone(), a));
+        }
+    }
+    out
+}
+
+/// Warn when another profile is already logged in to `account`: two
+/// profiles on one account share its usage limits, so it is usually a
+/// mistake. Never fails.
+fn warn_if_duplicate(paths: &Paths, cfg: &Config, alias: Option<&str>, account: &Account) {
+    let names = duplicate_profiles(&other_accounts(paths, cfg, alias), account);
+    if names.is_empty() {
+        return;
+    }
+    let who = account.email.as_deref().unwrap_or("this account");
+    let quoted: Vec<String> = names.iter().map(|n| format!("\"{n}\"")).collect();
+    ui::warn(&format!(
+        "{who} is already logged in to profile{} {} — profiles on the same account share its usage limits",
+        if names.len() == 1 { "" } else { "s" },
+        quoted.join(", ")
+    ));
+    match alias {
+        Some(alias) => ui::hint(&format!(
+            "if this was a mistake, remove it with `mcc delete {alias}` and add it again with another account"
+        )),
+        None => {
+            ui::hint("run `claude auth login` to switch the default profile to another account")
+        }
+    }
+}
+
+/// The names of the profiles in `others` logged in to `account`.
+fn duplicate_profiles(others: &[(String, Account)], account: &Account) -> Vec<String> {
+    others
+        .iter()
+        .filter(|(_, a)| a.same_login(account))
+        .map(|(n, _)| n.clone())
+        .collect()
+}
+
+/// Longest label accepted, in characters.
+const LABEL_MAX: usize = 64;
+
+/// A label is 1–64 characters of printable text.
+fn check_label(label: &str) -> std::result::Result<(), String> {
+    let t = label.trim();
+    if t.is_empty() {
+        return Err("the label is empty".into());
+    }
+    if t.chars().count() > LABEL_MAX {
+        return Err(format!("the label is longer than {LABEL_MAX} characters"));
+    }
+    if t.chars().any(char::is_control) {
+        return Err("the label contains control characters".into());
+    }
+    Ok(())
+}
+
+/// The profile's label: `--label`, else asked (interactive, without `-y`):
+/// none, "personal", the account's organization, or one typed in.
+fn resolve_label(args: &AddArgs, account: Option<&Account>) -> Result<Option<String>> {
+    if let Some(l) = &args.label {
+        return Ok(Some(l.trim().to_string()));
+    }
+    if args.yes || !ui::is_interactive() {
+        return Ok(None);
+    }
+    let org = account.and_then(|a| a.organization.as_deref());
+    let mut items = vec!["No label".to_string(), "personal".to_string()];
+    if let Some(o) = org {
+        items.push(format!("{o} (the account's organization)"));
+    }
+    items.push("Something else…".to_string());
+    let refs: Vec<&str> = items.iter().map(String::as_str).collect();
+    let choice = ui::select(
+        "Label this account (shown in `mcc list`)?",
+        &refs,
+        0,
+        "pass --label",
+    )?;
+    Ok(match (choice, org) {
+        (0, _) => None,
+        (1, _) => Some("personal".into()),
+        (2, Some(o)) => Some(o.to_string()),
+        _ => loop {
+            let l = ui::input("Label", "pass --label")?;
+            match check_label(&l) {
+                Ok(()) => break Some(l),
+                Err(m) => ui::warn(&m),
+            }
+        },
+    })
 }
 
 /// `claude auth login` stores credentials but not `hasCompletedOnboarding`, so
@@ -255,6 +400,8 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
                 last_sync: clone.then(now),
                 share_sessions: false,
                 share_note_acknowledged_at: None,
+                label: None,
+                account: None,
             },
         );
         undo.push(Undo::Registry(alias.clone()));
@@ -268,14 +415,14 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
         return Err(e);
     }
 
-    let logged_in = match (&bin, args.no_login) {
+    let account = match (&bin, args.no_login) {
         (Some(bin), false) => {
             let c = Claude {
                 bin,
                 paths,
                 config_dir: Some(&profile_dir),
             };
-            let ok = match login_steps(
+            let account = match login_steps(
                 &mut steps,
                 &c,
                 &profile_dir.join(".claude.json"),
@@ -294,7 +441,7 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
                     .into());
                 }
             };
-            if !ok {
+            if account.is_none() {
                 let keep = !ui::is_interactive()
                     || ui::confirm(
                         &format!(
@@ -312,14 +459,36 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
                     .into());
                 }
             }
-            ok
+            account
         }
         _ => {
             steps.start("Log in").skip("--no-login");
             steps.start("Verify login").skip("--no-login");
-            false
+            None
         }
     };
+    let logged_in = account.is_some();
+    if let Some(a) = &account {
+        warn_if_duplicate(paths, cfg, Some(&alias), a);
+    }
+
+    // The profile exists by now: a failed prompt or save only loses the label.
+    let label = resolve_label(args, account.as_ref()).unwrap_or_else(|e| {
+        ui::warn(&format!("no label set: {e:#}"));
+        None
+    });
+    if (account.is_some() || label.is_some())
+        && let Some(p) = cfg.profiles.get_mut(&alias)
+    {
+        p.account = account.or(p.account.take());
+        p.label = label.or(p.label.take());
+        if let Err(e) = cfg.save(&paths.config_file) {
+            ui::warn(&format!(
+                "could not record the account and label in {}: {e:#}",
+                paths.display(&paths.config_file)
+            ));
+        }
+    }
 
     summary(paths, cfg, &alias, clone, logged_in);
     Ok(())
@@ -435,6 +604,16 @@ fn summary(paths: &Paths, cfg: &Config, alias: &str, clone: bool, logged_in: boo
         },
     );
     ui::kv("Command", alias);
+    if let Some(a) = &p.account {
+        match (&a.email, &a.organization) {
+            (Some(e), Some(o)) => ui::kv("Account", &format!("{e} ({o})")),
+            (Some(e), None) => ui::kv("Account", e),
+            _ => {}
+        }
+    }
+    if let Some(l) = &p.label {
+        ui::kv("Label", l);
+    }
     ui::kv("Directory", &paths.display(&p.dir));
     ui::kv(
         "Setup",

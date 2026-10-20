@@ -58,6 +58,9 @@ pub struct AuthStatus {
     pub logged_in: bool,
     pub method: Option<String>,
     pub email: Option<String>,
+    /// The account's organization, when this Claude Code reports it.
+    pub org_name: Option<String>,
+    pub org_id: Option<String>,
 }
 
 impl Claude<'_> {
@@ -127,6 +130,8 @@ fn parse_status(raw: Value) -> AuthStatus {
             "/account/email",
             "/account/emailAddress",
         ]),
+        org_name: str_at(&["/orgName", "/organizationName", "/account/organizationName"]),
+        org_id: str_at(&["/orgId", "/organizationUuid", "/account/organizationUuid"]),
     }
 }
 
@@ -144,6 +149,12 @@ mod tests {
         );
         assert!(s.logged_in);
         assert_eq!(s.email.as_deref(), Some("a@b.c"));
+        assert_eq!(s.org_name, None);
+        let s = parse_status(serde_json::json!({
+            "loggedIn": true, "email": "a@b.c", "orgId": "org-1", "orgName": "Acme"
+        }));
+        assert_eq!(s.org_name.as_deref(), Some("Acme"));
+        assert_eq!(s.org_id.as_deref(), Some("org-1"));
         assert!(!parse_status(Value::Null).logged_in);
     }
 }

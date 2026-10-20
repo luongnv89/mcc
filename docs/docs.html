@@ -177,7 +177,7 @@
 <span class="p">$ </span>mcc init --force --shell bash</pre></div>
 
         <h3 id="cmd-add"><code>mcc add</code> <a class="anchor" href="#cmd-add" aria-label="Link to mcc add">#</a></h3>
-        <p class="synopsis">mcc add [ALIAS] [--clone | --fresh] [--no-login] [-y]</p>
+        <p class="synopsis">mcc add [ALIAS] [--clone | --fresh] [--no-login] [--label LABEL] [-y]</p>
         <p>If <code>~/.claude</code> doesn't exist, <code>add</code> creates your default profile. Otherwise it creates a new profile in eight numbered steps:</p>
         <ol>
           <li>Validate the alias (see <a href="#aliases">Alias rules</a>)</li>
@@ -190,6 +190,7 @@
           <li>Verify the login and show the account</li>
         </ol>
         <p>If a step fails, the changes made so far are rolled back. Without an alias or a <code>--clone</code>/<code>--fresh</code> flag, <code>add</code> asks interactively.</p>
+        <p>After the login, <code>add</code> records the account under <code>[profiles.&lt;alias&gt;.account]</code> in <code>~/.mcc/config.toml</code> (email, account UUID, organization name and UUID, as Claude Code reports them) and warns when another profile, the default included, is already logged in to the same account, since profiles on one account share its usage limits. It then asks for an optional label, such as <code>personal</code> or the account's organization, kept as <code>label</code>.</p>
         <div class="table-wrap"><table>
           <thead><tr><th>Option</th><th>Effect</th></tr></thead>
           <tbody>
@@ -197,6 +198,7 @@
             <tr><td><code>--clone</code></td><td>Copy the default profile's setup (never credentials)</td></tr>
             <tr><td><code>--fresh</code></td><td>Start with an empty profile</td></tr>
             <tr><td><code>--no-login</code></td><td>Skip <code>claude auth login</code>; log in later by running the alias</td></tr>
+            <tr><td><code>--label LABEL</code></td><td>Label the account (e.g. <code>personal</code>, or the work organization) instead of being asked; 1–64 characters</td></tr>
             <tr><td><code>-y</code>, <code>--yes</code></td><td>Accept defaults without prompting</td></tr>
           </tbody>
         </table></div>
@@ -206,7 +208,7 @@
 
         <h3 id="cmd-list"><code>mcc list</code> <a class="anchor" href="#cmd-list" aria-label="Link to mcc list">#</a></h3>
         <p class="synopsis">mcc list [--json | -l/--long] [--no-usage]   <span style="color:var(--muted)">alias: mcc ls</span></p>
-        <p>One row per profile, the default included: command, account, 5-hour and weekly usage (with a bar), skills, agents, commands, plugins (enabled/installed), MCP servers, hooks, size, last used and last sync. When projects have a default profile (<code>mcc project set</code>), a second table lists each project with its profile and account, marking the one that applies in the current directory with <code>← here</code>. <code>--long</code> cards show them in a <code>Default for</code> row, and <code>--json</code> has a <code>project_defaults</code> array per profile.</p>
+        <p>One row per profile, the default included: command, account, organization, 5-hour and weekly usage (with a bar), skills, agents, commands, plugins (enabled/installed), MCP servers, hooks, size, last used and last sync. When projects have a default profile (<code>mcc project set</code>), a second table lists each project with its profile and account, marking the one that applies in the current directory with <code>← here</code>. <code>--long</code> cards show them in a <code>Default for</code> row, and <code>--json</code> has a <code>project_defaults</code> array per profile. Cards also show the organization's ID and the profile's label, and <code>--json</code> has <code>organization</code>, <code>organization_uuid</code> and <code>label</code>.</p>
         <div class="table-wrap"><table>
           <thead><tr><th>Option</th><th>Effect</th></tr></thead>
           <tbody>
@@ -216,10 +218,10 @@
           </tbody>
         </table></div>
         <div class="term" style="margin:0 0 1.2em"><pre><span class="p">$ </span><span class="c">mcc list</span>
-NAME       COMMAND  ACCOUNT         5H                     WEEK                   SKILLS  …
-default ★  claude   me@example.com  <span class="g">████</span><span class="d">░░░░░░</span> 42% (2h)    <span class="g">██</span><span class="d">░░░░░░░░</span> 18% (3d)         2  …
-work       work     work@corp.com   <span class="y">█████████</span><span class="d">░</span> <span class="y">85%!</span> (35m)  <span class="r">██████████</span> <span class="r">96%!!</span> (3d)       2  …
-lab        lab      —               <span class="d">unavailable            unavailable</span>                 0  …</pre></div>
+NAME       COMMAND  ACCOUNT         ORG   5H                     WEEK                   SKILLS  …
+default ★  claude   me@example.com  —     <span class="g">████</span><span class="d">░░░░░░</span> 42% (2h)    <span class="g">██</span><span class="d">░░░░░░░░</span> 18% (3d)         2  …
+work       work     work@corp.com   Corp  <span class="y">█████████</span><span class="d">░</span> <span class="y">85%!</span> (35m)  <span class="r">██████████</span> <span class="r">96%!!</span> (3d)       2  …
+lab        lab      —               —     <span class="d">unavailable            unavailable</span>                 0  …</pre></div>
         <div class="code"><pre><span class="p">$ </span>mcc list --long
 <span class="p">$ </span>mcc list --no-usage            <span class="cm"># offline: skip the usage lookup</span>
 <span class="p">$ </span>mcc list --json | jq '.[] | {name, account, skills, plugins_installed}'
