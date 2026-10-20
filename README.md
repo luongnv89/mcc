@@ -103,13 +103,14 @@ mcc delete job              # remove it completely
 | Command | What it does | Key options |
 |---|---|---|
 | `mcc init` | Detect OS, arch, terminal, shell, rc file, the `claude` binary, and whether `~/.local/bin` is on PATH (and offer to add it) | `--force`, `--shell zsh\|bash\|fish` |
-| `mcc add [ALIAS]` | Create the default profile, or a new profile with its own command; records the account and its organization, warns when another profile already uses that account, and asks for an optional label | `--clone`, `--fresh`, `--no-login`, `--label LABEL`, `-y` |
+| `mcc add [ALIAS]` | Create the default profile, or a new profile with its own command; records the account and its organization, warns when another profile already uses that account, and asks for an optional label | `--clone`, `--fresh`, `--link ITEMS`, `--no-login`, `--label LABEL`, `-y` |
 | `mcc list` (`ls`) | Show every profile with metrics and 5-hour/weekly usage | `--json`, `--json-v2`, `-l/--long`, `--no-usage` |
 | `mcc usage [PROFILE]` | Show each profile's 5-hour and weekly usage in a table (`default` or `claude` for the default profile) | `--json`, `--json-v2`, `--show-email`, `--hide-email` |
 | `mcc sync [ALIAS]` | Copy the default's setup into a profile (default → profile only), keeping edits made in the profile | `--all`, `--dry-run`, `--prune`, `--force`, `--only ITEMS`, `-y` |
 | `mcc diff ALIAS` | Show how a profile differs from the default's setup, path by path, as `sync` classifies it | `--only ITEMS` |
 | `mcc rename ALIAS NEW` (`mv`) | Rename a profile and its command; directory and login are kept | |
 | `mcc share ALIAS` | Share the profile's sessions with the other sharing profiles of its group (off by default; see [Sharing sessions](#sharing-sessions-between-profiles)) | `--off`, `--group NAME`, `--allow-cross-org` |
+| `mcc link ALIAS [ITEMS]` | Link read-mostly items (`skills`, `agents`, `commands`, `output-styles`, `claude-md`) to the default's copy instead of copying them; edits write through to the default (off by default; see [Linking read-mostly items](#linking-read-mostly-items-mcc-link)) | `--off` |
 | `mcc project set PROFILE` | Make PROFILE the one `mcc run` starts in this project (see [Per-project profiles](#per-project-profiles-mcc-project-and-mcc-run)); also `unset` and `list` | `--path DIR`, `--allow PROFILE`, `list --json`, `list --json-v2` |
 | `mcc run [-- CLAUDE_ARGS]` | Start Claude Code with the current project's profile; at its limit, ask whether to wait (the default) or start it anyway | `--profile NAME`, `--dry-run` |
 | `mcc env [PROFILE]` | Print the shell line that sets `CLAUDE_CONFIG_DIR` for the project's profile (or PROFILE), for `eval` or direnv (see [Using a project's profile everywhere](#using-a-projects-profile-everywhere-mcc-env-and-mcc-exec)) | `--shell zsh\|bash\|fish` |
@@ -239,9 +240,9 @@ mcc config edit                                   # open the file in $VISUAL or 
 mcc config path                                   # print the file's path
 ```
 
-`set` accepts `sync.exclude`, `sync.extra`, `usage.show_email`, `usage.live` and `profiles.ALIAS.label`, and checks each value as the command that uses it would: an unknown sync item, a path outside the config dir, a value that isn't `true` or `false`, or an invalid label is refused with exit 2 or 3, and the file is left unchanged. Keys that other commands manage point you to them (`mcc share`, `mcc project`, `mcc init --force`). `get` reads any key, dotted as in TOML (`projects."/Users/me/app".profile`); a key that isn't set exits 1. Comments and formatting are kept.
+`set` accepts `sync.exclude`, `sync.extra`, `usage.show_email`, `usage.live` and `profiles.ALIAS.label`, and checks each value as the command that uses it would: an unknown sync item, a path outside the config dir, a value that isn't `true` or `false`, or an invalid label is refused with exit 2 or 3, and the file is left unchanged. Keys that other commands manage point you to them (`mcc share`, `mcc link`, `mcc project`, `mcc init --force`). `get` reads any key, dotted as in TOML (`projects."/Users/me/app".profile`); a key that isn't set exits 1. Comments and formatting are kept.
 
-`edit` opens a copy of the file and saves it only when it is valid mcc config (it parses, and sync items, labels and `share_group` names pass the same checks); otherwise it offers to edit again, or leaves the file unchanged. mcc holds no lock while the editor is open, so other mcc commands, launches included, keep working; if one of them changes the file meanwhile, nothing is saved and your edited copy is kept next to it. `edit` also works on a file that no longer parses, so it can fix one. `get` and `path` never take the lock; `set` holds it like any other write.
+`edit` opens a copy of the file and saves it only when it is valid mcc config (it parses, and sync items, `link` items, labels and `share_group` names pass the same checks); otherwise it offers to edit again, or leaves the file unchanged. mcc holds no lock while the editor is open, so other mcc commands, launches included, keep working; if one of them changes the file meanwhile, nothing is saved and your edited copy is kept next to it. `edit` also works on a file that no longer parses, so it can fix one. `get` and `path` never take the lock; `set` holds it like any other write.
 
 ### Customizing sync
 
@@ -251,6 +252,32 @@ In `~/.mcc/config.toml`:
 [sync]
 exclude = ["plugins"]          # built-in items to skip
 extra = ["my-tool/config.yml"] # additional paths (relative to the config dir) to copy
+```
+
+### Linking read-mostly items: `mcc link`
+
+Clone and sync give every profile its own copy of the default's `skills/`, `agents/`, `commands/`, `output-styles/` and `CLAUDE.md`, so the copies drift apart until the next sync. **Link mode** (opt-in per item, off by default) replaces a profile's copy with a symlink to the default's, so every linking profile sees the same files with nothing duplicated:
+
+```sh
+mcc link work skills,agents            # link work's skills/ and agents/ to ~/.claude's
+mcc link work                          # show which items work links
+mcc link work skills --off             # give work its own copy of skills/ again
+mcc add lab --clone --link skills      # clone, linking skills/ instead of copying it
+```
+
+> **Write-through:** a linked item *is* the default's. Editing it in the profile, by hand or by Claude Code (installing a skill, say), changes the default's real files, and so every other profile that links it. mcc prints this warning every time link mode is turned on.
+
+- Turning link mode on backs up the profile's own copy first (it may hold local edits) to `<profile>/.mcc-backup/<timestamp>/`, and drops its entries from the sync record (`.mcc-sync.json`).
+- `mcc sync` and `mcc diff` leave linked items alone: they are never compared, copied, pruned (not even with `--prune`) or recorded, so they never show up as behind, local edits or conflicts in `mcc list`. A sync warns when a linked item is no longer the link.
+- `--off` removes only the symlink, never the default's files it points at, copies the default's item in its place, and records it so the next sync is three-way again.
+- Each run is all or nothing: if a step fails, what was already changed is undone.
+- `settings` can't be linked (each profile's `settings.json` is merged with its [overlay](#per-profile-settings-overlays)), and neither can `keybindings`, `statusline`, `hooks`, `plugins` or `mcp`.
+
+The setting is kept per profile in `~/.mcc/config.toml`; set it with `mcc link`, which also creates the symlinks (editing the key by hand does nothing on its own):
+
+```toml
+[profiles.work]
+link = ["skills", "agents"]   # default: none
 ```
 
 ### Per-profile settings overlays

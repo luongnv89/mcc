@@ -16,6 +16,7 @@ const RESERVED_NAMES: &[&str] = &[
     "help",
     "all",
     "share",
+    "link",
     "refresh-launchers",
     "project",
     "run",
@@ -384,6 +385,7 @@ mod tests {
                 label: None,
                 account: None,
                 settings: None,
+                link: Vec::new(),
             },
         );
         assert!(!conflicts("claude", &paths, &cfg, None).is_empty());

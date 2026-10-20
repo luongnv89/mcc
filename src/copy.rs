@@ -194,10 +194,41 @@ pub fn group_names() -> Vec<&'static str> {
     v
 }
 
+/// The sync items that can be linked instead of copied (`mcc link`): the
+/// read-mostly ones, which are used as they are and never rewritten.
+/// Settings are merged (paths rewritten, overlays applied), so they are not.
+pub const LINKABLE: &[&str] = &["claude-md", "agents", "skills", "commands", "output-styles"];
+
+/// The path of a built-in sync group that is a single path (every
+/// [`LINKABLE`] group is), relative to the config dir.
+pub fn group_path(group: &str) -> Option<PathBuf> {
+    let mut paths = BUILTIN.iter().filter(|(g, _, _)| *g == group);
+    match (paths.next(), paths.next()) {
+        (Some((_, p, _)), None) => Some(PathBuf::from(p)),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Spec {
     pub items: Vec<Item>,
     pub mcp: bool,
+}
+
+impl Spec {
+    /// This spec without the items of `groups` (a profile's linked items,
+    /// which sync never compares, writes or prunes).
+    pub fn without(&self, groups: &[String]) -> Spec {
+        Spec {
+            items: self
+                .items
+                .iter()
+                .filter(|i| !groups.contains(&i.group))
+                .cloned()
+                .collect(),
+            mcp: self.mcp,
+        }
+    }
 }
 
 /// Resolve which items to copy from `--only` and the config's include/exclude.
@@ -2165,6 +2196,7 @@ mod tests {
                 label: None,
                 account: None,
                 settings: Some(toml::from_str("model = \"sonnet\"").unwrap()),
+                link: Vec::new(),
             },
         );
         let rw = Rewriter::for_profile(&paths, &cfg, &dst).unwrap();
