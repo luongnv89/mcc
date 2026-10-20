@@ -188,6 +188,17 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &DeleteArgs) -> Result<()> {
     } else {
         step.skip("not present");
     }
+    // mcc's own per-profile state (`mcc statusline`); nothing to report.
+    let state = paths.profile_state_dir(alias);
+    if state.exists()
+        && let Err(e) = fsutil::remove_any(&state)
+    {
+        warnings += 1;
+        ui::warn(&format!(
+            "could not remove {}: {e:#}",
+            paths.display(&state)
+        ));
+    }
 
     let step = steps.start("Update registry");
     let registered = cfg.profiles.remove(alias).is_some();

@@ -111,6 +111,7 @@ mcc delete job              # remove it completely
 | `mcc share ALIAS` | Share the profile's sessions with your other sharing profiles (off by default; see [Sharing sessions](#sharing-sessions-between-profiles)) | `--off` |
 | `mcc project set PROFILE` | Make PROFILE the one `mcc run` starts in this project (see [Per-project profiles](#per-project-profiles-mcc-project-and-mcc-run)); also `unset` and `list` | `--path DIR`, `--allow PROFILE`, `list --json` |
 | `mcc run [-- CLAUDE_ARGS]` | Start Claude Code with the current project's profile; at its limit, ask whether to wait (the default) or start it anyway | `--profile NAME`, `--dry-run` |
+| `mcc statusline install` | Opt-in: show the active profile in Claude Code's status line and cache each profile's rate limits (see [Status line](#status-line-mcc-statusline)); it edits the default profile's `settings.json`; also `uninstall` | `--prefix`, `-y/--yes` |
 | `mcc refresh-launchers [ALIAS...]` | Rewrite launchers and shell aliases from the current templates (all profiles when none are given); needed once so `<alias> --mcc-share` works for profiles made by an older mcc | |
 | `mcc delete ALIAS` (`rm`) | Log out and remove a profile | `-y/--yes`, `--keep-auth` |
 | `mcc completions SHELL` | Print a completion script | `bash`, `zsh`, `fish`, `elvish`, `powershell` |
@@ -170,6 +171,7 @@ mcc completions fish > ~/.config/fish/completions/mcc.fish
 | Shell alias | a managed block in your rc file, between `# >>> mcc:<alias> >>>` and `# <<< mcc:<alias> <<<`, that runs the launcher |
 | Shared sessions | `~/.mcc/shared/projects`, only for profiles that opted in with `mcc share` (their `projects/` links there) |
 | Project defaults | `[projects."<dir>"]` tables in `~/.mcc/config.toml`, written by `mcc project set` |
+| Statusline state | `~/.mcc/state/<profile>/usage.json` (rate limits cached by `mcc statusline`) and `statusline.json` (the `statusLine` it replaced), only after `mcc statusline install` |
 | mcc state | `~/.mcc/config.toml` (environment + registry; safe to edit by hand, mcc keeps your comments and formatting), `~/.mcc/.lock` (held while a command writes the config), `~/.mcc/logs/mcc.log`, `~/.mcc/backups/` (rc file backups, session-merge conflicts) |
 
 ### What clone and sync copy
@@ -354,11 +356,38 @@ In `mcc list --json`, every profile has a `usage` object. `mcc usage --json` pri
 | `parse_error` | the response wasn't the expected JSON |
 | `disabled` | not fetched (`--no-usage` / `MCC_NO_USAGE`) |
 
+### Status line: `mcc statusline`
+
+Opt-in. Claude Code passes the session's 5-hour and weekly rate limits (`rate_limits.five_hour` and `rate_limits.seven_day`, each with `used_percentage` and `resets_at`) to its [status-line command](https://code.claude.com/docs/en/statusline) on stdin. `mcc statusline` is a small shim for that slot: it records them per profile, without reading any login, and can show which profile you're in.
+
+```sh
+mcc statusline install            # wrap your statusLine in ~/.claude/settings.json
+mcc statusline install --prefix   # …and start it with the profile's name, e.g. [work]
+mcc statusline uninstall          # put the previous statusLine back
+```
+
+- **Install writes to the default profile.** Apart from `mcc add` creating a missing `~/.claude`, it is the only mcc command that changes your default profile. It copies `~/.claude/settings.json` to `~/.mcc/backups/settings.json.default.<timestamp>` first, records your current `statusLine` in `~/.mcc/state/default/statusline.json`, and sets `statusLine` to `mcc statusline` (keeping its other fields, such as `padding`). Running it again changes nothing: the shim is never wrapped twice. `--prefix` on an installed shim only switches the prefix.
+- **Profiles.** Profiles get the shim with their settings on the next `mcc sync` (e.g. `mcc sync --all --only settings`). When `[sync] exclude` has `"settings"`, profiles never receive the default's settings, so `install` offers to add the shim to each profile's own `settings.json` (with a backup, and that profile's own `statusLine` recorded in `~/.mcc/state/<alias>/statusline.json`); `--yes` adds it without asking, and without a terminal it is skipped with a hint.
+- **On every refresh** Claude Code runs the shim with the session's JSON on stdin. The shim works out the profile from `CLAUDE_CONFIG_DIR`, which Claude Code passes on to the status-line command (unset means the default profile), saves the rate limits to `~/.mcc/state/<profile>/usage.json`, runs your previous `statusLine` command with the same stdin and `CLAUDE_CONFIG_DIR`, and prints its output (after `[<profile>] ` with `--prefix`). A profile that got the shim through sync runs the default's previous command, with paths rewritten as sync rewrites them. The shim never takes mcc's lock, never writes `~/.mcc/config.toml` or the log, and a failure to cache never blanks the status line.
+- **Uninstall** restores the recorded `statusLine` (or removes it, if there was none) in the default profile and in every profile where the shim is set, backing each file up first. A `statusLine` you changed by hand since is left alone, with a warning.
+- **Limits of the data.** Claude Code sends rate limits only to Pro and Max subscribers, and only after a session's first response. A profile you don't use keeps its last values, so check `updated_at`:
+
+```json
+{
+  "profile": "work",
+  "updated_at": "2026-10-20T10:00:00Z",
+  "five_hour": { "used_percentage": 23.5, "resets_at": 1792500000 },
+  "seven_day": { "used_percentage": 41.2, "resets_at": 1792900000 }
+}
+```
+
+`mcc rename` moves a profile's `~/.mcc/state/<alias>/` with it and `mcc delete` removes it.
+
 ### Alias validation
 
 An alias must be 1–32 characters: lowercase letters, digits, `-` or `_`, starting with a letter. It is rejected if any of these already uses the name:
 
-- mcc's reserved names: `claude`, `mcc`, `default`, `help`, `all`, `path`, `share`, `refresh-launchers`, `project`, `run`
+- mcc's reserved names: `claude`, `mcc`, `default`, `help`, `all`, `path`, `share`, `refresh-launchers`, `project`, `run`, `statusline`
 - shell keywords and builtins
 - existing mcc profiles, and the old name of a renamed profile (its directory still uses that name; the error names the profile)
 - executables on `$PATH`

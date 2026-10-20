@@ -64,6 +64,7 @@
               <li><a href="#cmd-share">share</a></li>
               <li><a href="#cmd-project">project</a></li>
               <li><a href="#cmd-run">run</a></li>
+              <li><a href="#cmd-statusline">statusline</a></li>
               <li><a href="#cmd-refresh-launchers">refresh-launchers</a></li>
               <li><a href="#cmd-delete">delete</a></li>
               <li><a href="#cmd-completions">completions</a></li>
@@ -154,6 +155,7 @@
             <tr><td><a href="#cmd-share"><code>mcc share ALIAS</code></a></td><td>Share the profile's sessions with your other sharing profiles (off by default)</td><td><code>--off</code></td></tr>
             <tr><td><a href="#cmd-project"><code>mcc project set PROFILE</code></a></td><td>Make PROFILE the one <code>mcc run</code> starts in this project; also <code>unset</code> and <code>list</code></td><td><code>--path</code>, <code>--allow</code>, <code>list --json</code></td></tr>
             <tr><td><a href="#cmd-run"><code>mcc run [-- CLAUDE_ARGS]</code></a></td><td>Start Claude Code with the current project's profile; at its limit, ask whether to wait (the default) or start it anyway</td><td><code>--profile</code>, <code>--dry-run</code></td></tr>
+            <tr><td><a href="#cmd-statusline"><code>mcc statusline install</code></a></td><td>Opt-in: show the active profile in Claude Code's status line and cache each profile's rate limits; also <code>uninstall</code></td><td><code>--prefix</code>, <code>-y</code></td></tr>
             <tr><td><a href="#cmd-refresh-launchers"><code>mcc refresh-launchers [ALIAS...]</code></a></td><td>Rewrite launchers and shell aliases from the current templates</td><td></td></tr>
             <tr><td><a href="#cmd-delete"><code>mcc delete ALIAS</code></a> (<code>rm</code>)</td><td>Log out and remove a profile</td><td><code>-y</code>, <code>--keep-auth</code></td></tr>
             <tr><td><a href="#cmd-completions"><code>mcc completions SHELL</code></a></td><td>Print a shell completion script</td><td><code>bash</code>, <code>zsh</code>, <code>fish</code>, <code>elvish</code>, <code>powershell</code></td></tr>
@@ -294,6 +296,13 @@ lab        lab      —               <span class="d">unavailable            una
 <span class="p">$ </span>mcc run -- --resume
 <span class="p">$ </span>mcc run --profile lab            <span class="cm"># this time only; the project's default stays</span>
 <span class="p">$ </span>mcc run --dry-run</pre></div>
+
+        <h3 id="cmd-statusline"><code>mcc statusline</code> <a class="anchor" href="#cmd-statusline" aria-label="Link to mcc statusline">#</a></h3>
+        <p class="synopsis">mcc statusline install [--prefix] [--yes] · mcc statusline uninstall</p>
+        <p>Opt-in. Claude Code passes the session's 5-hour and weekly rate limits (<code>rate_limits.five_hour</code> and <code>rate_limits.seven_day</code>, with <code>used_percentage</code> and <code>resets_at</code>) to its <a href="https://code.claude.com/docs/en/statusline">status-line command</a> on stdin. <code>install</code> is the only mcc command that changes an existing default profile: it backs up <code>~/.claude/settings.json</code> to <code>~/.mcc/backups/</code>, records the current <code>statusLine</code> in <code>~/.mcc/state/default/statusline.json</code> and sets <code>mcc statusline</code> in its place, never twice. <code>--prefix</code> starts the status line with the active profile's name, e.g. <code>[work]</code>. Profiles get it with their next <code>mcc sync</code>; when <code>[sync] exclude</code> has <code>"settings"</code>, <code>install</code> offers to add it to each profile directly (<code>--yes</code> accepts).</p>
+        <p>On every refresh the shim works out the profile from <code>CLAUDE_CONFIG_DIR</code> (unset means the default profile), saves the rate limits to <code>~/.mcc/state/&lt;profile&gt;/usage.json</code>, runs your previous <code>statusLine</code> command with the same stdin and prints its output. It never reads a login, never takes mcc's lock and never writes <code>~/.mcc/config.toml</code>. The data exists only for Pro and Max subscribers, after a session's first response, and an idle profile's file goes stale (see <code>updated_at</code>). <code>uninstall</code> restores the previous <code>statusLine</code> wherever the shim is set, with a backup, and leaves one you changed by hand alone.</p>
+        <div class="code"><pre><span class="p">$ </span>mcc statusline install --prefix
+<span class="p">$ </span>mcc statusline uninstall</pre></div>
 
         <h3 id="cmd-refresh-launchers"><code>mcc refresh-launchers</code> <a class="anchor" href="#cmd-refresh-launchers" aria-label="Link to mcc refresh-launchers">#</a></h3>
         <p class="synopsis">mcc refresh-launchers [ALIAS...]</p>
@@ -471,7 +480,7 @@ work       <span class="y">█████████</span><span class="d">░
         <h2>Alias rules <a class="anchor" href="#aliases" aria-label="Link to Alias rules">#</a></h2>
         <p>An alias must be 1–32 characters: lowercase letters, digits, <code>-</code> or <code>_</code>, starting with a letter. It is rejected if any of these already uses the name:</p>
         <ul>
-          <li>mcc's reserved names: <code>claude</code>, <code>mcc</code>, <code>default</code>, <code>help</code>, <code>all</code>, <code>path</code>, <code>share</code>, <code>refresh-launchers</code>, <code>project</code>, <code>run</code></li>
+          <li>mcc's reserved names: <code>claude</code>, <code>mcc</code>, <code>default</code>, <code>help</code>, <code>all</code>, <code>path</code>, <code>share</code>, <code>refresh-launchers</code>, <code>project</code>, <code>run</code>, <code>statusline</code></li>
           <li>shell keywords and builtins</li>
           <li>existing mcc profiles</li>
           <li>executables on <code>$PATH</code></li>
@@ -495,6 +504,7 @@ work       <span class="y">█████████</span><span class="d">░
             <tr><td>Shared sessions</td><td><code>~/.mcc/shared/projects</code>, only for profiles that opted in with <code>mcc share</code></td></tr>
             <tr><td>Project defaults</td><td><code>[projects."&lt;dir&gt;"]</code> tables in <code>~/.mcc/config.toml</code>, written by <code>mcc project set</code></td></tr>
             <tr><td>rc file backups</td><td><code>~/.mcc/backups/</code></td></tr>
+            <tr><td>Statusline state</td><td><code>~/.mcc/state/&lt;profile&gt;/usage.json</code> and <code>statusline.json</code>, only after <code>mcc statusline install</code>; settings backups in <code>~/.mcc/backups/</code></td></tr>
             <tr><td>Sync backups</td><td><code>&lt;profile&gt;/.mcc-backup/&lt;timestamp&gt;/</code></td></tr>
           </tbody>
         </table></div>

@@ -74,7 +74,7 @@ pub fn wrapper_script(
 }
 
 /// Single-quote a string for POSIX sh.
-fn sh_quote(s: &str) -> String {
+pub(crate) fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 

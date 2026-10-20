@@ -8,6 +8,7 @@ pub mod refresh_launchers;
 pub mod rename;
 pub mod run;
 pub mod share;
+pub mod statusline;
 pub mod sync;
 pub mod usage;
 

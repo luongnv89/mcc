@@ -57,6 +57,7 @@ Examples:
   mcc share work                 Share `work`'s sessions with your other sharing profiles
   mcc project set work           Start `work` in this project (git repo) with `mcc run`
   mcc run                        Start Claude Code with this project's profile
+  mcc statusline install         Show the profile in Claude Code's status line, cache rate limits
   mcc refresh-launchers          Update older launchers so `<alias> --mcc-share` works
   mcc delete personal            Log out and remove the profile completely
 
@@ -206,6 +207,12 @@ pub enum Command {
         "share sessions (`mcc help share`)."
     ))]
     Run(RunArgs),
+
+    /// Show the active profile in Claude Code's status line and cache its rate limits (opt-in)
+    #[command(
+        after_help = "Examples:\n  mcc statusline install         Wrap your statusLine in ~/.claude/settings.json\n  mcc statusline install --prefix\n                                 …and start the status line with the profile's name, e.g. [work]\n  mcc statusline uninstall       Put the previous statusLine back everywhere mcc installed it\n\n`install` is the only mcc command that changes an existing default profile\n(~/.claude/settings.json). It backs the file up to ~/.mcc/backups/ first,\nkeeps your statusLine command and sets `mcc statusline` in its place; running\nit again never wraps the shim twice. Profiles receive it with their next\n`mcc sync`; when [sync] exclude has \"settings\", install offers to add it to\neach profile directly (`--yes` accepts).\n\nClaude Code then runs `mcc statusline` on every status-line refresh, with the\nsession's JSON on stdin. The shim works out the profile from CLAUDE_CONFIG_DIR\n(unset means the default profile), saves the 5-hour and weekly rate limits in\nthat JSON to ~/.mcc/state/<profile>/usage.json, runs your previous statusLine\ncommand with the same stdin and prints its output. It never touches\ncredentials and never writes ~/.mcc/config.toml. Claude Code sends rate limits\nonly to Pro and Max subscribers, after the session's first response, so an idle\nprofile's file goes stale."
+    )]
+    Statusline(StatuslineArgs),
 
     /// Rewrite profiles' launchers and shell aliases from the current templates
     #[command(
@@ -378,6 +385,34 @@ pub struct RunArgs {
         value_name = "CLAUDE_ARGS"
     )]
     pub args: Vec<OsString>,
+}
+
+#[derive(Debug, Args)]
+#[command(args_conflicts_with_subcommands = true)]
+pub struct StatuslineArgs {
+    #[command(subcommand)]
+    pub action: Option<StatuslineAction>,
+
+    /// Start the output with the active profile's name, e.g. `[work]` (set by `install --prefix`)
+    #[arg(long)]
+    pub prefix: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum StatuslineAction {
+    /// Set the shim as the default profile's statusLine, keeping the previous one
+    Install {
+        /// Start the status line with the active profile's name, e.g. `[work]`
+        #[arg(long)]
+        prefix: bool,
+
+        /// Also add it to profiles that don't sync settings, without asking
+        #[arg(short, long)]
+        yes: bool,
+    },
+
+    /// Restore the previous statusLine wherever the shim is set
+    Uninstall,
 }
 
 #[derive(Debug, Args)]

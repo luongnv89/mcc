@@ -23,6 +23,9 @@ pub struct Paths {
     pub backups_dir: PathBuf,
     /// Data shared between profiles that opted in (`mcc share`).
     pub shared_dir: PathBuf,
+    /// Per-profile state written by mcc itself (`state/<profile>/`), such as
+    /// the rate limits the statusline shim caches.
+    pub state_dir: PathBuf,
     pub local_bin: PathBuf,
 }
 
@@ -50,6 +53,7 @@ impl Paths {
             log_file: mcc_dir.join("logs").join("mcc.log"),
             backups_dir: mcc_dir.join("backups"),
             shared_dir: mcc_dir.join("shared"),
+            state_dir: mcc_dir.join("state"),
             local_bin: home.join(".local").join("bin"),
             home,
         }
@@ -62,6 +66,11 @@ impl Paths {
     /// The shared session store: every sharing profile's `projects/` links here.
     pub fn shared_projects_dir(&self) -> PathBuf {
         self.shared_dir.join("projects")
+    }
+
+    /// `~/.mcc/state/<profile>`; the default profile is `default`.
+    pub fn profile_state_dir(&self, profile: &str) -> PathBuf {
+        self.state_dir.join(profile)
     }
 
     pub fn wrapper(&self, alias: &str) -> PathBuf {
@@ -103,6 +112,10 @@ mod tests {
         assert_eq!(p.config_file, PathBuf::from("/h/.mcc/config.toml"));
         assert_eq!(p.log_file, PathBuf::from("/h/.mcc/logs/mcc.log"));
         assert_eq!(p.shared_dir, PathBuf::from("/h/.mcc/shared"));
+        assert_eq!(
+            p.profile_state_dir("work"),
+            PathBuf::from("/h/.mcc/state/work")
+        );
         assert_eq!(
             p.shared_projects_dir(),
             PathBuf::from("/h/.mcc/shared/projects")

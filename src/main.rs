@@ -78,6 +78,13 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         }
         return commands::completions::run(args);
     }
+    if let Command::Statusline(args) = &cli.command
+        && args.action.is_none()
+    {
+        // The shim runs on every status-line refresh: no logging, no config
+        // lock, no first-run setup, and it never writes config.toml.
+        return commands::statusline::render(&paths::Paths::from_env()?, args.prefix);
+    }
     let paths = paths::Paths::from_env()?;
     log::init(paths.log_file.clone());
     log_invocation();
@@ -122,6 +129,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Project(args) => commands::project::run(&paths, &mut cfg, &args),
         Command::Run(args) => commands::run::run(&paths, &cfg, &args),
         Command::RefreshLaunchers(args) => commands::refresh_launchers::run(&paths, &cfg, &args),
+        Command::Statusline(args) => commands::statusline::run(&paths, &cfg, &args),
         Command::Completions(_) => unreachable!("handled above"),
     }
 }
@@ -136,6 +144,9 @@ fn writes_config(command: &Command) -> bool {
         | Command::Rename(_)
         | Command::Share(_) => true,
         Command::Project(args) => !matches!(args.action, cli::ProjectAction::List { .. }),
+        // install/uninstall edit settings.json files and mcc's state, one
+        // run at a time; the bare shim is routed before the lock is taken.
+        Command::Statusline(args) => args.action.is_some(),
         Command::List(_)
         | Command::Usage(_)
         | Command::Run(_)
