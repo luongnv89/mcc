@@ -66,6 +66,9 @@ pub struct AuthStatus {
     /// The account's organization, when this Claude Code reports it.
     pub org_name: Option<String>,
     pub org_id: Option<String>,
+    /// The config directory Claude Code resolved (`configDirectory`, reported
+    /// by Claude Code 2.1.268 and later).
+    pub config_directory: Option<String>,
 }
 
 impl Claude<'_> {
@@ -107,14 +110,41 @@ impl Claude<'_> {
     }
 
     pub fn status(&self) -> Result<AuthStatus> {
+        Ok(self.try_status()?.unwrap_or_default())
+    }
+
+    /// [`Self::status`], or `None` when claude printed no JSON object (it
+    /// failed to start, crashed, or is too old for `--json`).
+    pub fn try_status(&self) -> Result<Option<AuthStatus>> {
         let out = self
             .command()
             .args(["auth", "status", "--json"])
             .stdin(Stdio::null())
             .output()
             .with_context(|| format!("running {} auth status", self.bin.display()))?;
-        let raw: Value = serde_json::from_slice(&out.stdout).unwrap_or(Value::Null);
-        Ok(parse_status(raw))
+        Ok(status_from(&out.stdout))
+    }
+}
+
+/// `claude auth status --json` run through a profile's launcher, so the
+/// result reflects the `CLAUDE_CONFIG_DIR` the launcher exports (none is
+/// inherited from mcc). `None` when it printed no JSON object.
+pub fn launcher_status(launcher: &Path, paths: &Paths) -> Result<Option<AuthStatus>> {
+    let out = Command::new(launcher)
+        .args(["auth", "status", "--json"])
+        .env("HOME", &paths.home)
+        .env_remove("CLAUDE_CONFIG_DIR")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .with_context(|| format!("running {} auth status", launcher.display()))?;
+    Ok(status_from(&out.stdout))
+}
+
+fn status_from(stdout: &[u8]) -> Option<AuthStatus> {
+    match serde_json::from_slice::<Value>(stdout) {
+        Ok(raw @ Value::Object(_)) => Some(parse_status(raw)),
+        _ => None,
     }
 }
 
@@ -137,6 +167,7 @@ fn parse_status(raw: Value) -> AuthStatus {
         ]),
         org_name: str_at(&["/orgName", "/organizationName", "/account/organizationName"]),
         org_id: str_at(&["/orgId", "/organizationUuid", "/account/organizationUuid"]),
+        config_directory: str_at(&["/configDirectory"]),
     }
 }
 
@@ -161,5 +192,18 @@ mod tests {
         assert_eq!(s.org_name.as_deref(), Some("Acme"));
         assert_eq!(s.org_id.as_deref(), Some("org-1"));
         assert!(!parse_status(Value::Null).logged_in);
+        assert_eq!(s.config_directory, None);
+        let s = parse_status(serde_json::json!({
+            "loggedIn": true, "configDirectory": "/h/.mcc/profiles/work"
+        }));
+        assert_eq!(s.config_directory.as_deref(), Some("/h/.mcc/profiles/work"));
+    }
+
+    #[test]
+    fn status_needs_a_json_object() {
+        assert!(status_from(b"").is_none());
+        assert!(status_from(b"claude not found on PATH").is_none());
+        assert!(status_from(b"[]").is_none());
+        assert!(status_from(br#"{"loggedIn": true}"#).is_some_and(|s| s.logged_in));
     }
 }

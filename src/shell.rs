@@ -190,6 +190,23 @@ pub fn path_block(shell: Shell) -> String {
     }
 }
 
+/// Block `id` as it appears in an rc file: its markers around `body`.
+pub fn block_text(id: &str, body: &str) -> String {
+    format!("{}\n{}\n{}", begin(id), body.trim_end(), end(id))
+}
+
+/// Whether `line` opens an mcc block (any id).
+pub fn is_block_begin(line: &str) -> bool {
+    let l = line.trim();
+    l.starts_with("# >>> mcc:") && l.ends_with(" >>>")
+}
+
+/// Whether `line` closes an mcc block (any id).
+pub fn is_block_end(line: &str) -> bool {
+    let l = line.trim();
+    l.starts_with("# <<< mcc:") && l.ends_with(" <<<")
+}
+
 pub fn has_block(rc: &Path, id: &str) -> bool {
     std::fs::read_to_string(rc)
         .map(|s| s.contains(&begin(id)))

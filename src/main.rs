@@ -89,6 +89,14 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         return commands::statusline::render(&paths::Paths::from_env()?, args.prefix);
     }
     let paths = paths::Paths::from_env()?;
+    if let Command::Doctor(args) = &cli.command {
+        // Read-only, even on first use: no lock, no first-run setup, and
+        // logging only into an existing ~/.mcc/logs.
+        log::init_if_present(paths.log_file.clone());
+        log_invocation();
+        let cfg = config::Config::load(&paths.config_file)?;
+        return commands::doctor::run(&paths, &cfg, args);
+    }
     log::init(paths.log_file.clone());
     log_invocation();
 
@@ -174,7 +182,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Exec(args) => commands::exec::run(&paths, &cfg, &args),
         Command::RefreshLaunchers(args) => commands::refresh_launchers::run(&paths, &cfg, &args),
         Command::Statusline(args) => commands::statusline::run(&paths, &cfg, &args),
-        Command::Completions(_) | Command::Config(_) => unreachable!("handled above"),
+        Command::Completions(_) | Command::Config(_) | Command::Doctor(_) => {
+            unreachable!("handled above")
+        }
     }
 }
 
@@ -221,6 +231,8 @@ fn writes_config(command: &Command) -> bool {
         | Command::Run(_)
         | Command::RefreshLaunchers(_)
         | Command::Completions(_) => false,
+        // Read-only, and never locked: it reports, it doesn't fix.
+        Command::Doctor(_) => false,
         // Never locked: `mcc exec` runs commands that may run mcc commands
         // which take the lock themselves.
         Command::Env(_) | Command::Exec(_) => false,

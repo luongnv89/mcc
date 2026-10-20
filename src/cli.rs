@@ -62,6 +62,7 @@ Examples:
   mcc exec --all -- claude plugin marketplace update
   mcc statusline install         Show the profile in Claude Code's status line, cache rate limits
   mcc refresh-launchers          Update older launchers so `<alias> --mcc-share` works
+  mcc doctor                     Check every profile's setup and print a fix for each problem
   mcc delete personal            Log out and remove the profile completely
 
 Run `mcc help <command>` for details on a command.
@@ -330,6 +331,30 @@ pub enum Command {
     )]
     RefreshLaunchers(RefreshLaunchersArgs),
 
+    /// Check every profile's setup and print a fix for each problem (read-only)
+    #[command(after_help = concat!(
+        "Examples:\n",
+        "  mcc doctor                    Every profile, the default included\n",
+        "  mcc doctor work               Only `work` (and the checks every profile shares)\n",
+        "  mcc doctor --json | jq '.[] | select(.status == \"problem\")'\n",
+        "  mcc doctor --json-v2 | jq '.checks[].fix'   Versioned: {\"schema\": 2, \"checks\": [...]}\n",
+        "\n",
+        "Checks: mcc is set up and claude is found; ~/.local/bin is on PATH;\n",
+        "no rc file exports CLAUDE_CONFIG_DIR globally (plain `claude` would then\n",
+        "stop starting the default profile). Per profile: its directory exists\n",
+        "with mode 0700; its launcher is present and current; its alias block is\n",
+        "in the rc file; `claude auth status` reports the profile's directory\n",
+        "(configDirectory, Claude Code 2.1.268+) and a login; its session\n",
+        "sharing link and leftovers of an interrupted `mcc share`; drift against\n",
+        "the default; and the `mcc statusline` shim when it is installed.\n",
+        "\n",
+        "Each finding is ok, warn, problem or skipped; warnings and problems come\n",
+        "with a fix. mcc exits 1 when there is a problem. Nothing is written: not\n",
+        "~/.mcc/config.toml, not even on first use. Token expiry is checked only\n",
+        "with `[usage] live = true`, the one setting that lets mcc read tokens."
+    ))]
+    Doctor(DoctorArgs),
+
     /// Read or change ~/.mcc/config.toml: get, set, edit, path
     #[command(after_help = concat!(
         "Examples:\n",
@@ -434,6 +459,20 @@ pub struct ListArgs {
     /// Skip fetching 5-hour/weekly usage (no network; also MCC_NO_USAGE=1)
     #[arg(long)]
     pub no_usage: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct DoctorArgs {
+    /// Only check this profile (`default` or `claude` for ~/.claude)
+    pub profile: Option<String>,
+
+    /// Output JSON (to stdout): a bare array of checks (schema 1)
+    #[arg(long, conflicts_with = "json_v2")]
+    pub json: bool,
+
+    /// Output versioned JSON: {"schema": 2, "checks": [...]}
+    #[arg(long = "json-v2")]
+    pub json_v2: bool,
 }
 
 #[derive(Debug, Args)]

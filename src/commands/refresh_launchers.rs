@@ -179,7 +179,7 @@ fn rc_files(cfg: &Config, name: &str) -> Vec<PathBuf> {
 
 /// Alias syntax for an rc file: fish's for `config.fish`, else sh's (zsh and
 /// bash share it), whatever the current shell is.
-fn rc_shell(rc: &Path) -> Shell {
+pub(crate) fn rc_shell(rc: &Path) -> Shell {
     if rc.extension().is_some_and(|e| e == "fish") {
         Shell::Fish
     } else {

@@ -3,6 +3,7 @@ pub mod completions;
 pub mod config;
 pub mod delete;
 pub mod diff;
+pub mod doctor;
 pub mod env;
 pub mod exec;
 pub mod init;

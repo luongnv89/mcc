@@ -99,6 +99,22 @@ pub fn warn(msg: &str) {
     emit(&format!("  {} {msg}", style("⚠").yellow().bold()));
 }
 
+/// A problem found by a check (not a failure of the command itself).
+pub fn problem(msg: &str) {
+    log::write("WARN", &format!("problem: {msg}"));
+    emit(&format!("  {} {msg}", style("✗").red().bold()));
+}
+
+/// Lines to copy as they are (e.g. into an rc file), indented under a hint.
+pub fn snippet(text: &str) {
+    log::write("INFO", &format!("snippet:\n{text}"));
+    if !settings().quiet {
+        for line in text.lines() {
+            emit(&format!("        {line}"));
+        }
+    }
+}
+
 pub fn hint(msg: &str) {
     log::write("INFO", &format!("hint: {msg}"));
     if !settings().quiet {

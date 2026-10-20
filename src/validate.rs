@@ -23,6 +23,7 @@ const RESERVED_NAMES: &[&str] = &[
     "env",
     "exec",
     "statusline",
+    "doctor",
     crate::shell::PATH_BLOCK,
 ];
 
@@ -121,7 +122,7 @@ const SHELL_WORDS: &[&str] = &[
 ];
 
 /// rc files scanned for aliases and functions (relative to home).
-const RC_FILES: &[&str] = &[
+pub(crate) const RC_FILES: &[&str] = &[
     ".zshrc",
     ".zprofile",
     ".zshenv",

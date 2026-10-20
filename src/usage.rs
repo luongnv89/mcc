@@ -333,6 +333,28 @@ fn find_token(
     }
 }
 
+/// Whether a profile has a usable OAuth access token, without the token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenState {
+    Valid,
+    /// Past its `expiresAt`.
+    Expired,
+    /// No OAuth token (logged out, or an API-key login).
+    Missing,
+}
+
+/// The profile's [`TokenState`] (for `mcc doctor`): read like the live
+/// lookup reads it (credentials file, then the keychain), so callers must
+/// only call it with `[usage] live = true` and `MCC_NO_USAGE` unset. The
+/// token itself is dropped here, never returned.
+pub fn token_state(config_dir: &Path, is_default: bool) -> TokenState {
+    match find_token(config_dir, is_default, Utc::now(), keychain_secret) {
+        Credential::Valid(_) => TokenState::Valid,
+        Credential::Expired => TokenState::Expired,
+        Credential::Missing => TokenState::Missing,
+    }
+}
+
 /// `MCC_USAGE_URL` (a test/debug override) or the real endpoint. The override
 /// receives bearer tokens, so plain `http://` is only honored for loopback; a
 /// refused override sends nothing anywhere (`None`) rather than falling back.
