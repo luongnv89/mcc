@@ -8,7 +8,7 @@ use common::{HOUR_MS, Sandbox, UsageStub, json, now_ms, rfc3339_in, stdout_of, w
 use predicates::prelude::*;
 
 /// The terms-of-service note for starting another account, verbatim (issue #31).
-const RUN_NOTE: &str = "⚠ You chose to start an account other than this project's. Use only accounts you own, and don't use several accounts to get around usage limits — doing so can violate Anthropic's Consumer Terms (https://www.anthropic.com/legal/consumer-terms) and Usage Policy (https://www.anthropic.com/legal/aup).";
+const RUN_NOTE: &str = "⚠ You chose to start an account other than this project's. Use only accounts you own, and don't use several accounts to get around usage limits — doing so can violate Anthropic's Consumer Terms (https://www.anthropic.com/legal/consumer-terms) and Usage Policy (https://www.anthropic.com/legal/aup), including the updated Usage Policy that takes effect November 12, 2026.";
 
 /// True when `stderr` carries the note as a line of its own, byte for byte.
 fn has_run_note(stderr: &str) -> bool {

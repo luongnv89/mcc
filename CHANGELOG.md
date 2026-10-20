@@ -12,6 +12,10 @@ All notable changes to mcc are recorded here. The format follows [Keep a Changel
 - `project` and `run` are reserved and can't be used as aliases.
 - A GitHub Actions CI workflow runs `cargo test` on Linux and macOS, `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `shellcheck install.sh` and `brew audit` on the Homebrew formula for every push and pull request. ([#32](https://github.com/luongnv89/mcc/issues/32))
 
+### Changed
+
+- The session-sharing and `mcc run` terms-of-service notes, the README and the docs site now mention the updated Anthropic Usage Policy that takes effect November 12, 2026. The README and docs site quote the Team and Enterprise seat rules separately, each in its own words, document `MCC_NON_INTERACTIVE`, and `docs/PLAN.md` is marked as a historical plan. ([#38](https://github.com/luongnv89/mcc/issues/38))
+
 ### Fixed
 
 - The `mcc project` and `mcc list` tests expected absolute project paths, but mcc shows a project under `$HOME` as `~/…`; they now expect what mcc prints, so they pass on Linux as well as macOS. ([#32](https://github.com/luongnv89/mcc/issues/32))

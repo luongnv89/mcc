@@ -234,7 +234,7 @@ Editing the key by hand does nothing on its own. `mcc share <alias>` does the ac
 - **What is never shared:** credentials (`.credentials.json`, the keychain login), the account (`.claude.json`), `policy-limits.json`, `remote-settings.json`, prompt history (`history.jsonl`), live session state (`sessions/`), `shell-snapshots/`, `file-history/` and `todos/`. Each profile keeps its own login and `CLAUDE_CONFIG_DIR`.
 - **Every time sharing is turned on**, by `mcc share` or by `--mcc-share`, mcc prints this note on stderr:
 
-  > ⚠ Session sharing makes conversation history available across your Claude Code accounts. Use it only between accounts you own. Don't use it to get around usage limits, and never let other people use your account or credentials — doing so can violate Anthropic's Consumer Terms (https://www.anthropic.com/legal/consumer-terms) and Usage Policy (https://www.anthropic.com/legal/aup).
+  > ⚠ Session sharing makes conversation history available across your Claude Code accounts. Use it only between accounts you own. Don't use it to get around usage limits, and never let other people use your account or credentials — doing so can violate Anthropic's Consumer Terms (https://www.anthropic.com/legal/consumer-terms) and Usage Policy (https://www.anthropic.com/legal/aup), including the updated Usage Policy that takes effect November 12, 2026.
 
 - **`--off`** replaces the link with a directory of the profile's own, holding a copy of the shared sessions. The store stays for the other sharing profiles; mcc never deletes it, so remove `~/.mcc/shared` by hand once no profile shares.
 - **`mcc delete`** of a sharing profile removes only its link. The sessions stay in the store.
@@ -271,14 +271,18 @@ $ mcc run
 
 - **Allowed profiles:** `mcc project set work --allow lab` lets the prompt offer `lab` (repeat `--allow`, or separate names with commas). Running `mcc project set` again without `--allow` clears the list. Picking a profile other than the project's prints this note on stderr:
 
-  > ⚠ You chose to start an account other than this project's. Use only accounts you own, and don't use several accounts to get around usage limits — doing so can violate Anthropic's Consumer Terms (https://www.anthropic.com/legal/consumer-terms) and Usage Policy (https://www.anthropic.com/legal/aup).
+  > ⚠ You chose to start an account other than this project's. Use only accounts you own, and don't use several accounts to get around usage limits — doing so can violate Anthropic's Consumer Terms (https://www.anthropic.com/legal/consumer-terms) and Usage Policy (https://www.anthropic.com/legal/aup), including the updated Usage Policy that takes effect November 12, 2026.
 
 - **`mcc run --profile NAME`** starts NAME without checking usage (`default` or `claude` for `~/.claude`). It is a one-off choice: the project's default doesn't change. Inside a project, a profile other than the project's prints the same note.
 - **Without a terminal**, `mcc run` can't ask. At the limit it stops with exit code 2 and names `mcc run --profile <profile>` to start it anyway.
 - **Unknown usage:** only the project profile's usage is ever fetched. If it can't be read (offline, an expired login, `MCC_NO_USAGE=1`), that profile starts. Unknown usage never counts as being at the limit.
 - **`mcc run --dry-run`** prints the project's profile on stdout and why on stderr (at its limit, that `mcc run` would ask and wait by default), and starts nothing.
 - **Sessions:** Claude Code keeps sessions per profile. If you start another profile, `--resume` and `-c` there only see that profile's sessions, unless both profiles [share sessions](#sharing-sessions-between-profiles).
-- **Why there's no automatic switching:** Anthropic's [Team](https://support.claude.com/en/articles/12004354-purchase-and-manage-seats-on-team-plans) and [Enterprise](https://support.claude.com/en/articles/13393991-purchase-and-manage-seats-on-enterprise-plans) seat rules say you can't route your work through another user's account to use their remaining usage. Its [Consumer Terms](https://www.anthropic.com/legal/consumer-terms) also forbid bypassing its systems or protective measures. So which account to use when one is at its limit is always your call.
+- **Why there's no automatic switching:** Anthropic's seat rules are worded differently for each plan, and both rule it out:
+  - [Team](https://support.claude.com/en/articles/12004354-purchase-and-manage-seats-on-team-plans): "Users can't route their work through another user's account to use that user's remaining usage."
+  - [Enterprise](https://support.claude.com/en/articles/13393991-purchase-and-manage-seats-on-enterprise-plans): "Users can't use another user's account to get around their own spend limits or usage limits."
+
+  Its [Consumer Terms](https://www.anthropic.com/legal/consumer-terms) also forbid bypassing its systems or protective measures, and its [Usage Policy](https://www.anthropic.com/legal/aup), updated with effect from November 12, 2026, applies to every account. So which account to use when one is at its limit is always your call.
 - **`mcc list`** shows your projects under the profile table, with the profile and account each one starts with (and `← here` for the current directory). `mcc list --long` adds a `Default for` row to each profile's card, and `mcc list --json` has a `project_defaults` array per profile.
 - `mcc project list` (`--json`) shows every project with its profile and allowed profiles (an `allow` array in the JSON), and `mcc project unset` removes the one that applies here (or the one given with `--path`).
 - `mcc rename` updates the project defaults and allow lists that name the profile. `mcc delete` removes the project defaults naming it, and takes it off the allow lists.
@@ -363,6 +367,7 @@ An alias must be 1–32 characters: lowercase letters, digits, `-` or `_`, start
 |---|---|
 | `MCC_HOME` | Use this directory instead of `$HOME` for everything mcc reads and writes (great for testing) |
 | `MCC_CLAUDE_BIN` | Path to the `claude` binary |
+| `MCC_NON_INTERACTIVE` | Set to any value (even empty) to never prompt, as when stdin or stderr isn't a terminal: required prompts stop and name the flag to pass instead, and optional ones take their default (useful in scripts and CI) |
 | `MCC_NO_USAGE` | Any value except empty or `0`: same as `mcc list --no-usage`; `mcc usage` shows usage as not fetched, and `mcc run` starts the project's profile without checking its usage |
 | `COLUMNS` | Terminal width used to size the usage bars in `mcc list` and `mcc usage` (default: the detected width; unlimited when piped) |
 | `MCC_USAGE_URL` | Test/debug override for the usage endpoint. It receives bearer tokens, so only `https://` URLs and `http://` on loopback (`127.0.0.1`, `localhost`, `[::1]`) are accepted; any other value is refused and usage is not fetched at all |
