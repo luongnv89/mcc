@@ -20,42 +20,10 @@ use crate::ui;
 use crate::usage::{self, Reason, Status, Usage, Window};
 
 pub fn run(paths: &Paths, cfg: &Config, args: &ListArgs) -> Result<()> {
-    let mut all = vec![metrics::default_profile(paths)];
-    all.extend(
-        cfg.profiles
-            .iter()
-            .map(|(name, p)| metrics::mcc_profile(name, p, paths, cfg.launch.banner)),
-    );
-    for m in &mut all {
-        m.project_defaults = cfg
-            .projects
-            .iter()
-            .filter(|(_, p)| p.profile == m.name)
-            .map(|(dir, _)| dir.clone())
-            .collect();
-    }
-    for m in all.iter_mut().filter(|m| !m.is_default) {
-        if let Some(p) = cfg.profiles.get(&m.name) {
-            m.sync = super::sync::status(paths, cfg, &p.dir);
-        }
-    }
-    if !usage_disabled(args) {
-        attach_usage(paths, cfg, &mut all);
-    }
+    let usage = (!usage_disabled(args)).then_some(cfg.usage.live);
+    let mut all = profiles(paths, cfg, true, usage);
     let show_email = (cfg.show_email() || args.show_email) && !args.hide_email;
-    // Which profiles have an account email, so cards can tell a hidden one
-    // from none.
-    let known: Vec<bool> = all.iter().map(|m| m.account.is_some()).collect();
-    if !show_email {
-        all.iter_mut().for_each(hide_email);
-    }
-    // A label with control characters, hand-written in the config file,
-    // could drive the terminal: leave it out (null in JSON).
-    for m in &mut all {
-        if m.label.as_deref().is_some_and(super::has_control) {
-            m.label = None;
-        }
-    }
+    let known = redact(&mut all, show_email);
 
     let mut out = std::io::stdout().lock();
     if args.json || args.json_v2 {
@@ -100,9 +68,61 @@ pub fn run(paths: &Paths, cfg: &Config, args: &ListArgs) -> Result<()> {
     Ok(())
 }
 
+/// Every profile, the default first, with its project defaults, its sync
+/// status and, with `usage` set, its usage: `Some(true)` looks it up live,
+/// `Some(false)` reads the statusline cache. `full` as for
+/// [`metrics::default_profile`]: without it counts and sizes stay 0.
+pub(super) fn profiles(
+    paths: &Paths,
+    cfg: &Config,
+    full: bool,
+    usage: Option<bool>,
+) -> Vec<ProfileMetrics> {
+    let mut all = vec![metrics::default_profile(paths, full)];
+    all.extend(
+        cfg.profiles
+            .iter()
+            .map(|(name, p)| metrics::mcc_profile(name, p, paths, cfg.launch.banner, full)),
+    );
+    for m in &mut all {
+        m.project_defaults = cfg
+            .projects
+            .iter()
+            .filter(|(_, p)| p.profile == m.name)
+            .map(|(dir, _)| dir.clone())
+            .collect();
+    }
+    for m in all.iter_mut().filter(|m| !m.is_default) {
+        if let Some(p) = cfg.profiles.get(&m.name) {
+            m.sync = super::sync::status(paths, cfg, &p.dir);
+        }
+    }
+    if let Some(live) = usage {
+        attach_usage(paths, live, &mut all);
+    }
+    all
+}
+
+/// Hide account emails unless `show_email` ([`hide_email`]), and drop labels
+/// with control characters, which a label hand-written in the config file
+/// could use to drive the terminal (null in JSON). Returns, per profile,
+/// whether it has an account email, so cards can tell a hidden one from none.
+pub(super) fn redact(all: &mut [ProfileMetrics], show_email: bool) -> Vec<bool> {
+    let known: Vec<bool> = all.iter().map(|m| m.account.is_some()).collect();
+    if !show_email {
+        all.iter_mut().for_each(hide_email);
+    }
+    for m in all.iter_mut() {
+        if m.label.as_deref().is_some_and(super::has_control) {
+            m.label = None;
+        }
+    }
+    known
+}
+
 /// Footnotes (stderr) for session sharing and out-of-date launchers.
 /// `banner` is `[launch] banner`: the launch banner is mentioned only then.
-fn sharing_notes(all: &[ProfileMetrics], banner: bool) {
+pub(super) fn sharing_notes(all: &[ProfileMetrics], banner: bool) {
     if all.iter().any(|m| m.share_sessions) {
         ui::info(
             "shared: sessions shared with every sharing profile of the same group (their session counts include all of them)",
@@ -162,9 +182,9 @@ fn usage_disabled(args: &ListArgs) -> bool {
 }
 
 /// Every profile's usage (default included): from the statusline cache, or
-/// looked up live with `[usage] live = true`. Failures become an
+/// looked up live with `live` (`[usage] live = true`). Failures become an
 /// "unavailable" status: never a warning, never a failed command.
-fn attach_usage(paths: &Paths, cfg: &Config, all: &mut [ProfileMetrics]) {
+fn attach_usage(paths: &Paths, live: bool, all: &mut [ProfileMetrics]) {
     let targets: Vec<usage::Target> = all
         .iter()
         .map(|m| usage::Target {
@@ -173,10 +193,7 @@ fn attach_usage(paths: &Paths, cfg: &Config, all: &mut [ProfileMetrics]) {
             is_default: m.is_default,
         })
         .collect();
-    for (m, u) in all
-        .iter_mut()
-        .zip(usage::lookup(paths, &targets, cfg.usage.live))
-    {
+    for (m, u) in all.iter_mut().zip(usage::lookup(paths, &targets, live)) {
         m.usage = u;
     }
 }
@@ -262,7 +279,7 @@ fn card_bar(all: &[ProfileMetrics], now: DateTime<Utc>) -> usize {
 /// The table, as printed: the widest usage bar that fits the terminal; when
 /// none does, the 5-cell bar from 80 columns up (the table wraps anyway) and
 /// no bar (plain "42% (2h)") below that.
-fn table(out: &mut impl Write, all: &[ProfileMetrics]) -> Result<()> {
+pub(super) fn table(out: &mut impl Write, all: &[ProfileMetrics]) -> Result<()> {
     let now = Utc::now();
     let width = |lines: &[String]| lines.iter().map(|l| measure_text_width(l)).max();
     let bar = ui::fit_bar(&TABLE_BARS, |bar| {

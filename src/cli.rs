@@ -44,6 +44,8 @@ with its own login, launched by its own command. The default profile is
 
 const EXAMPLES: &str = "\
 Examples:
+  mcc                            Status: this directory's profile and why, every profile's account,
+                                 usage and drift, and warnings (once mcc is set up; else this help)
   mcc init                       Detect OS, terminal and shell (runs automatically on first use)
   mcc add work --clone           New profile `work` with the default's setup, then log in
   mcc add personal --fresh       New, empty profile `personal`
@@ -82,8 +84,10 @@ pub struct Cli {
     #[command(flatten)]
     pub global: GlobalArgs,
 
+    /// `None` for bare `mcc` once mcc is set up: the status view. Before
+    /// that, clap prints the help instead (see `main.rs`).
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 #[derive(Debug, Args)]

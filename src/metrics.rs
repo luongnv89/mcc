@@ -112,8 +112,11 @@ fn account_from_state(state: &Value) -> Option<Account> {
     (a != Account::default()).then_some(a)
 }
 
-pub fn default_profile(paths: &Paths) -> ProfileMetrics {
-    collect(
+/// `full`: also count skills, agents, commands, sessions… and measure the
+/// size on disk, which walks the whole profile directory. Without it (the
+/// bare `mcc` status view) those stay 0, so the view stays fast.
+pub fn default_profile(paths: &Paths, full: bool) -> ProfileMetrics {
+    let mut m = collect(
         "default",
         "claude",
         true,
@@ -121,12 +124,22 @@ pub fn default_profile(paths: &Paths) -> ProfileMetrics {
         &paths.default_json,
         None,
         paths,
-    )
+    );
+    if full {
+        measure(&mut m, &paths.default_dir, Some(&paths.default_json));
+    }
+    m
 }
 
 /// `banner` is `[launch] banner`: with it on, a launcher without the banner
-/// block is out of date.
-pub fn mcc_profile(name: &str, p: &Profile, paths: &Paths, banner: bool) -> ProfileMetrics {
+/// block is out of date. `full` as for [`default_profile`].
+pub fn mcc_profile(
+    name: &str,
+    p: &Profile,
+    paths: &Paths,
+    banner: bool,
+    full: bool,
+) -> ProfileMetrics {
     let mut m = collect(
         name,
         name,
@@ -136,6 +149,9 @@ pub fn mcc_profile(name: &str, p: &Profile, paths: &Paths, banner: bool) -> Prof
         Some(p),
         paths,
     );
+    if full {
+        measure(&mut m, &p.dir, None);
+    }
     m.launcher_current = p
         .wrapper
         .as_deref()
@@ -214,10 +230,11 @@ fn collect(
         label: reg.and_then(|r| r.label.clone()),
         color: reg.and_then(|r| r.color.clone()),
         model: s(&settings, "/model"),
-        skills: count_skills(&dir.join("skills")),
-        agents: count_md(&dir.join("agents")),
-        commands: count_md(&dir.join("commands")),
-        output_styles: count_md(&dir.join("output-styles")),
+        // Set by `measure`: they walk the profile directory.
+        skills: 0,
+        agents: 0,
+        commands: 0,
+        output_styles: 0,
         plugins_installed: obj_len(&installed, "/plugins"),
         plugins_enabled: settings
             .as_ref()
@@ -228,14 +245,9 @@ fn collect(
             }),
         mcp_servers: obj_len(&state, "/mcpServers"),
         hooks: count_hooks(settings.as_ref()),
-        projects: count_entries(&dir.join("projects"), |p| p.is_dir()),
-        sessions: count_sessions(&dir.join("projects")),
-        size_bytes: if exists { fsutil::dir_size(dir) } else { 0 }
-            + if is_default {
-                std::fs::metadata(state_json).map_or(0, |m| m.len())
-            } else {
-                0
-            },
+        projects: 0,
+        sessions: 0,
+        size_bytes: 0,
         last_used: last_used_time.map(|t| {
             chrono::DateTime::<chrono::Local>::from(t)
                 .to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
@@ -255,6 +267,20 @@ fn collect(
         last_used_time,
         warnings,
     }
+}
+
+/// The counts and the size on disk, which walk the profile directory `dir`.
+/// `state_json`: the default's `~/.claude.json`, outside its directory,
+/// counted in its size.
+fn measure(m: &mut ProfileMetrics, dir: &Path, state_json: Option<&Path>) {
+    m.skills = count_skills(&dir.join("skills"));
+    m.agents = count_md(&dir.join("agents"));
+    m.commands = count_md(&dir.join("commands"));
+    m.output_styles = count_md(&dir.join("output-styles"));
+    m.projects = count_entries(&dir.join("projects"), |p| p.is_dir());
+    m.sessions = count_sessions(&dir.join("projects"));
+    m.size_bytes = if m.exists { fsutil::dir_size(dir) } else { 0 }
+        + state_json.map_or(0, |j| std::fs::metadata(j).map_or(0, |md| md.len()));
 }
 
 fn count_entries(dir: &Path, pred: impl Fn(&Path) -> bool) -> usize {
@@ -396,7 +422,7 @@ mod tests {
         )
         .unwrap();
 
-        let m = default_profile(&paths);
+        let m = default_profile(&paths, true);
         assert_eq!((m.name.as_str(), m.command.as_str()), ("default", "claude"));
         assert_eq!(m.skills, 2);
         assert_eq!(m.agents, 2);
@@ -430,10 +456,16 @@ mod tests {
             dir.to_str().unwrap()
         ))
         .unwrap();
-        assert_eq!(mcc_profile("work", &p, &paths, false).plugins_installed, 3);
+        assert_eq!(
+            mcc_profile("work", &p, &paths, false, true).plugins_installed,
+            3
+        );
         // With its own plugins it counts its own (none here).
         p.link.clear();
-        assert_eq!(mcc_profile("work", &p, &paths, false).plugins_installed, 0);
+        assert_eq!(
+            mcc_profile("work", &p, &paths, false, true).plugins_installed,
+            0
+        );
     }
 
     #[test]
@@ -453,12 +485,12 @@ mod tests {
     fn missing_and_corrupt() {
         let d = tempfile::tempdir().unwrap();
         let paths = Paths::new(d.path().to_path_buf());
-        let m = default_profile(&paths);
+        let m = default_profile(&paths, true);
         assert!(!m.exists);
         assert_eq!(m.warnings.len(), 1);
         std::fs::create_dir_all(&paths.default_dir).unwrap();
         std::fs::write(paths.default_dir.join("settings.json"), "{nope").unwrap();
-        let m = default_profile(&paths);
+        let m = default_profile(&paths, true);
         assert!(m.exists);
         assert!(m.warnings[0].contains("not valid JSON"));
     }
