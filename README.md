@@ -44,7 +44,7 @@ Claude Code reads its config from `CLAUDE_CONFIG_DIR`, which defaults to `~/.cla
 
 - **First-run detection.** mcc detects your OS, terminal, shell (zsh, bash, fish) and the right rc file, so new commands work in your shell.
 - **`add`.** If `~/.claude` doesn't exist yet, `add` creates your default profile. Otherwise it asks for an alias and checks that the name isn't already taken by a command, alias, function, shell builtin, or existing profile. You then either **clone** the default's setup (without credentials) or start **fresh**, and the new profile's login opens.
-- **`list`.** One row per profile: command, account, 5-hour and weekly usage (with a usage bar), skills, agents, commands, plugins (enabled/installed), MCP servers, hooks, size, last used, last sync. Profiles that share sessions are marked `(shared)`, and a hint names `mcc refresh-launchers` while a launcher is out of date. A second table lists your projects and the profile (and account) `mcc run` starts in each. `--long` and `--json` give more detail.
+- **`list`.** One row per profile: command, account, 5-hour and weekly usage (with a usage bar), skills, agents, commands, plugins (enabled/installed), MCP servers, hooks, size, last used, last sync, and a `SYNC` column saying how the profile compares with the default (`✓`, `3 behind`, `2 local edits`, `1 conflict`). Profiles that share sessions are marked `(shared)`, and a hint names `mcc refresh-launchers` while a launcher is out of date. A second table lists your projects and the profile (and account) `mcc run` starts in each. `--long` and `--json` give more detail.
 - **`usage`.** Every profile's 5-hour and weekly limits in one compact table: a usage bar with the percent used, time until reset and the reset time. Near-limit accounts stand out with `!` / `!!` markers and colour. Account emails are hidden unless you ask for them. `--json` for scripts.
 - **`rename`.** Gives a profile a new name, and with it a new command. The new name is checked like an alias in `add`. The profile's directory, login and setup stay as they are.
 - **`sync`.** A one-way copy of setup from the default profile into a profile, with `--dry-run`, `--prune`, `--only`, and `--all`.
@@ -106,7 +106,8 @@ mcc delete job              # remove it completely
 | `mcc add [ALIAS]` | Create the default profile, or a new profile with its own command; records the account and its organization, warns when another profile already uses that account, and asks for an optional label | `--clone`, `--fresh`, `--no-login`, `--label LABEL`, `-y` |
 | `mcc list` (`ls`) | Show every profile with metrics and 5-hour/weekly usage | `--json`, `-l/--long`, `--no-usage` |
 | `mcc usage [PROFILE]` | Show each profile's 5-hour and weekly usage in a table (`default` or `claude` for the default profile) | `--json`, `--show-email`, `--hide-email` |
-| `mcc sync [ALIAS]` | Copy the default's setup into a profile (default → profile only) | `--all`, `--dry-run`, `--prune`, `--only ITEMS`, `-y` |
+| `mcc sync [ALIAS]` | Copy the default's setup into a profile (default → profile only), keeping edits made in the profile | `--all`, `--dry-run`, `--prune`, `--force`, `--only ITEMS`, `-y` |
+| `mcc diff ALIAS` | Show how a profile differs from the default's setup, path by path, as `sync` classifies it | `--only ITEMS` |
 | `mcc rename ALIAS NEW` (`mv`) | Rename a profile and its command; directory and login are kept | |
 | `mcc share ALIAS` | Share the profile's sessions with your other sharing profiles (off by default; see [Sharing sessions](#sharing-sessions-between-profiles)) | `--off` |
 | `mcc project set PROFILE` | Make PROFILE the one `mcc run` starts in this project (see [Per-project profiles](#per-project-profiles-mcc-project-and-mcc-run)); also `unset` and `list` | `--path DIR`, `--allow PROFILE`, `list --json` |
@@ -138,6 +139,8 @@ mcc usage --json | jq '.[] | {name, weekly: .usage.weekly.percent}'
 mcc sync work --dry-run               # preview what would change
 mcc sync work --only skills,agents    # only some items
 mcc sync --all --prune --yes          # make every profile mirror the default exactly
+mcc sync work --force                 # also overwrite paths edited in both (conflicts)
+mcc diff work                         # what differs from the default, with line diffs
 mcc rename lab sandbox                # new command `sandbox`, same directory and login
 mcc share work                        # share work's sessions with the other sharing profiles
 work --mcc-share --resume             # the same from the launcher, then pick any shared session
@@ -195,6 +198,14 @@ mcc completions fish > ~/.config/fish/completions/mcc.fish
 **Paths are rewritten** so each profile uses its own copies. In settings, plugin manifests, and MCP server entries, any `~/.claude/…`, `$HOME/.claude/…`, or `/Users/you/.claude/…` path that points at a *copied* item (for example `~/.claude/hooks/notify.sh`) is rewritten to the profile directory. Paths to things that aren't copied, such as `~/.claude/statusline/run.sh`, keep pointing at the default profile, so nothing dangles. Symlinks stay symlinks: a link into the default profile is re-pointed into the copy, and a relative link elsewhere (such as `skills/x -> ../../.agents/skills/x`) is resolved so it still works from the new location.
 
 **`sync` is one-way** (default → profile), because most tools assume the default config path. Before writing, `sync` copies every file or folder it is about to overwrite or remove (such as `CLAUDE.md`, skills, agents, `settings.json`, and `.claude.json`) to `<profile>/.mcc-backup/<timestamp>/`, at the same paths, so your own edits can be restored from there. `--dry-run` changes nothing in the profile and makes no backup. Files that exist only in the profile are kept unless you pass `--prune`, and pruning asks for confirmation (or needs `--yes`).
+
+**`sync` is three-way.** `add --clone` and every `sync` record what they wrote in `<profile>/.mcc-sync.json` (each path and MCP server with a hash of its content). The next `sync` compares the default, the profile and that record for every path:
+
+- changed only in the default: updated (or added) in the profile;
+- edited, or deleted, only in the profile: kept, and reported as a **local edit**;
+- changed in both: a **conflict**, kept and reported; `--force` overwrites it (after backing it up).
+
+`--dry-run` shows the same classification and writes nothing, not even the record. A profile without a record yet (created `--fresh` or by an older mcc) is compared two-way once: every difference is taken from the default, as before, and the record starts with that sync. The record belongs to its profile and is never copied. `mcc diff ALIAS` lists each differing path with its class and a line diff (`---` default, `+++` profile), and `mcc list` sums it up in its `SYNC` column (`--json`: `sync.behind`, `sync.local_edits`, `sync.conflicts`).
 
 ### Customizing sync
 

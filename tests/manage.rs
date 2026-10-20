@@ -1022,14 +1022,17 @@ fn sync_backs_up_every_file_it_overwrites() {
     with_profile(&sb, "work", "--clone");
     sb.write(".mcc/profiles/work/CLAUDE.md", "# my edited rules\n");
     sb.write(".mcc/profiles/work/skills/one/SKILL.md", "my edited one");
+    // Changed in the default too: conflicts, which --force overwrites.
+    sb.write(".claude/CLAUDE.md", "# new rules\n");
+    sb.write(".claude/skills/one/SKILL.md", "one v2");
 
     sb.mcc()
-        .args(["sync", "work"])
+        .args(["sync", "work", "--force"])
         .assert()
         .success()
         .stderr(predicate::str::contains("Back up profile config"));
-    assert_eq!(sb.read(".mcc/profiles/work/CLAUDE.md"), "# my rules\n");
-    assert_eq!(sb.read(".mcc/profiles/work/skills/one/SKILL.md"), "one");
+    assert_eq!(sb.read(".mcc/profiles/work/CLAUDE.md"), "# new rules\n");
+    assert_eq!(sb.read(".mcc/profiles/work/skills/one/SKILL.md"), "one v2");
 
     let backups = backup_dirs(&sb, "work");
     assert_eq!(backups.len(), 1, "{backups:?}");
@@ -1090,8 +1093,16 @@ fn sync_backs_up_a_file_standing_where_a_dir_goes() {
     with_profile(&sb, "work", "--clone");
     std::fs::remove_dir_all(sb.path(".mcc/profiles/work/plugins")).unwrap();
     sb.write(".mcc/profiles/work/plugins", "my plugins notes");
+    // The default changes a plugins file the profile deleted: a conflict.
+    sb.write(
+        ".claude/plugins/installed_plugins.json",
+        r#"{"version":2,"plugins":{}}"#,
+    );
 
-    sb.mcc().args(["sync", "work"]).assert().success();
+    sb.mcc()
+        .args(["sync", "work", "--force"])
+        .assert()
+        .success();
     assert!(sb.exists(".mcc/profiles/work/plugins/installed_plugins.json"));
 
     let backups = backup_dirs(&sb, "work");
@@ -1300,4 +1311,262 @@ fn sync_all_shows_each_failing_profiles_hint() {
         .stderr(predicate::str::contains("a1: profile directory"))
         .stderr(predicate::str::contains("mcc delete a1 --yes"))
         .stderr(predicate::str::contains("1/2 profiles synced"));
+}
+
+// ---- three-way sync (#41) ----------------------------------------------------
+
+fn manifest_path() -> String {
+    ".mcc/profiles/work/.mcc-sync.json".into()
+}
+
+#[test]
+fn clone_records_a_sync_manifest() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    with_profile(&sb, "work", "--clone");
+    let m = json(sb.read(&manifest_path()).as_bytes());
+    assert_eq!(m["version"], 1);
+    assert!(m["files"]["CLAUDE.md"].is_string(), "{m}");
+    assert!(m["files"]["skills/alpha/SKILL.md"].is_string(), "{m}");
+    assert!(m["mcp"]["fs"].is_string(), "{m}");
+    // Never anything outside the sync set.
+    let files = m["files"].as_object().unwrap();
+    assert!(
+        files.keys().all(|k| !k.starts_with("projects/")
+            && k != ".credentials.json"
+            && k != ".mcc-sync.json")
+    );
+}
+
+#[test]
+fn sync_is_three_way() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    with_profile(&sb, "work", "--clone");
+    // Upstream change, local edit, and a conflict.
+    sb.write(".claude/agents/reviewer.md", "agent v2");
+    sb.write(".mcc/profiles/work/CLAUDE.md", "# my work rules\n");
+    sb.write(".claude/skills/alpha/SKILL.md", "alpha v2");
+    sb.write(".mcc/profiles/work/skills/alpha/SKILL.md", "my alpha");
+    let before = sb.read(&manifest_path());
+
+    // --dry-run shows the classification and writes nothing.
+    sb.mcc()
+        .args(["sync", "work", "--dry-run"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("~ agents/reviewer.md"))
+        .stderr(predicate::str::contains("= CLAUDE.md (local edit, kept)"))
+        .stderr(predicate::str::contains(
+            "! skills/alpha/SKILL.md (conflict",
+        ))
+        .stderr(predicate::str::contains("1 local edit, 1 conflict"))
+        .stderr(predicate::str::contains("nothing was written"));
+    assert_eq!(sb.read(&manifest_path()), before);
+    assert_eq!(sb.read(".mcc/profiles/work/agents/reviewer.md"), "agent");
+    assert!(backup_dirs(&sb, "work").is_empty());
+
+    sb.mcc()
+        .args(["sync", "work"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("= CLAUDE.md (local edit, kept)"))
+        .stderr(predicate::str::contains("--force"))
+        .stderr(predicate::str::contains(
+            "except 1 local edit (kept) and 1 conflict (skipped)",
+        ));
+    assert_eq!(sb.read(".mcc/profiles/work/agents/reviewer.md"), "agent v2");
+    assert_eq!(sb.read(".mcc/profiles/work/CLAUDE.md"), "# my work rules\n");
+    assert_eq!(
+        sb.read(".mcc/profiles/work/skills/alpha/SKILL.md"),
+        "my alpha"
+    );
+    // The backup holds only what was overwritten.
+    let backups = backup_dirs(&sb, "work");
+    assert_eq!(backups.len(), 1);
+    assert_eq!(
+        std::fs::read_to_string(backups[0].join("agents/reviewer.md")).unwrap(),
+        "agent"
+    );
+    assert!(!backups[0].join("CLAUDE.md").exists());
+
+    // Still classified the same; nothing else to copy.
+    sb.mcc()
+        .args(["sync", "work"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("already up to date, except"));
+
+    // --force overwrites the conflict (backed up), never the local edit.
+    sb.mcc()
+        .args(["sync", "work", "--force"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "~ skills/alpha/SKILL.md (conflict, overwritten with --force)",
+        ));
+    assert_eq!(
+        sb.read(".mcc/profiles/work/skills/alpha/SKILL.md"),
+        "alpha v2"
+    );
+    assert_eq!(sb.read(".mcc/profiles/work/CLAUDE.md"), "# my work rules\n");
+    let last = backup_dirs(&sb, "work").pop().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(last.join("skills/alpha/SKILL.md")).unwrap(),
+        "my alpha"
+    );
+}
+
+#[test]
+fn profile_deletions_are_local_edits() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    with_profile(&sb, "work", "--clone");
+    std::fs::remove_dir_all(sb.path(".mcc/profiles/work/skills/beta")).unwrap();
+    sb.mcc()
+        .args(["sync", "work"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "skills/beta/SKILL.md (local edit, kept)",
+        ));
+    assert!(!sb.exists(".mcc/profiles/work/skills/beta"));
+}
+
+#[test]
+fn dry_run_never_writes_a_manifest() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    with_profile(&sb, "work", "--fresh");
+    sb.mcc()
+        .args(["sync", "work", "--dry-run"])
+        .assert()
+        .success();
+    assert!(!sb.exists(&manifest_path()));
+    sb.mcc().args(["sync", "work"]).assert().success();
+    assert!(sb.exists(&manifest_path()));
+}
+
+#[test]
+fn profile_without_manifest_gets_one_even_when_up_to_date() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    with_profile(&sb, "work", "--clone");
+    std::fs::remove_file(sb.path(&manifest_path())).unwrap();
+    // Up to date: --dry-run still writes nothing, a real sync records it.
+    sb.mcc()
+        .args(["sync", "work", "--dry-run"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("already up to date"));
+    assert!(!sb.exists(&manifest_path()));
+    sb.mcc().args(["sync", "work"]).assert().success();
+    assert!(sb.exists(&manifest_path()));
+}
+
+#[test]
+fn invalid_manifest_falls_back_to_two_way() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    with_profile(&sb, "work", "--clone");
+    sb.write(&manifest_path(), "{oops");
+    sb.write(".mcc/profiles/work/CLAUDE.md", "# mine\n");
+    sb.mcc()
+        .args(["sync", "work"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("ignoring"));
+    assert_eq!(sb.read(".mcc/profiles/work/CLAUDE.md"), "# my rules\n");
+    assert_eq!(json(sb.read(&manifest_path()).as_bytes())["version"], 1);
+}
+
+#[test]
+fn list_has_a_sync_column() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    with_profile(&sb, "work", "--clone");
+    with_profile(&sb, "lab", "--fresh");
+    let table = stdout_of(sb.mcc().args(["list", "--no-usage"]));
+    assert!(table.lines().next().unwrap().contains("SYNC"), "{table}");
+    let row = |name: &str| {
+        table
+            .lines()
+            .find(|l| l.starts_with(name))
+            .unwrap()
+            .to_string()
+    };
+    assert!(row("work").contains('✓'), "{table}");
+
+    sb.write(".claude/agents/reviewer.md", "agent v2");
+    sb.write(".claude/commands/deploy.md", "cmd v2");
+    sb.write(".claude/skills/gamma/SKILL.md", "new");
+    sb.write(".mcc/profiles/work/CLAUDE.md", "# mine\n");
+    sb.write(".mcc/profiles/work/hooks/notify.sh", "mine");
+    let table = stdout_of(sb.mcc().args(["list", "--no-usage"]));
+    assert!(table.contains("3 behind, 2 local edits"), "{table}");
+
+    let arr = json(
+        &sb.mcc()
+            .args(["list", "--json", "--no-usage"])
+            .output()
+            .unwrap()
+            .stdout,
+    );
+    let arr = arr.as_array().unwrap();
+    let w = by_name(arr, "work");
+    assert_eq!(w["sync"]["behind"], 3);
+    assert_eq!(w["sync"]["local_edits"], 2);
+    assert_eq!(w["sync"]["conflicts"], 0);
+    assert!(by_name(arr, "default")["sync"].is_null());
+    // A fresh profile has no manifest: every difference is behind.
+    assert!(by_name(arr, "lab")["sync"]["behind"].as_u64().unwrap() > 0);
+}
+
+#[test]
+fn diff_shows_the_differences() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    with_profile(&sb, "work", "--clone");
+    sb.mcc()
+        .args(["diff", "work"])
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("matches the default"));
+
+    sb.write(".claude/CLAUDE.md", "# my rules\n# more\n");
+    sb.write(".mcc/profiles/work/agents/reviewer.md", "my agent");
+    sb.write(".mcc/profiles/work/agents/mine.md", "only here");
+    let before = sb.read(&manifest_path());
+    sb.mcc()
+        .args(["diff", "work"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("== changed in default: CLAUDE.md"))
+        .stdout(predicate::str::contains("--- default/CLAUDE.md"))
+        .stdout(predicate::str::contains("+++ work/CLAUDE.md"))
+        .stdout(predicate::str::contains("-# more"))
+        .stdout(predicate::str::contains(
+            "== local edit: agents/reviewer.md",
+        ))
+        .stdout(predicate::str::contains("+my agent"))
+        .stdout(predicate::str::contains(
+            "== only in profile: agents/mine.md",
+        ))
+        .stderr(predicate::str::contains("1 behind, 1 local edit"));
+    // Read-only.
+    assert_eq!(sb.read(&manifest_path()), before);
+    assert_eq!(sb.read(".mcc/profiles/work/CLAUDE.md"), "# my rules\n");
+
+    sb.mcc()
+        .args(["diff", "work", "--only", "skills"])
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+    sb.mcc().args(["diff", "ghost"]).assert().code(2);
+    sb.mcc()
+        .args(["diff", "default"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("pick another profile"));
 }

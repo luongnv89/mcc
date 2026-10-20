@@ -53,6 +53,7 @@ Examples:
   mcc usage work --json          The same for `work`, as JSON
   mcc sync work --dry-run        Preview copying the default's setup into `work`
   mcc sync --all                 Bring every profile up to date with the default
+  mcc diff work                  Show how `work` differs from the default
   mcc rename work job            Rename profile `work` (and its command) to `job`
   mcc share work                 Share `work`'s sessions with your other sharing profiles
   mcc project set work           Start `work` in this project (git repo) with `mcc run`
@@ -131,9 +132,15 @@ pub enum Command {
 
     /// Copy the default profile's setup into a profile (one-way: default → profile)
     #[command(
-        after_help = "Items: settings, claude-md, keybindings, statusline, agents, skills,\n       commands, hooks, output-styles, plugins, mcp\n\nExamples:\n  mcc sync work --dry-run\n  mcc sync work --only skills,agents\n  mcc sync --all --prune"
+        after_help = "Items: settings, claude-md, keybindings, statusline, agents, skills,\n       commands, hooks, output-styles, plugins, mcp\n\nEach sync records what it wrote in <profile>/.mcc-sync.json. The next sync\ncompares the default and the profile with it: a path changed only in the\ndefault is updated; one edited (or deleted) only in the profile is kept and\nreported as a local edit; one changed in both is a conflict, kept unless\n--force. Everything overwritten or removed is first backed up to\n<profile>/.mcc-backup/<timestamp>/. `mcc diff ALIAS` shows the differences.\n\nExamples:\n  mcc sync work --dry-run\n  mcc sync work --only skills,agents\n  mcc sync work --force\n  mcc sync --all --prune"
     )]
     Sync(SyncArgs),
+
+    /// Show how a profile differs from the default's setup, as `mcc sync` sees it
+    #[command(
+        after_help = "Each differing path (and MCP server) is listed as one of:\n  new in default       the next `mcc sync` adds it\n  changed in default   the next `mcc sync` updates it\n  local edit           edited (or deleted) in the profile; `mcc sync` keeps it\n  conflict             changed in both; `mcc sync` keeps it unless --force\n  only in profile      the default doesn't have it; kept unless --prune\nwith a line diff (default → profile) for text files. Nothing is written.\n\nExamples:\n  mcc diff work\n  mcc diff work --only skills,settings"
+    )]
+    Diff(DiffArgs),
 
     /// Rename a profile: its command, launcher, shell alias and registry entry
     #[command(
@@ -443,6 +450,10 @@ pub struct SyncArgs {
     #[arg(long)]
     pub prune: bool,
 
+    /// Also overwrite conflicts: paths changed in the default and edited in the profile
+    #[arg(long)]
+    pub force: bool,
+
     /// Only sync these items (comma-separated)
     #[arg(long, value_delimiter = ',', value_name = "ITEMS")]
     pub only: Option<Vec<String>>,
@@ -450,6 +461,16 @@ pub struct SyncArgs {
     /// Do not ask for confirmation
     #[arg(short, long)]
     pub yes: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct DiffArgs {
+    /// Profile to compare with the default
+    pub alias: String,
+
+    /// Only compare these items (comma-separated)
+    #[arg(long, value_delimiter = ',', value_name = "ITEMS")]
+    pub only: Option<Vec<String>>,
 }
 
 #[derive(Debug, Args)]
