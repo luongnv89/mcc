@@ -48,6 +48,10 @@ const BUILTIN: &[(&str, &str, bool)] = &[
 /// Pseudo-group for MCP servers stored in `.claude.json`.
 pub const MCP_GROUP: &str = "mcp";
 
+/// Folder inside a profile where `mcc sync` backs up what it overwrites or
+/// removes. Never part of the sync set.
+pub const BACKUP_DIR: &str = ".mcc-backup";
+
 pub fn group_names() -> Vec<&'static str> {
     let mut v: Vec<&str> = BUILTIN.iter().map(|b| b.0).collect();
     v.dedup();
@@ -86,13 +90,27 @@ pub fn spec(only: Option<&[String]>, cfg: &SyncConfig) -> Result<Spec> {
     if only.is_none() {
         for extra in &cfg.extra {
             let rel = PathBuf::from(extra);
+            // None for "" or ".", which name the config dir itself.
+            let first = rel.components().find_map(|c| match c {
+                std::path::Component::Normal(name) => Some(name),
+                _ => None,
+            });
             if rel.is_absolute()
+                || first.is_none()
                 || rel
                     .components()
                     .any(|c| matches!(c, std::path::Component::ParentDir))
             {
                 return Err(CliError::input(format!(
                     "sync.extra entry \"{extra}\" must be a relative path inside the config dir"
+                ))
+                .hint("edit [sync] extra in ~/.mcc/config.toml, e.g. extra = [\"rules\"]")
+                .into());
+            }
+            // Syncing the backups would prune or overwrite them.
+            if first.is_some_and(|name| name.eq_ignore_ascii_case(BACKUP_DIR)) {
+                return Err(CliError::input(format!(
+                    "sync.extra entry \"{extra}\" points into {BACKUP_DIR}, where sync keeps its backups"
                 ))
                 .hint("edit [sync] extra in ~/.mcc/config.toml, e.g. extra = [\"rules\"]")
                 .into());
@@ -1313,6 +1331,35 @@ mod tests {
         // No MCP change: .claude.json is not touched.
         p.mcp = Some(McpChange::default());
         assert!(!p.backup_paths(dst).contains(&PathBuf::from(".claude.json")));
+    }
+
+    #[test]
+    fn extra_entries_must_stay_out_of_the_backup_dir() {
+        let extra = |e: &str| SyncConfig {
+            exclude: vec![],
+            extra: vec![e.to_string()],
+        };
+        for bad in [
+            "",
+            ".",
+            "./",
+            "/abs",
+            "../up",
+            ".mcc-backup",
+            "./.mcc-backup/20260101-000000.000",
+            ".MCC-Backup",
+        ] {
+            let err = spec(None, &extra(bad)).unwrap_err();
+            assert_eq!(
+                crate::error::classify(&err).0,
+                crate::error::EXIT_INPUT,
+                "{bad:?}: {err}"
+            );
+        }
+        for ok in ["rules", "./rules", "rules/.mcc-backup"] {
+            let sp = spec(None, &extra(ok)).unwrap();
+            assert!(sp.items.iter().any(|i| i.group == "extra"), "{ok:?}");
+        }
     }
 
     #[test]

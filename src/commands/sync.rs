@@ -271,7 +271,7 @@ fn backup(dir: &Path, plan: &Plan) -> Result<Option<PathBuf>> {
     if rels.is_empty() {
         return Ok(None);
     }
-    let root = dir.join(".mcc-backup");
+    let root = dir.join(copy::BACKUP_DIR);
     std::fs::create_dir_all(&root).with_context(|| format!("creating {}", root.display()))?;
     fsutil::set_private_dir(&root)?;
     let base = chrono::Local::now().format("%Y%m%d-%H%M%S%.3f").to_string();
