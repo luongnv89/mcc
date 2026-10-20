@@ -105,6 +105,12 @@ pub struct Profile {
     /// before mcc recorded it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<Account>,
+    /// A settings overlay, `[profiles.ALIAS.settings]`: deep-merged onto the
+    /// default's `settings.json` whenever clone or sync writes this
+    /// profile's copy (see `copy::settings_overlay`). Left out of the file
+    /// while unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<toml::Table>,
 }
 
 /// A Claude Code account, as its state file (`oauthAccount` in
@@ -570,6 +576,7 @@ mod tests {
                 share_cross_org_allowed_at: None,
                 label: None,
                 account: None,
+                settings: None,
             },
         );
         cfg.save(&path).unwrap();
@@ -706,6 +713,7 @@ mod tests {
             share_cross_org_allowed_at: None,
             label: None,
             account: None,
+            settings: None,
         }
     }
 

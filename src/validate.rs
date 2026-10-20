@@ -383,6 +383,7 @@ mod tests {
                 share_cross_org_allowed_at: None,
                 label: None,
                 account: None,
+                settings: None,
             },
         );
         assert!(!conflicts("claude", &paths, &cfg, None).is_empty());

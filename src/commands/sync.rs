@@ -123,7 +123,7 @@ pub fn plan_for(
     prune: bool,
     force: bool,
 ) -> Result<Plan> {
-    let rw = Rewriter::new(paths, dir, &cfg.sync);
+    let rw = Rewriter::for_profile(paths, cfg, dir)?;
     copy::plan_with(
         &paths.default_dir,
         &paths.default_json,
@@ -212,7 +212,12 @@ fn sync_one(
         ))
         .into());
     }
-    let rw = Rewriter::new(paths, &dir, &cfg.sync);
+    let rw = Rewriter::for_profile(paths, cfg, &dir)?;
+    if rw.has_overlay() && cfg.sync.exclude.iter().any(|g| g == "settings") {
+        ui::warn(&format!(
+            "\"{alias}\" has a settings overlay, but [sync] exclude has \"settings\", so sync leaves its settings.json alone and the overlay is not applied"
+        ));
+    }
     let mut steps = ui::Steps::new(if args.dry_run { 1 } else { 3 });
 
     let step = steps.start("Compare with the default profile");

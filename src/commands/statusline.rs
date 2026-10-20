@@ -764,6 +764,7 @@ mod tests {
                 share_cross_org_allowed_at: None,
                 label: None,
                 account: None,
+                settings: None,
             },
         );
         let f = |d: Option<&str>| profile_for(&p, &cfg, d.map(OsStr::new));

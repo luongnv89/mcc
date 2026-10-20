@@ -61,7 +61,7 @@ pub fn run(paths: &Paths, cfg: &Config, args: &DiffArgs) -> Result<()> {
         ));
     }
     let plan = super::sync::plan_for(paths, cfg, &dir, &spec, loaded.manifest(), false, false)?;
-    let rw = Rewriter::new(paths, &dir, &cfg.sync);
+    let rw = Rewriter::for_profile(paths, cfg, &dir)?;
 
     let mut out = std::io::stdout().lock();
     let mut shown = 0;
@@ -173,7 +173,13 @@ fn file_diff(
     let src = paths.default_dir.join(&c.rel);
     let dst = dir.join(&c.rel);
     let (a, b) = (side(&src, Some((c.rewrite, rw)))?, side(&dst, None)?);
-    let (from, to) = (format!("default/{rel}"), format!("{alias}/{rel}"));
+    // The default's settings.json as the profile receives it: with its overlay.
+    let from = if rel == copy::SETTINGS_FILE && rw.has_overlay() {
+        format!("default/{rel} + {alias} overlay")
+    } else {
+        format!("default/{rel}")
+    };
+    let to = format!("{alias}/{rel}");
     match (a, b) {
         (Side::Text(a), Side::Text(b)) => text_diff(out, &from, &to, &a, &b)?,
         (Side::Text(a), Side::Missing) => text_diff(out, &from, &to, &a, "")?,
@@ -213,7 +219,8 @@ fn side(p: &Path, rewrite: Option<(bool, &Rewriter)>) -> Result<Side> {
     let Ok(meta) = std::fs::symlink_metadata(p) else {
         return Ok(Side::Missing);
     };
-    if meta.file_type().is_symlink() {
+    let overlaid = rewrite.is_some_and(|(_, rw)| rw.overlays(p));
+    if meta.file_type().is_symlink() && !overlaid {
         let target = std::fs::read_link(p).unwrap_or_default();
         return Ok(Side::Link(target.display().to_string()));
     }

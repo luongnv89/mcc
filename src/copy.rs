@@ -13,7 +13,7 @@ use regex::Regex;
 use serde_json::{Map, Value};
 use walkdir::WalkDir;
 
-use crate::config::SyncConfig;
+use crate::config::{Config, SyncConfig};
 use crate::error::CliError;
 use crate::fsutil;
 use crate::manifest::{self, Manifest};
@@ -52,6 +52,140 @@ pub const MCP_GROUP: &str = "mcp";
 /// Folder inside a profile where `mcc sync` backs up what it overwrites or
 /// removes. Never part of the sync set.
 pub const BACKUP_DIR: &str = ".mcc-backup";
+
+/// The settings file a profile's overlay is merged onto.
+pub const SETTINGS_FILE: &str = "settings.json";
+
+/// A profile's own settings overlay file, inside the profile dir. Never part
+/// of the sync set.
+pub const OVERLAY_FILE: &str = "settings.mcc.json";
+
+/// A profile's settings overlay: `table` (`[profiles.<alias>.settings]` in
+/// `~/.mcc/config.toml`) with `<dir>/settings.mcc.json` deep-merged on top,
+/// so the file wins where both set a key. `None` when neither sets anything,
+/// in which case `settings.json` is copied byte for byte as before.
+pub fn settings_overlay(
+    table: Option<&toml::Table>,
+    dir: &Path,
+) -> Result<Option<Map<String, Value>>> {
+    let mut overlay = Map::new();
+    if let Some(t) = table {
+        let Value::Object(m) = toml_to_json(&toml::Value::Table(t.clone())) else {
+            unreachable!("a table converts to an object");
+        };
+        overlay = m;
+    }
+    let file = dir.join(OVERLAY_FILE);
+    match read_json(&file)? {
+        None => {}
+        Some(Value::Object(m)) => {
+            // Merged as is: a `null` in the file must still reach (and
+            // remove) the default's key, so it is kept, not applied here.
+            for (k, v) in m {
+                match (overlay.get_mut(&k), v) {
+                    (Some(Value::Object(old)), Value::Object(new)) => merge_overlays(old, new),
+                    (_, v) => {
+                        overlay.insert(k, v);
+                    }
+                }
+            }
+        }
+        Some(_) => {
+            return Err(CliError::input(format!(
+                "{} must hold a JSON object, like settings.json",
+                file.display()
+            ))
+            .hint("e.g. {\"model\": \"opus\"}; or remove the file")
+            .into());
+        }
+    }
+    Ok((!overlay.is_empty()).then_some(overlay))
+}
+
+/// Merge overlay `new` into overlay `old`: like [`deep_merge`], except a
+/// `null` is kept (it still has to remove the key from the default's
+/// settings).
+fn merge_overlays(old: &mut Map<String, Value>, new: Map<String, Value>) {
+    for (k, v) in new {
+        match (old.get_mut(&k), v) {
+            (Some(Value::Object(o)), Value::Object(n)) => merge_overlays(o, n),
+            (_, v) => {
+                old.insert(k, v);
+            }
+        }
+    }
+}
+
+/// Deep-merge `overlay` onto `base`: objects merge key by key, recursively;
+/// a `null` removes the key; anything else (a string, number, bool or
+/// array) replaces the base's value whole. Arrays are not concatenated, so
+/// an overlay `permissions.allow` is the profile's whole list.
+pub fn deep_merge(base: &mut Map<String, Value>, overlay: &Map<String, Value>) {
+    for (k, v) in overlay {
+        match (base.get_mut(k), v) {
+            (_, Value::Null) => {
+                base.remove(k);
+            }
+            (Some(Value::Object(b)), Value::Object(o)) => deep_merge(b, o),
+            (_, Value::Object(o)) => {
+                // A new object: merged onto nothing, so its nulls are dropped.
+                let mut fresh = Map::new();
+                deep_merge(&mut fresh, o);
+                base.insert(k.clone(), Value::Object(fresh));
+            }
+            (_, v) => {
+                base.insert(k.clone(), v.clone());
+            }
+        }
+    }
+}
+
+/// A TOML value as JSON; datetimes become their RFC 3339 text.
+fn toml_to_json(v: &toml::Value) -> Value {
+    match v {
+        toml::Value::String(s) => Value::String(s.clone()),
+        toml::Value::Integer(i) => Value::from(*i),
+        toml::Value::Float(f) => {
+            serde_json::Number::from_f64(*f).map_or(Value::Null, Value::Number)
+        }
+        toml::Value::Boolean(b) => Value::Bool(*b),
+        toml::Value::Datetime(d) => Value::String(d.to_string()),
+        toml::Value::Array(a) => Value::Array(a.iter().map(toml_to_json).collect()),
+        toml::Value::Table(t) => Value::Object(
+            t.iter()
+                .map(|(k, v)| (k.clone(), toml_to_json(v)))
+                .collect(),
+        ),
+    }
+}
+
+/// The default's `settings.json` (already path-rewritten) with `overlay`
+/// merged on, as pretty JSON.
+fn overlaid(bytes: &[u8], overlay: &Map<String, Value>, src: &Path) -> Result<Vec<u8>> {
+    let mut base = match serde_json::from_slice::<Value>(bytes) {
+        Ok(Value::Object(m)) => m,
+        Ok(_) => {
+            return Err(CliError::input(format!(
+                "{} is not a JSON object, so the profile's settings overlay can't be merged onto it",
+                src.display()
+            ))
+            .hint("fix the default's settings.json, or remove the profile's overlay")
+            .into());
+        }
+        Err(e) => {
+            return Err(CliError::input(format!(
+                "{} is not valid JSON ({e}), so the profile's settings overlay can't be merged onto it",
+                src.display()
+            ))
+            .hint("fix the default's settings.json, or remove the profile's overlay")
+            .into());
+        }
+    };
+    deep_merge(&mut base, overlay);
+    let mut out = serde_json::to_vec_pretty(&Value::Object(base))?;
+    out.push(b'\n');
+    Ok(out)
+}
 
 pub fn group_names() -> Vec<&'static str> {
     let mut v: Vec<&str> = BUILTIN.iter().map(|b| b.0).collect();
@@ -125,6 +259,14 @@ pub fn spec(only: Option<&[String]>, cfg: &SyncConfig) -> Result<Spec> {
                 .hint("edit [sync] extra in ~/.mcc/config.toml, e.g. extra = [\"rules\"]")
                 .into());
             }
+            // The overlay is the profile's own; syncing it would replace it.
+            if first.is_some_and(|name| name.eq_ignore_ascii_case(OVERLAY_FILE)) {
+                return Err(CliError::input(format!(
+                    "sync.extra entry \"{extra}\" is {OVERLAY_FILE}, the profile's own settings overlay"
+                ))
+                .hint("edit [sync] extra in ~/.mcc/config.toml, e.g. extra = [\"rules\"]")
+                .into());
+            }
             items.push(Item {
                 group: "extra".into(),
                 rel,
@@ -149,6 +291,9 @@ pub struct Rewriter {
     from_dir: PathBuf,
     from_dir_real: PathBuf,
     to_dir: PathBuf,
+    /// The profile's settings overlay, merged onto the default's
+    /// `settings.json` after paths are rewritten (see [`settings_overlay`]).
+    overlay: Option<Map<String, Value>>,
 }
 
 impl Rewriter {
@@ -179,7 +324,37 @@ impl Rewriter {
             from_dir_real: std::fs::canonicalize(&paths.default_dir)
                 .unwrap_or_else(|_| paths.default_dir.clone()),
             to_dir: to_dir.to_path_buf(),
+            overlay: None,
         }
+    }
+
+    /// The rewriter for the profile at `to_dir`, with its settings overlay
+    /// (`[profiles.<alias>.settings]` of the profile registered with that
+    /// dir, then `<to_dir>/settings.mcc.json`). Fails when the overlay is
+    /// invalid, so nothing is written from a half-read overlay.
+    pub fn for_profile(paths: &Paths, cfg: &Config, to_dir: &Path) -> Result<Self> {
+        let table = cfg
+            .profiles
+            .values()
+            .find(|p| p.dir == to_dir)
+            .and_then(|p| p.settings.as_ref());
+        let overlay = settings_overlay(table, to_dir)?;
+        Ok(Self {
+            overlay,
+            ..Self::new(paths, to_dir, &cfg.sync)
+        })
+    }
+
+    /// Whether the profile has a settings overlay.
+    pub fn has_overlay(&self) -> bool {
+        self.overlay.is_some()
+    }
+
+    /// Whether `src` is the default's `settings.json` (a file, or a symlink
+    /// to one, which is then written as a file) and this profile has an
+    /// overlay for it.
+    pub fn overlays(&self, src: &Path) -> bool {
+        self.overlay.is_some() && src == self.from_dir.join(SETTINGS_FILE) && src.is_file()
     }
 
     pub fn apply(&self, text: &str) -> String {
@@ -510,6 +685,9 @@ fn kind(p: &Path) -> Kind {
 /// its content (with paths rewritten when `rewrite`), or for a symlink, the
 /// target the copy points at. `None` for a directory or a missing path.
 fn desired_hash(src: &Path, rewrite: bool, rw: &Rewriter) -> Result<Option<String>> {
+    if rw.overlays(src) {
+        return Ok(Some(manifest::hash_file(&desired_bytes(src, rewrite, rw)?)));
+    }
     Ok(match kind(src) {
         Kind::Link(target) => Some(manifest::hash_link(&rw.link_target(src, &target))),
         Kind::File => Some(manifest::hash_file(&desired_bytes(src, rewrite, rw)?)),
@@ -520,11 +698,15 @@ fn desired_hash(src: &Path, rewrite: bool, rw: &Rewriter) -> Result<Option<Strin
 /// What copying the file `src` writes into the profile.
 pub fn desired_bytes(src: &Path, rewrite: bool, rw: &Rewriter) -> Result<Vec<u8>> {
     let bytes = std::fs::read(src).with_context(|| format!("reading {}", src.display()))?;
-    Ok(if rewrite {
+    let bytes = if rewrite {
         rewritten(&bytes, rw)
     } else {
         bytes
-    })
+    };
+    match &rw.overlay {
+        Some(overlay) if rw.overlays(src) => overlaid(&bytes, overlay, src),
+        _ => Ok(bytes),
+    }
 }
 
 /// The hash of the file or symlink at `p` in the profile, as [`desired_hash`].
@@ -1050,7 +1232,13 @@ fn copy_one(src: &Path, dst: &Path, rewrite: bool, rw: &Rewriter) -> Result<()> 
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
-    match kind(src) {
+    // The overlaid settings.json is written as a file, even from a symlink.
+    let src_kind = if rw.overlays(src) {
+        Kind::File
+    } else {
+        kind(src)
+    };
+    match src_kind {
         Kind::Link(target) => {
             fsutil::remove_any(dst)?;
             std::os::unix::fs::symlink(rw.link_target(src, &target), dst)
@@ -1060,10 +1248,8 @@ fn copy_one(src: &Path, dst: &Path, rewrite: bool, rw: &Rewriter) -> Result<()> 
             if matches!(kind(dst), Kind::Dir | Kind::Link(_)) {
                 fsutil::remove_any(dst)?;
             }
-            if rewrite {
-                let bytes =
-                    std::fs::read(src).with_context(|| format!("reading {}", src.display()))?;
-                fsutil::write_atomic(dst, &rewritten(&bytes, rw))?;
+            if rewrite || rw.overlays(src) {
+                fsutil::write_atomic(dst, &desired_bytes(src, rewrite, rw)?)?;
                 if let Ok(meta) = std::fs::metadata(src) {
                     let _ = std::fs::set_permissions(dst, meta.permissions());
                 }
@@ -1887,5 +2073,251 @@ mod tests {
         let mcp = p.mcp.as_ref().unwrap();
         assert!(mcp.local.is_empty() && mcp.conflicts.is_empty());
         assert_eq!(mcp.updated, vec!["fs".to_string()]);
+    }
+
+    #[test]
+    fn deep_merge_semantics() {
+        let mut base = serde_json::json!({
+            "model": "opus",
+            "env": {"A": "1", "B": "2"},
+            "permissions": {"allow": ["Read", "Edit"], "deny": ["Bash(rm)"]},
+            "statusLine": {"command": "x"}
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let overlay = serde_json::json!({
+            "model": "sonnet",
+            "env": {"B": null, "C": "3"},
+            "permissions": {"allow": ["Bash(ls)"]},
+            "statusLine": null,
+            "missing": null,
+            "new": {"x": 1, "y": null}
+        });
+        deep_merge(&mut base, overlay.as_object().unwrap());
+        assert_eq!(
+            Value::Object(base),
+            serde_json::json!({
+                "model": "sonnet",
+                "env": {"A": "1", "C": "3"},
+                // Arrays are replaced whole, not concatenated.
+                "permissions": {"allow": ["Bash(ls)"], "deny": ["Bash(rm)"]},
+                "new": {"x": 1}
+            })
+        );
+    }
+
+    #[test]
+    fn overlay_file_wins_over_config_table_and_keeps_nulls() {
+        let d = tempfile::tempdir().unwrap();
+        assert!(settings_overlay(None, d.path()).unwrap().is_none());
+        let table: toml::Table = toml::from_str(
+            "model = \"sonnet\"\nwhen = 1979-05-27T07:32:00Z\n[env]\nA = \"1\"\nB = \"2\"\n",
+        )
+        .unwrap();
+        // An empty table is no overlay: settings.json is copied as is.
+        assert!(
+            settings_overlay(Some(&toml::Table::new()), d.path())
+                .unwrap()
+                .is_none()
+        );
+        std::fs::write(
+            d.path().join(OVERLAY_FILE),
+            r#"{"env": {"B": null, "C": "3"}, "model": "haiku"}"#,
+        )
+        .unwrap();
+        let o = settings_overlay(Some(&table), d.path()).unwrap().unwrap();
+        assert_eq!(
+            Value::Object(o),
+            serde_json::json!({
+                "model": "haiku",
+                "when": "1979-05-27T07:32:00Z",
+                "env": {"A": "1", "B": null, "C": "3"}
+            })
+        );
+        std::fs::write(d.path().join(OVERLAY_FILE), "\"model\"").unwrap();
+        assert!(settings_overlay(None, d.path()).is_err());
+    }
+
+    #[test]
+    fn overlay_applies_to_settings_json_only_after_rewriting() {
+        let (_d, paths, dst) = setup();
+        std::fs::write(paths.default_dir.join("settings.local.json"), r#"{"a":1}"#).unwrap();
+        std::fs::write(
+            dst.join(OVERLAY_FILE),
+            r#"{"hooks": null, "s": "~/.claude/agents/mine", "a": 2}"#,
+        )
+        .unwrap();
+        let mut cfg = Config::default();
+        cfg.profiles.insert(
+            "work".into(),
+            crate::config::Profile {
+                dir: dst.clone(),
+                mode: "clone".into(),
+                created_at: String::new(),
+                wrapper: None,
+                rc_file: None,
+                last_sync: None,
+                share_sessions: false,
+                share_note_acknowledged_at: None,
+                share_group: None,
+                share_cross_org_allowed_at: None,
+                label: None,
+                account: None,
+                settings: Some(toml::from_str("model = \"sonnet\"").unwrap()),
+            },
+        );
+        let rw = Rewriter::for_profile(&paths, &cfg, &dst).unwrap();
+        assert!(rw.has_overlay());
+        let sp = spec(Some(&["settings".to_string()]), &cfg.sync).unwrap();
+        let p = plan(
+            &paths.default_dir,
+            &paths.default_json,
+            &dst,
+            &sp,
+            &rw,
+            false,
+        )
+        .unwrap();
+        apply(&p, &paths.default_dir, &dst, &rw, false).unwrap();
+        let s: Value =
+            serde_json::from_str(&std::fs::read_to_string(dst.join("settings.json")).unwrap())
+                .unwrap();
+        assert_eq!(s["model"], "sonnet");
+        assert!(s.get("hooks").is_none(), "{s}");
+        // The default's paths are rewritten; the overlay's are taken as is.
+        assert_eq!(s["s"], "~/.claude/agents/mine");
+        assert_eq!(s["e"], "$HOME/.mcc/profiles/work");
+        // settings.local.json is copied as it is.
+        assert_eq!(
+            std::fs::read_to_string(dst.join("settings.local.json")).unwrap(),
+            r#"{"a":1}"#
+        );
+        // The manifest records the merged result, so the next plan is a no-op.
+        let m = p.manifest(None);
+        let p2 = plan_with(
+            &paths.default_dir,
+            &paths.default_json,
+            &dst,
+            &sp,
+            &rw,
+            false,
+            &Base {
+                manifest: Some(&m),
+                force: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(p2.actionable(), 0, "{:?}", p2.changes);
+        assert_eq!(p2.status(), Status::default());
+        // Without the overlay, the profile's copy is simply behind.
+        let plain = Rewriter::new(&paths, &dst, &cfg.sync);
+        let p3 = plan_with(
+            &paths.default_dir,
+            &paths.default_json,
+            &dst,
+            &sp,
+            &plain,
+            false,
+            &Base {
+                manifest: Some(&m),
+                force: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(p3.count(Action::Update), 1, "{:?}", p3.changes);
+    }
+
+    #[test]
+    fn extra_cannot_name_the_overlay_file() {
+        let cfg = SyncConfig {
+            exclude: vec![],
+            extra: vec!["settings.mcc.json".into()],
+        };
+        assert!(spec(None, &cfg).is_err());
+    }
+
+    #[test]
+    fn invalid_default_settings_fail_only_with_an_overlay() {
+        let (_d, paths, dst) = setup();
+        std::fs::write(paths.default_dir.join("settings.json"), "{oops").unwrap();
+        let sp = spec(Some(&["settings".to_string()]), &SyncConfig::default()).unwrap();
+        let rw = Rewriter::new(&paths, &dst, &SyncConfig::default());
+        assert!(
+            plan(
+                &paths.default_dir,
+                &paths.default_json,
+                &dst,
+                &sp,
+                &rw,
+                false
+            )
+            .is_ok()
+        );
+        std::fs::write(dst.join(OVERLAY_FILE), r#"{"model": "x"}"#).unwrap();
+        let rw = Rewriter::for_profile(&paths, &Config::default(), &dst).unwrap();
+        let err = plan(
+            &paths.default_dir,
+            &paths.default_json,
+            &dst,
+            &sp,
+            &rw,
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("overlay can't be merged"), "{err}");
+    }
+
+    #[test]
+    fn overlaid_symlinked_settings_are_written_as_a_file() {
+        let (d, paths, dst) = setup();
+        let real = d.path().join("dotfiles-settings.json");
+        std::fs::rename(paths.default_dir.join("settings.json"), &real).unwrap();
+        std::os::unix::fs::symlink(&real, paths.default_dir.join("settings.json")).unwrap();
+        let sp = spec(Some(&["settings".to_string()]), &SyncConfig::default()).unwrap();
+        // Without an overlay the symlink is kept, as before.
+        let rw = Rewriter::new(&paths, &dst, &SyncConfig::default());
+        let p = plan(
+            &paths.default_dir,
+            &paths.default_json,
+            &dst,
+            &sp,
+            &rw,
+            false,
+        )
+        .unwrap();
+        apply(&p, &paths.default_dir, &dst, &rw, false).unwrap();
+        assert!(dst.join("settings.json").is_symlink());
+        // With one, the merged result replaces the link (never its target).
+        std::fs::write(dst.join(OVERLAY_FILE), r#"{"model": "x"}"#).unwrap();
+        let rw = Rewriter::for_profile(&paths, &Config::default(), &dst).unwrap();
+        let p = plan(
+            &paths.default_dir,
+            &paths.default_json,
+            &dst,
+            &sp,
+            &rw,
+            false,
+        )
+        .unwrap();
+        assert_eq!(p.count(Action::Update), 1, "{:?}", p.changes);
+        apply(&p, &paths.default_dir, &dst, &rw, false).unwrap();
+        assert!(!dst.join("settings.json").is_symlink());
+        let s: Value =
+            serde_json::from_str(&std::fs::read_to_string(dst.join("settings.json")).unwrap())
+                .unwrap();
+        assert_eq!(s["model"], "x");
+        assert!(!std::fs::read_to_string(&real).unwrap().contains("model"));
+        let p = plan(
+            &paths.default_dir,
+            &paths.default_json,
+            &dst,
+            &sp,
+            &rw,
+            false,
+        )
+        .unwrap();
+        assert_eq!(p.actionable(), 0, "{:?}", p.changes);
     }
 }

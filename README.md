@@ -253,6 +253,31 @@ exclude = ["plugins"]          # built-in items to skip
 extra = ["my-tool/config.yml"] # additional paths (relative to the config dir) to copy
 ```
 
+### Per-profile settings overlays
+
+`settings.json` is copied from the default, so on its own a profile can't keep a `model`, `env`, `permissions` or `statusLine` of its own. An **overlay** fixes that: clone and every `sync` write the default's `settings.json` (paths rewritten first), then deep-merge the profile's overlay onto it. Give a profile an overlay in either or both places:
+
+```toml
+# ~/.mcc/config.toml (or `mcc config edit`)
+[profiles.work.settings]
+model = "sonnet"
+
+[profiles.work.settings.env]
+ANTHROPIC_DEFAULT_SONNET_MODEL = "claude-sonnet-5"
+```
+
+```json
+// ~/.mcc/profiles/work/settings.mcc.json
+{ "permissions": { "allow": ["Bash(npm test)"] }, "statusLine": null }
+```
+
+- **Merge rules.** Objects merge key by key, recursively. A string, number, boolean or **array** replaces the default's value whole: arrays are never concatenated, so an overlay `permissions.allow` is the profile's whole list (copy the default's entries into it to extend them). A `null` removes the key (JSON only, since TOML has no null). Overlay values are written as they are: their paths are not rewritten.
+- **Order.** The default's `settings.json`, then `[profiles.<alias>.settings]`, then `<profile>/settings.mcc.json`, so the file wins where both set a key. Only `settings.json` is overlaid; `settings.local.json` is still copied as it is. With an overlay, `settings.json` is written as formatted JSON (and as a file, even when the default's is a symlink); without one it is copied byte for byte, as before.
+- **Sync keeps it.** `sync` recomputes the merge every time and records the merged result in `.mcc-sync.json`, so overlay keys never show up as local edits or conflicts in `sync`, `mcc diff` (which labels the source `default/settings.json + <alias> overlay`) or `mcc list`. Changing the overlay is a change the next `sync` applies; an edit made directly in the profile's `settings.json` is still a local edit, and `--force` replaces it with the merged result. As with every overwrite, the previous `settings.json` is backed up to `.mcc-backup/` first.
+- **Excluded settings.** When `[sync] exclude` has `"settings"`, the profile owns its `settings.json` and sync never writes it, so the overlay is not applied (`sync` warns that it is ignored). Edit that profile's `settings.json` directly instead.
+- **Status line.** An overlay `statusLine` replaces the default's, the `mcc statusline` shim included, so that profile's rate limits are no longer cached. To keep the shim with a profile-specific command, leave `statusLine` out of the overlay, or exclude `settings` and use `mcc statusline install`, which wraps each profile's own `statusLine`.
+- `settings.mcc.json` belongs to its profile: it is never copied, pruned or backed up by sync, and a `[sync] extra` entry naming it is rejected. An overlay that isn't a JSON object, or a default `settings.json` that isn't valid JSON while an overlay is set, stops the sync before anything is written.
+
 ### Showing account emails in `mcc usage`
 
 Also in `~/.mcc/config.toml` (emails are hidden by default):
@@ -490,7 +515,7 @@ mcc statusline uninstall          # put the previous statusLine back
 ```
 
 - **Install writes to the default profile.** Apart from `mcc add` creating a missing `~/.claude`, `install` and `uninstall` are the only mcc commands that change your default profile. A symlinked `settings.json` (from a dotfiles manager, say) stays a symlink: its target is written. It copies `~/.claude/settings.json` to `~/.mcc/backups/settings.json.default.<timestamp>` first, records your current `statusLine` in `~/.mcc/state/default/statusline.json`, and sets `statusLine` to `mcc statusline` (keeping its other fields, such as `padding`). Running it again changes nothing: the shim is never wrapped twice. `--prefix` on an installed shim only switches the prefix.
-- **Profiles.** Profiles get the shim with their settings on the next `mcc sync` (e.g. `mcc sync --all --only settings`). When `[sync] exclude` has `"settings"`, profiles never receive the default's settings, so `install` offers to add the shim to each profile's own `settings.json` (with a backup, and that profile's own `statusLine` recorded in `~/.mcc/state/<alias>/statusline.json`); `--yes` adds it without asking, and without a terminal it is skipped with a hint.
+- **Profiles.** Profiles get the shim with their settings on the next `mcc sync` (e.g. `mcc sync --all --only settings`), unless their [settings overlay](#per-profile-settings-overlays) sets a `statusLine` of its own, which wins. When `[sync] exclude` has `"settings"`, profiles never receive the default's settings, so `install` offers to add the shim to each profile's own `settings.json` (with a backup, and that profile's own `statusLine` recorded in `~/.mcc/state/<alias>/statusline.json`); `--yes` adds it without asking, and without a terminal it is skipped with a hint.
 - **On every refresh** Claude Code runs the shim with the session's JSON on stdin. The shim works out the profile from `CLAUDE_CONFIG_DIR`, which Claude Code passes on to the status-line command (unset means the default profile), saves the rate limits to `~/.mcc/state/<profile>/usage.json`, runs your previous `statusLine` command with the same stdin and `CLAUDE_CONFIG_DIR`, and prints its output (after `[<profile>] ` with `--prefix`). A profile that got the shim through sync runs the default's previous command, with paths rewritten as sync rewrites them. The shim never takes mcc's lock, never writes `~/.mcc/config.toml` or the log, and a failure to cache never blanks the status line.
 - **Uninstall** restores the recorded `statusLine` (or removes it, if there was none) in the default profile and in every profile where the shim is set, backing each file up first. A `statusLine` you changed by hand since is left alone, with a warning.
 - **Limits of the data.** Claude Code sends rate limits only to Pro and Max subscribers, and only after a session's first response. A profile you don't use keeps its last values, so check `updated_at`. A `statusLine` in a project's own `.claude/settings.json` overrides the user one, so the shim doesn't run (or cache) in such projects:

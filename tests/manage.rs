@@ -1607,3 +1607,205 @@ fn partial_manifest_covers_only_its_items() {
         .success()
         .stderr(predicate::str::contains("= CLAUDE.md (local edit, kept)"));
 }
+
+// ---- settings overlays --------------------------------------------------------
+
+/// Give "work" an overlay in both places: `[profiles.work.settings]` in
+/// config.toml and `settings.mcc.json` in the profile (which wins).
+fn add_settings_overlay(sb: &Sandbox) {
+    let mut cfg = sb.read(".mcc/config.toml");
+    cfg.push_str(
+        "\n[profiles.work.settings]\nmodel = \"sonnet\"\ncleanupPeriodDays = 90\n\n[profiles.work.settings.env]\nWORK = \"1\"\n",
+    );
+    sb.write(".mcc/config.toml", &cfg);
+    sb.write(
+        ".mcc/profiles/work/settings.mcc.json",
+        r#"{"cleanupPeriodDays": 7, "statusLine": null, "enabledPlugins": {"p2@m": true}, "permissions": {"allow": ["Bash(ls)"]}}"#,
+    );
+}
+
+fn work_settings(sb: &Sandbox) -> serde_json::Value {
+    json(sb.read(".mcc/profiles/work/settings.json").as_bytes())
+}
+
+#[test]
+fn sync_merges_settings_overlays() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    with_profile(&sb, "work", "--clone");
+    add_settings_overlay(&sb);
+
+    sb.mcc()
+        .args(["sync", "work", "--dry-run"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("~ settings.json"));
+    sb.mcc().args(["sync", "work"]).assert().success();
+    let s = work_settings(&sb);
+    let profile = sb.path(".mcc/profiles/work").display().to_string();
+    // Overlay keys: config.toml, then settings.mcc.json on top.
+    assert_eq!(s["model"], "sonnet", "{s}");
+    assert_eq!(s["env"]["WORK"], "1", "{s}");
+    assert_eq!(s["cleanupPeriodDays"], 7, "{s}");
+    assert_eq!(s["permissions"]["allow"], serde_json::json!(["Bash(ls)"]));
+    // Objects merge key by key; null removes the key.
+    assert_eq!(s["enabledPlugins"]["p1@m"], true, "{s}");
+    assert_eq!(s["enabledPlugins"]["p2@m"], true, "{s}");
+    assert!(s.get("statusLine").is_none(), "{s}");
+    // The default's keys are still there, paths rewritten.
+    assert!(
+        s["hooks"]["Stop"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("{profile}/hooks/notify.sh")),
+        "{s}"
+    );
+    // The previous settings.json was backed up.
+    let backups = backup_dirs(&sb, "work");
+    let old = std::fs::read_to_string(backups[0].join("settings.json")).unwrap();
+    assert!(old.contains("\"opus\""), "{old}");
+    // config.toml keeps the overlay table when mcc saves it.
+    let cfg = sb.read(".mcc/config.toml");
+    assert!(cfg.contains("[profiles.work.settings]"), "{cfg}");
+    assert!(cfg.contains("model = \"sonnet\""), "{cfg}");
+
+    // The merged result is what sync records: no local edit, nothing to do.
+    sb.mcc()
+        .args(["sync", "work"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("already up to date"))
+        .stderr(predicate::str::contains("local edit").not());
+    sb.mcc()
+        .args(["diff", "work"])
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("matches the default"));
+
+    // A change in the default is taken, and the overlay re-applied on top.
+    let mut d = json(sb.read(".claude/settings.json").as_bytes());
+    d["model"] = "haiku".into();
+    d["alwaysThinkingEnabled"] = true.into();
+    sb.write(".claude/settings.json", &d.to_string());
+    sb.mcc()
+        .args(["diff", "work"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "--- default/settings.json + work overlay",
+        ))
+        .stdout(predicate::str::contains("alwaysThinkingEnabled"))
+        .stdout(predicate::str::contains("haiku").not());
+    sb.mcc()
+        .args(["sync", "work"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("conflict").not());
+    let s = work_settings(&sb);
+    assert_eq!(s["model"], "sonnet", "{s}");
+    assert_eq!(s["alwaysThinkingEnabled"], true, "{s}");
+
+    // Editing the overlay is a change sync applies (not a conflict).
+    sb.write(
+        ".mcc/profiles/work/settings.mcc.json",
+        r#"{"model": "opus"}"#,
+    );
+    sb.mcc()
+        .args(["sync", "work"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("conflict").not());
+    let s = work_settings(&sb);
+    assert_eq!(s["model"], "opus", "{s}");
+    assert_eq!(s["cleanupPeriodDays"], 90, "{s}");
+    assert_eq!(s["statusLine"]["command"], "~/.claude/statusline.sh");
+
+    // Removing the overlay entirely goes back to the default's settings.
+    std::fs::remove_file(sb.path(".mcc/profiles/work/settings.mcc.json")).unwrap();
+    let cfg = sb.read(".mcc/config.toml");
+    let cut = cfg.find("\n[profiles.work.settings]").unwrap();
+    sb.write(".mcc/config.toml", &cfg[..cut]);
+    sb.mcc().args(["sync", "work"]).assert().success();
+    assert_eq!(work_settings(&sb)["model"], "haiku");
+}
+
+#[test]
+fn settings_overlay_keeps_local_edits_and_conflicts_three_way() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    with_profile(&sb, "work", "--clone");
+    add_settings_overlay(&sb);
+    sb.mcc().args(["sync", "work"]).assert().success();
+
+    // An edit in the profile is a local edit, kept.
+    let mut s = work_settings(&sb);
+    s["mine"] = true.into();
+    sb.write(".mcc/profiles/work/settings.json", &s.to_string());
+    sb.mcc()
+        .args(["sync", "work"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "= settings.json (local edit, kept)",
+        ));
+    // A default change on top of it is a conflict.
+    sb.write(".claude/settings.json", r#"{"model":"haiku"}"#);
+    sb.mcc()
+        .args(["sync", "work"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("! settings.json (conflict"));
+    assert_eq!(work_settings(&sb)["mine"], true);
+    // --force takes the merged result.
+    sb.mcc()
+        .args(["sync", "work", "--force"])
+        .assert()
+        .success();
+    let s = work_settings(&sb);
+    assert!(s.get("mine").is_none(), "{s}");
+    assert_eq!(s["model"], "sonnet", "{s}");
+}
+
+#[test]
+fn settings_overlay_errors_and_excluded_settings() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    with_profile(&sb, "work", "--clone");
+    let before = sb.read(".mcc/profiles/work/settings.json");
+
+    sb.write(".mcc/profiles/work/settings.mcc.json", "{not json");
+    sb.mcc()
+        .args(["sync", "work"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "settings.mcc.json is not valid JSON",
+        ));
+    sb.write(".mcc/profiles/work/settings.mcc.json", "[1]");
+    sb.mcc()
+        .args(["sync", "work"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("must hold a JSON object"));
+    assert_eq!(sb.read(".mcc/profiles/work/settings.json"), before);
+
+    // With settings excluded the profile owns its settings.json: the
+    // overlay is not applied, and sync says so.
+    sb.write(".mcc/profiles/work/settings.mcc.json", r#"{"model": "x"}"#);
+    let cfg = sb.read(".mcc/config.toml");
+    sb.write(
+        ".mcc/config.toml",
+        &cfg.replace("exclude = []", "exclude = [\"settings\"]"),
+    );
+    assert!(
+        sb.read(".mcc/config.toml")
+            .contains("exclude = [\"settings\"]")
+    );
+    sb.mcc()
+        .args(["sync", "work"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("overlay is not applied"));
+    assert_eq!(sb.read(".mcc/profiles/work/settings.json"), before);
+}
