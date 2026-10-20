@@ -113,13 +113,13 @@ pub enum Command {
     /// List all profiles with their metrics
     #[command(
         visible_alias = "ls",
-        after_help = "Examples:\n  mcc list\n  mcc list --long\n  mcc list --no-usage\n  mcc list --json | jq '.[] | {name, skills, plugins_installed}'\n  mcc list --json | jq '.[] | {name, five_hour: .usage.five_hour.percent}'\n\n5H and WEEK show each account's 5-hour and weekly usage (a bar, percent used\nand time until reset) as `mcc statusline` cached it, and UPDATED how old it\nis; `!` marks 80% or more and `!!` 95% or more. Bars shrink to fit the\nterminal; under 80 columns they are dropped when even the smallest does not\nfit. \"—\" when nothing current is cached (run /usage in Claude Code);\n`[usage] live = true` looks usage up with each profile's login instead\n(`mcc list --long` says why it is unavailable). `mcc usage` shows every\nwindow in detail."
+        after_help = "Examples:\n  mcc list\n  mcc list --long\n  mcc list --no-usage\n  mcc list --json | jq '.[] | {name, skills, plugins_installed}'\n  mcc list --json | jq '.[] | {name, five_hour: .usage.five_hour.percent}'\n  mcc list --json-v2 | jq '.profiles[].name'    Versioned: {\"schema\": 2, \"profiles\": [...]}\n\n5H and WEEK show each account's 5-hour and weekly usage (a bar, percent used\nand time until reset) as `mcc statusline` cached it, and UPDATED how old it\nis; `!` marks 80% or more and `!!` 95% or more. Bars shrink to fit the\nterminal; under 80 columns they are dropped when even the smallest does not\nfit. \"—\" when nothing current is cached (run /usage in Claude Code);\n`[usage] live = true` looks usage up with each profile's login instead\n(`mcc list --long` says why it is unavailable). `mcc usage` shows every\nwindow in detail."
     )]
     List(ListArgs),
 
     /// Show each profile's 5-hour and weekly usage in detail
     #[command(
-        after_help = "Examples:\n  mcc usage                     Every profile, the default included\n  mcc usage work                Only the `work` profile\n  mcc usage default             Only the default profile (~/.claude)\n  mcc usage --show-email        Also show each profile's account email\n  mcc usage --json | jq '.[] | {name, weekly: .usage.weekly.percent}'\n\nOne table row per profile: for the 5-hour and weekly windows, a bar of the\nlimit used with its percent, then the time until it resets (and the reset\ntime when it fits). `!` marks 80% or more and `!!` 95% or more. On a narrow\nterminal the reset time goes first, then bars shrink; under 80 columns bars\nare dropped when nothing fits. UPDATED is how old the numbers cached by\n`mcc statusline` are; a profile with nothing current cached shows \"—\"\n(run /usage in Claude Code), and one whose usage can't be read shows\n\"unavailable\" and why. MCC_NO_USAGE=1 skips usage entirely.\n\nAccount emails are hidden by default (also `null` in --json). To always\nshow them, or to look usage up live with each profile's login (off by\ndefault; a one-time note explains what it sends), set in ~/.mcc/config.toml:\n\n  [usage]\n  show_email = true\n  live = true"
+        after_help = "Examples:\n  mcc usage                     Every profile, the default included\n  mcc usage work                Only the `work` profile\n  mcc usage default             Only the default profile (~/.claude)\n  mcc usage --show-email        Also show each profile's account email\n  mcc usage --json | jq '.[] | {name, weekly: .usage.weekly.percent}'\n  mcc usage --json-v2 | jq '.profiles[].name'   Versioned: {\"schema\": 2, \"profiles\": [...]}\n\nOne table row per profile: for the 5-hour and weekly windows, a bar of the\nlimit used with its percent, then the time until it resets (and the reset\ntime when it fits). `!` marks 80% or more and `!!` 95% or more. On a narrow\nterminal the reset time goes first, then bars shrink; under 80 columns bars\nare dropped when nothing fits. UPDATED is how old the numbers cached by\n`mcc statusline` are; a profile with nothing current cached shows \"—\"\n(run /usage in Claude Code), and one whose usage can't be read shows\n\"unavailable\" and why. MCC_NO_USAGE=1 skips usage entirely.\n\nAccount emails are hidden by default (also `null` in --json). To always\nshow them, or to look usage up live with each profile's login (off by\ndefault; a one-time note explains what it sends), set in ~/.mcc/config.toml:\n\n  [usage]\n  show_email = true\n  live = true"
     )]
     Usage(UsageArgs),
 
@@ -288,9 +288,13 @@ pub struct AddArgs {
 
 #[derive(Debug, Args)]
 pub struct ListArgs {
-    /// Output JSON (to stdout) instead of a table
-    #[arg(long, conflicts_with = "long")]
+    /// Output JSON (to stdout) instead of a table: a bare array (schema 1)
+    #[arg(long, conflicts_with_all = ["long", "json_v2"])]
     pub json: bool,
+
+    /// Output versioned JSON: {"schema": 2, "profiles": [...]}
+    #[arg(long = "json-v2", conflicts_with = "long")]
+    pub json_v2: bool,
 
     /// Show a detailed card per profile
     #[arg(short, long)]
@@ -306,9 +310,13 @@ pub struct UsageArgs {
     /// Only this profile (`default` or `claude` for ~/.claude)
     pub profile: Option<String>,
 
-    /// Output JSON (to stdout) instead of a table
-    #[arg(long)]
+    /// Output JSON (to stdout) instead of a table: a bare array (schema 1)
+    #[arg(long, conflicts_with = "json_v2")]
     pub json: bool,
+
+    /// Output versioned JSON: {"schema": 2, "profiles": [...]}
+    #[arg(long = "json-v2")]
+    pub json_v2: bool,
 
     /// Show account emails (overrides `[usage] show_email` in ~/.mcc/config.toml)
     #[arg(long, conflicts_with = "hide_email")]
@@ -398,9 +406,13 @@ pub enum ProjectAction {
     /// List every project with its profile and allowed profiles
     #[command(visible_alias = "ls")]
     List {
-        /// Output JSON (to stdout) instead of a table
-        #[arg(long)]
+        /// Output JSON (to stdout) instead of a table: a bare array (schema 1)
+        #[arg(long, conflicts_with = "json_v2")]
         json: bool,
+
+        /// Output versioned JSON: {"schema": 2, "projects": [...]}
+        #[arg(long = "json-v2")]
+        json_v2: bool,
     },
 }
 

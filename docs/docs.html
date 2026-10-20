@@ -149,8 +149,8 @@
           <tbody>
             <tr><td><a href="#cmd-init"><code>mcc init</code></a></td><td>Detect OS, terminal, shell, rc file and the <code>claude</code> binary</td><td><code>--force</code>, <code>--shell</code></td></tr>
             <tr><td><a href="#cmd-add"><code>mcc add [ALIAS]</code></a></td><td>Create the default profile, or a new profile with its own command</td><td><code>--clone</code>, <code>--fresh</code>, <code>--no-login</code>, <code>-y</code></td></tr>
-            <tr><td><a href="#cmd-list"><code>mcc list</code></a> (<code>ls</code>)</td><td>Show every profile with metrics and usage</td><td><code>--json</code>, <code>-l</code>, <code>--no-usage</code></td></tr>
-            <tr><td><a href="#cmd-usage"><code>mcc usage [PROFILE]</code></a></td><td>Show 5-hour and weekly usage in a table</td><td><code>--json</code>, <code>--show-email</code>, <code>--hide-email</code></td></tr>
+            <tr><td><a href="#cmd-list"><code>mcc list</code></a> (<code>ls</code>)</td><td>Show every profile with metrics and usage</td><td><code>--json</code>, <code>--json-v2</code>, <code>-l</code>, <code>--no-usage</code></td></tr>
+            <tr><td><a href="#cmd-usage"><code>mcc usage [PROFILE]</code></a></td><td>Show 5-hour and weekly usage in a table</td><td><code>--json</code>, <code>--json-v2</code>, <code>--show-email</code>, <code>--hide-email</code></td></tr>
             <tr><td><a href="#cmd-sync"><code>mcc sync [ALIAS]</code></a></td><td>Copy the default's setup into a profile</td><td><code>--all</code>, <code>--dry-run</code>, <code>--prune</code>, <code>--force</code>, <code>--only</code>, <code>-y</code></td></tr>
             <tr><td><a href="#cmd-diff"><code>mcc diff ALIAS</code></a></td><td>Show how a profile differs from the default's setup</td><td><code>--only</code></td></tr>
             <tr><td><a href="#cmd-rename"><code>mcc rename ALIAS NEW</code></a> (<code>mv</code>)</td><td>Rename a profile and its command</td><td></td></tr>
@@ -209,12 +209,13 @@
 <span class="p">$ </span>mcc add lab --fresh --no-login  <span class="cm"># empty profile; log in later by running `lab`</span></pre></div>
 
         <h3 id="cmd-list"><code>mcc list</code> <a class="anchor" href="#cmd-list" aria-label="Link to mcc list">#</a></h3>
-        <p class="synopsis">mcc list [--json | -l/--long] [--no-usage]   <span style="color:var(--muted)">alias: mcc ls</span></p>
+        <p class="synopsis">mcc list [--json | --json-v2 | -l/--long] [--no-usage]   <span style="color:var(--muted)">alias: mcc ls</span></p>
         <p>One row per profile, the default included: command, account, organization, 5-hour and weekly usage (with a bar), skills, agents, commands, plugins (enabled/installed), MCP servers, hooks, size, last used and last sync, and a <code>SYNC</code> column saying how the profile compares with the default (<code>✓</code>, <code>3 behind</code>, <code>2 local edits</code>, <code>1 conflict</code>; <code>sync</code> in <code>--json</code>). When projects have a default profile (<code>mcc project set</code>), a second table lists each project with its profile and account, marking the one that applies in the current directory with <code>← here</code>. <code>--long</code> cards show them in a <code>Default for</code> row, and <code>--json</code> has a <code>project_defaults</code> array per profile. Cards also show the organization's ID and the profile's label, and <code>--json</code> has <code>organization</code>, <code>organization_uuid</code> and <code>label</code>.</p>
         <div class="table-wrap"><table>
           <thead><tr><th>Option</th><th>Effect</th></tr></thead>
           <tbody>
-            <tr><td><code>--json</code></td><td>Print JSON to stdout instead of a table</td></tr>
+            <tr><td><code>--json</code></td><td>Print JSON to stdout instead of a table: a bare array (schema 1)</td></tr>
+            <tr><td><code>--json-v2</code></td><td>Print versioned JSON: <code>{"schema": 2, "profiles": [...]}</code>, the same objects as <code>--json</code>; fields are only ever added within a schema</td></tr>
             <tr><td><code>-l</code>, <code>--long</code></td><td>Show a detailed card per profile</td></tr>
             <tr><td><code>--no-usage</code></td><td>Skip fetching usage: no network, no keychain (same as <code>MCC_NO_USAGE=1</code>)</td></tr>
           </tbody>
@@ -230,7 +231,7 @@ lab        lab      —               —     <span class="d">unavailable       
 <span class="p">$ </span>mcc list --json | jq '.[] | {name, five_hour: .usage.five_hour.percent, weekly: .usage.weekly.percent}'</pre></div>
 
         <h3 id="cmd-usage"><code>mcc usage</code> <a class="anchor" href="#cmd-usage" aria-label="Link to mcc usage">#</a></h3>
-        <p class="synopsis">mcc usage [PROFILE] [--json] [--show-email | --hide-email]</p>
+        <p class="synopsis">mcc usage [PROFILE] [--json | --json-v2] [--show-email | --hide-email]</p>
         <p>Shows only usage, as a compact table with one row per profile: for each window a bar with the percent used, the time until it resets, and the reset time in your local time zone. Pass a profile name to see just one; use <code>default</code> or <code>claude</code> for <code>~/.claude</code>. An unknown name is a usage error (exit 2).</p>
         <p>Account emails are hidden by default, so the output is safe to share on screen. <code>--show-email</code> adds an <code>ACCOUNT</code> column; to show it every time, set <code>show_email = true</code> under <code>[usage]</code> in <code>~/.mcc/config.toml</code> (see <a href="#configuration">Configuration</a>).</p>
         <div class="table-wrap"><table>
@@ -238,6 +239,7 @@ lab        lab      —               —     <span class="d">unavailable       
           <tbody>
             <tr><td><code>PROFILE</code></td><td>Only this profile (<code>default</code> or <code>claude</code> for the default)</td></tr>
             <tr><td><code>--json</code></td><td>Print one JSON object per profile with <code>name</code>, <code>command</code>, <code>is_default</code>, <code>account</code> and <code>usage</code> (<code>account</code> is <code>null</code> while emails are hidden)</td></tr>
+            <tr><td><code>--json-v2</code></td><td>Print versioned JSON: <code>{"schema": 2, "profiles": [...]}</code>, the same objects as <code>--json</code></td></tr>
             <tr><td><code>--show-email</code></td><td>Show account emails for this run</td></tr>
             <tr><td><code>--hide-email</code></td><td>Hide account emails for this run, even with <code>show_email = true</code> in the config</td></tr>
           </tbody>
@@ -294,8 +296,8 @@ lab        lab      —               —     <span class="d">unavailable       
 <span class="p">$ </span>mcc share work --off           <span class="cm"># stop sharing</span></pre></div>
 
         <h3 id="cmd-project"><code>mcc project</code> <a class="anchor" href="#cmd-project" aria-label="Link to mcc project">#</a></h3>
-        <p class="synopsis">mcc project set PROFILE [--path DIR] [--allow PROFILE…] | unset [--path DIR] | list [--json]</p>
-        <p><code>set</code> makes PROFILE (an mcc profile, or <code>default</code> / <code>claude</code> for <code>~/.claude</code>) the one <code>mcc run</code> starts in a project: by default the top of the git repository you are in, else the current directory. <code>--allow</code> (repeatable or comma-separated) names the other profiles <code>mcc run</code> may offer when PROFILE is at its limit; setting the project again without it clears the list. <code>unset</code> removes the project default that applies here, or the one at <code>--path</code>. <code>list</code> shows every project with its profile and allowed profiles, marking the one that applies here; <code>--json</code> gives each project an <code>allow</code> array. See <a href="#per-project">Per-project profiles</a>.</p>
+        <p class="synopsis">mcc project set PROFILE [--path DIR] [--allow PROFILE…] | unset [--path DIR] | list [--json | --json-v2]</p>
+        <p><code>set</code> makes PROFILE (an mcc profile, or <code>default</code> / <code>claude</code> for <code>~/.claude</code>) the one <code>mcc run</code> starts in a project: by default the top of the git repository you are in, else the current directory. <code>--allow</code> (repeatable or comma-separated) names the other profiles <code>mcc run</code> may offer when PROFILE is at its limit; setting the project again without it clears the list. <code>unset</code> removes the project default that applies here, or the one at <code>--path</code>. <code>list</code> shows every project with its profile and allowed profiles, marking the one that applies here; <code>--json</code> gives each project an <code>allow</code> array. See <a href="#per-project">Per-project profiles</a>. <code>list --json</code> prints a bare array of <code>path</code>, <code>profile</code> and <code>allow</code> objects, and <code>list --json-v2</code> wraps it as <code>{"schema": 2, "projects": [...]}</code>.</p>
         <div class="code"><pre><span class="p">$ </span>mcc project set work                    <span class="cm"># `mcc run` starts `work` in this repository</span>
 <span class="p">$ </span>mcc project set work --allow lab        <span class="cm"># …and may offer `lab` when `work` is at its limit</span>
 <span class="p">$ </span>mcc project set default --path ~/site   <span class="cm"># …and the default profile in ~/site</span>

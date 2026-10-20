@@ -24,7 +24,7 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &ProjectArgs) -> Result<()> {
             allow,
         } => set(paths, cfg, profile, path.as_deref(), allow),
         ProjectAction::Unset { path } => unset(paths, cfg, path.as_deref()),
-        ProjectAction::List { json } => list(paths, cfg, *json),
+        ProjectAction::List { json, json_v2 } => list(paths, cfg, *json || *json_v2, *json_v2),
     }
 }
 
@@ -192,7 +192,7 @@ struct Entry<'a> {
     allow: &'a [String],
 }
 
-fn list(paths: &Paths, cfg: &Config, json: bool) -> Result<()> {
+fn list(paths: &Paths, cfg: &Config, json: bool, envelope: bool) -> Result<()> {
     let mut out = std::io::stdout().lock();
     if json {
         let entries: Vec<Entry> = cfg
@@ -204,8 +204,7 @@ fn list(paths: &Paths, cfg: &Config, json: bool) -> Result<()> {
                 allow: &p.allow,
             })
             .collect();
-        serde_json::to_writer_pretty(&mut out, &entries)?;
-        writeln!(out)?;
+        super::write_json(&mut out, "projects", &entries, envelope)?;
         return Ok(());
     }
     if cfg.projects.is_empty() {

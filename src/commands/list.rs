@@ -39,9 +39,8 @@ pub fn run(paths: &Paths, cfg: &Config, args: &ListArgs) -> Result<()> {
     }
 
     let mut out = std::io::stdout().lock();
-    if args.json {
-        serde_json::to_writer_pretty(&mut out, &all)?;
-        writeln!(out)?;
+    if args.json || args.json_v2 {
+        super::write_json(&mut out, "profiles", &all, args.json_v2)?;
     } else if args.long {
         let now = Utc::now();
         let bar = card_bar(&all, now);
@@ -64,7 +63,7 @@ pub fn run(paths: &Paths, cfg: &Config, args: &ListArgs) -> Result<()> {
             ui::warn(&format!("{}: {w}", m.name));
         }
     }
-    if !args.json {
+    if !(args.json || args.json_v2) {
         let total: u64 = all.iter().map(|m| m.size_bytes).sum();
         ui::info(&format!(
             "{} profile{} · {} on disk · add one with `mcc add <alias>`",
