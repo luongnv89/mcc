@@ -284,6 +284,36 @@ pub enum Command {
     )]
     RefreshLaunchers(RefreshLaunchersArgs),
 
+    /// Read or change ~/.mcc/config.toml: get, set, edit, path
+    #[command(after_help = concat!(
+        "Examples:\n",
+        "  mcc config get usage.live          Print a value (lists one item per line)\n",
+        "  mcc config set usage.live true\n",
+        "  mcc config set sync.exclude plugins,mcp\n",
+        "  mcc config set sync.exclude \"\"     Exclude nothing\n",
+        "  mcc config set profiles.work.label \"Acme (work)\"\n",
+        "  mcc config edit                    Open the file in $VISUAL or $EDITOR\n",
+        "  mcc config path                    Print the file's path\n",
+        "\n",
+        "Settable keys:\n",
+        "  sync.exclude           sync items to skip, comma-separated (\"\" for none)\n",
+        "  sync.extra             extra paths to sync, relative to the config dir\n",
+        "  usage.show_email       true or false\n",
+        "  usage.live             true or false\n",
+        "  profiles.ALIAS.label   1–64 characters (\"\" removes it)\n",
+        "\n",
+        "`get` reads any key, dotted as in TOML (projects.\"/Users/me/app\".profile).\n",
+        "A value `set` rejects leaves the file unchanged, and comments are kept.\n",
+        "Keys other commands manage say which one to use (`mcc share`, `mcc project`).\n",
+        "\n",
+        "`edit` opens a copy of the file and saves it only when it is valid mcc\n",
+        "config; otherwise it offers to edit again, or leaves the file unchanged.\n",
+        "mcc holds no lock while the editor is open, so other mcc commands keep\n",
+        "working. If one of them changes the file meanwhile, nothing is saved and\n",
+        "your edited copy is kept next to it."
+    ))]
+    Config(ConfigArgs),
+
     /// Print a shell completion script to stdout
     #[command(
         after_help = "Examples:\n  mcc completions zsh > ~/.zfunc/_mcc\n  mcc completions bash > ~/.local/share/bash-completion/completions/mcc\n  mcc completions fish > ~/.config/fish/completions/mcc.fish"
@@ -456,6 +486,37 @@ pub enum ProjectAction {
         #[arg(long = "json-v2")]
         json_v2: bool,
     },
+}
+
+#[derive(Debug, Args)]
+pub struct ConfigArgs {
+    #[command(subcommand)]
+    pub action: ConfigAction,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ConfigAction {
+    /// Print a value (dotted key, e.g. usage.live or profiles.work.label)
+    Get {
+        /// The key, dotted as in TOML
+        key: String,
+    },
+
+    /// Set a value, checking it first (see `mcc help config` for the keys)
+    Set {
+        /// The key, e.g. usage.live, sync.exclude or profiles.work.label
+        key: String,
+
+        /// The value: true/false, a comma-separated list, or text; "" clears a list or label
+        #[arg(allow_hyphen_values = true)]
+        value: String,
+    },
+
+    /// Edit the file in $VISUAL or $EDITOR; saved only when it is valid
+    Edit,
+
+    /// Print the path of the config file
+    Path,
 }
 
 #[derive(Debug, Args)]
