@@ -125,8 +125,12 @@ fn says_which_project_default_applies_here_and_why() {
         .assert()
         .success();
     let out = stdout_of(sb.mcc().current_dir(sb.path("app/src")));
+    // `~/app` here; on macOS the temp HOME is behind a symlink
+    // (/var → /private/var), so the stored, resolved path shows in full.
+    let first = out.lines().next().unwrap_or_default();
     assert!(
-        out.starts_with("Here: `work` (Acme (work)) — the default for ~/app\n"),
+        first.starts_with("Here: `work` (Acme (work)) — the default for ")
+            && first.ends_with("/app"),
         "{out}"
     );
 
@@ -140,9 +144,12 @@ fn says_which_project_default_applies_here_and_why() {
         .current_dir(sb.path("app"))
         .assert()
         .success()
-        .stdout(predicate::str::starts_with(
-            "Here: `ghost` — the default for ~/app (no such profile)",
-        ))
+        .stdout(
+            predicate::str::is_match(
+                r"^Here: `ghost` — the default for \S*/app \(no such profile\)\n",
+            )
+            .unwrap(),
+        )
         .stderr(predicate::str::contains(
             "\"ghost\", which is not a profile",
         ))
