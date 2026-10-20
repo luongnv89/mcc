@@ -2,7 +2,7 @@
 
 mod common;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use common::{HOUR_MS, Sandbox, UsageStub, json, now_ms, rfc3339_in, stdout_of, with_profile};
 use predicates::prelude::*;
@@ -48,6 +48,17 @@ fn run_sandbox() -> Sandbox {
 /// The directory as mcc stores it (symlinks resolved: /var → /private/var).
 fn real(sb: &Sandbox, rel: &str) -> PathBuf {
     std::fs::canonicalize(sb.path(rel)).unwrap()
+}
+
+/// How mcc shows `path` in output: `~/…` when it sits under the sandbox HOME.
+/// On Linux the canonical temp path keeps the HOME prefix; on macOS it moves
+/// to /private/var/…, so the same project shows as an absolute path there.
+fn shown(sb: &Sandbox, path: &Path) -> String {
+    match path.strip_prefix(sb.home()) {
+        Ok(rel) if rel.as_os_str().is_empty() => "~".to_string(),
+        Ok(rel) => format!("~/{}", rel.display()),
+        Err(_) => path.display().to_string(),
+    }
 }
 
 /// Answers each token with its (5-hour, weekly) percent used; unknown tokens get 401.
@@ -118,7 +129,7 @@ fn project_set_list_and_unset() {
         .success()
         .stderr(predicate::str::contains(format!(
             "{}: `mcc run` starts `work` here",
-            app.display()
+            shown(&sb, &app)
         )));
     let cfg = sb.read(".mcc/config.toml");
     assert!(
@@ -153,7 +164,7 @@ fn project_set_list_and_unset() {
         .lines()
         .map(|l| l.split_whitespace().collect())
         .collect();
-    let (code_s, app_s) = (code.to_string_lossy(), app.to_string_lossy());
+    let (code_s, app_s) = (shown(&sb, &code), shown(&sb, &app));
     assert_eq!(
         rows,
         [
@@ -180,7 +191,7 @@ fn project_set_list_and_unset() {
         .success()
         .stderr(predicate::str::contains(format!(
             "{}: removed its project default (`default`)",
-            app.display()
+            shown(&sb, &app)
         )));
     sb.mcc()
         .current_dir(sb.path("code/app/src"))
@@ -393,7 +404,7 @@ fn project_set_allow_names_other_profiles_mcc_run_may_offer() {
         rows,
         [
             vec!["PROJECT", "PROFILE", "ALLOW"],
-            vec![&*app.to_string_lossy(), "work", "lab", "←", "here"],
+            vec![&*shown(&sb, &app), "work", "lab", "←", "here"],
         ]
     );
 
@@ -497,7 +508,7 @@ fn rename_and_delete_keep_allow_lists_in_step() {
         .success()
         .stderr(predicate::str::contains(format!(
             "removed it from the allowed profiles of {}",
-            real(&sb, "code/app").display()
+            shown(&sb, &real(&sb, "code/app"))
         )));
     let cfg = sb.read(".mcc/config.toml");
     assert!(
@@ -655,7 +666,7 @@ fn rename_and_delete_keep_project_defaults_in_step() {
         .success()
         .stderr(predicate::str::contains(format!(
             "removed it as the project default of {}",
-            real(&sb, "code/app").display()
+            shown(&sb, &real(&sb, "code/app"))
         )));
     assert!(!sb.read(".mcc/config.toml").contains("[projects"));
 }
@@ -705,11 +716,7 @@ fn list_shows_which_profile_each_project_starts() {
         .lines()
         .map(|l| l.split_whitespace().collect())
         .collect();
-    let (code_s, app_s, old_s) = (
-        code.to_string_lossy(),
-        app.to_string_lossy(),
-        old.to_string_lossy(),
-    );
+    let (code_s, app_s, old_s) = (shown(&sb, &code), shown(&sb, &app), shown(&sb, &old));
     assert_eq!(
         rows,
         [
@@ -725,7 +732,7 @@ fn list_shows_which_profile_each_project_starts() {
     let long = list(&["--long"]);
     let work = &long[long.find("◆ work").expect(&long)..];
     assert!(
-        work.contains(&format!("    Default for:     {}\n", app.display())),
+        work.contains(&format!("    Default for:     {}\n", shown(&sb, &app))),
         "{long}"
     );
 
@@ -733,8 +740,11 @@ fn list_shows_which_profile_each_project_starts() {
     let all = json(list(&["--json"]).as_bytes());
     let defaults =
         |name: &str| common::by_name(all.as_array().unwrap(), name)["project_defaults"].clone();
-    assert_eq!(defaults("work"), serde_json::json!([app_s]));
-    assert_eq!(defaults("default"), serde_json::json!([code_s]));
+    assert_eq!(defaults("work"), serde_json::json!([app.to_string_lossy()]));
+    assert_eq!(
+        defaults("default"),
+        serde_json::json!([code.to_string_lossy()])
+    );
     assert_eq!(defaults("side"), serde_json::json!([]));
 
     // A project naming a profile that no longer exists says so.
