@@ -1123,19 +1123,44 @@ fn check_statusline(d: &mut Doctor, name: &str, p: &Profile) {
         return;
     }
     let excluded = d.cfg.sync.exclude.iter().any(|g| g == "settings");
+    let conflict = !excluded && settings_conflict(d, &p.dir);
     d.push_cmd(
         "statusline",
         Level::Warn,
         format!(
-            "the mcc statusline is installed in the default profile but not in {}: its usage isn't cached",
-            d.show(&settings)
+            "the mcc statusline is installed in the default profile but not in {}: its usage isn't cached{}",
+            d.show(&settings),
+            if conflict {
+                " (settings.json was edited in the profile too, so a plain sync skips it as a conflict; --force backs it up first)"
+            } else {
+                ""
+            }
         ),
         if excluded {
             "mcc statusline install --yes".into()
+        } else if conflict {
+            format!("mcc sync {name} --only settings --force")
         } else {
             format!("mcc sync {name} --only settings")
         },
     );
+}
+
+/// Whether the profile's settings.json is a sync conflict (changed in the
+/// default and edited in the profile), which `mcc sync` skips unless
+/// --force. Read-only: the same plan `mcc diff` makes.
+fn settings_conflict(d: &Doctor, dir: &Path) -> bool {
+    let Ok(spec) = copy::spec(Some(&["settings".to_string()]), &d.cfg.sync) else {
+        return false;
+    };
+    let loaded = manifest::load(dir);
+    super::sync::plan_for(d.paths, d.cfg, dir, &spec, loaded.manifest(), false, false).is_ok_and(
+        |plan| {
+            plan.changes.iter().any(|c| {
+                !c.dir && c.action == copy::Action::Conflict && c.rel == Path::new("settings.json")
+            })
+        },
+    )
 }
 
 #[cfg(test)]

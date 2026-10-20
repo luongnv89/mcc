@@ -660,6 +660,38 @@ fn the_statusline_shim_is_expected_in_every_profile() {
 }
 
 #[test]
+fn a_statusline_blocked_by_a_settings_conflict_is_fixed_with_force() {
+    let sb = healthy();
+    // Edited in the profile since its last sync…
+    sb.write(".mcc/profiles/work/settings.json", r#"{"model":"sonnet"}"#);
+    // …and changed in the default by `mcc statusline install`.
+    sb.write(
+        ".claude/settings.json",
+        r#"{"model":"opus","statusLine":{"type":"command","command":"/usr/local/bin/mcc statusline"}}"#,
+    );
+    let err = passing(&sb);
+    assert!(
+        err.contains("fix: `mcc sync work --only settings --force`"),
+        "{err}"
+    );
+    assert!(err.contains("--force backs it up first"), "{err}");
+
+    // The plain sync would skip it; the printed fix clears the warning.
+    sb.mcc()
+        .args(["sync", "work", "--only", "settings", "--yes"])
+        .assert()
+        .success();
+    let all = findings(&sb, &[]);
+    assert_eq!(one(&all, Some("work"), "statusline")["status"], "warn");
+    sb.mcc()
+        .args(["sync", "work", "--only", "settings", "--force", "--yes"])
+        .assert()
+        .success();
+    let all = findings(&sb, &[]);
+    assert_eq!(one(&all, Some("work"), "statusline")["status"], "ok");
+}
+
+#[test]
 fn json_lists_every_finding_and_json_v2_wraps_it() {
     let sb = healthy();
     std::fs::remove_file(sb.path(".local/bin/work")).unwrap();
