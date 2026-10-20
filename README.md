@@ -49,7 +49,7 @@ Claude Code reads its config from `CLAUDE_CONFIG_DIR`, which defaults to `~/.cla
 - **`rename`.** Gives a profile a new name, and with it a new command. The new name is checked like an alias in `add`. The profile's directory, login and setup stay as they are.
 - **`sync`.** A one-way copy of setup from the default profile into a profile, with `--dry-run`, `--prune`, `--only`, and `--all`.
 - **Opt-in session sharing.** Off by default. `mcc share work` (or starting a profile with `work --mcc-share`) lets that profile's `--resume` see the sessions of every other sharing profile. Credentials and account files are never shared.
-- **Per-project profiles.** `mcc project set work` makes `work` the profile `mcc run` starts in this repository, so a project stays on one account. mcc never switches accounts on its own: if that account is at its 5-hour or weekly limit, `mcc run` shows every profile's usage and asks which one to start.
+- **Per-project profiles.** `mcc project set work` makes `work` the profile `mcc run` starts in this repository, so a project stays on one account. mcc never switches accounts on its own: if that account is at its 5-hour or weekly limit, `mcc run` asks whether to wait (the default) or start it anyway, and offers another profile only when the project allows it (`--allow`).
 - **`delete`.** Logs the profile out (clearing its keychain entry), then removes its directory, launcher, shell alias, and registry entry. It refuses the old name of a renamed profile, so that profile's files are never removed by mistake.
 - **Clear progress everywhere.** Steps are numbered with a status and timing. Every run is logged to `~/.mcc/logs/mcc.log`.
 - **Safe by design.** Changes are rolled back if `add` fails. Your rc file is backed up before mcc edits it, and `sync` backs up every file it overwrites or removes. mcc only removes what it created.
@@ -109,8 +109,8 @@ mcc delete job              # remove it completely
 | `mcc sync [ALIAS]` | Copy the default's setup into a profile (default → profile only) | `--all`, `--dry-run`, `--prune`, `--only ITEMS`, `-y` |
 | `mcc rename ALIAS NEW` (`mv`) | Rename a profile and its command; directory and login are kept | |
 | `mcc share ALIAS` | Share the profile's sessions with your other sharing profiles (off by default; see [Sharing sessions](#sharing-sessions-between-profiles)) | `--off` |
-| `mcc project set PROFILE` | Make PROFILE the one `mcc run` starts in this project (see [Per-project profiles](#per-project-profiles-mcc-project-and-mcc-run)); also `unset` and `list` | `--path DIR`, `list --json` |
-| `mcc run [-- CLAUDE_ARGS]` | Start Claude Code with the current project's profile; at its limit, ask which profile to start | `--profile NAME`, `--dry-run` |
+| `mcc project set PROFILE` | Make PROFILE the one `mcc run` starts in this project (see [Per-project profiles](#per-project-profiles-mcc-project-and-mcc-run)); also `unset` and `list` | `--path DIR`, `--allow PROFILE`, `list --json` |
+| `mcc run [-- CLAUDE_ARGS]` | Start Claude Code with the current project's profile; at its limit, ask whether to wait (the default) or start it anyway | `--profile NAME`, `--dry-run` |
 | `mcc refresh-launchers [ALIAS...]` | Rewrite launchers and shell aliases from the current templates (all profiles when none are given); needed once so `<alias> --mcc-share` works for profiles made by an older mcc | |
 | `mcc delete ALIAS` (`rm`) | Log out and remove a profile | `-y/--yes`, `--keep-auth` |
 | `mcc completions SHELL` | Print a completion script | `bash`, `zsh`, `fish`, `elvish`, `powershell` |
@@ -140,6 +140,7 @@ mcc share work                        # share work's sessions with the other sha
 work --mcc-share --resume             # the same from the launcher, then pick any shared session
 mcc share work --off                  # stop sharing; work keeps a copy of the sessions
 mcc project set work                  # `mcc run` starts `work` in this git repository
+mcc project set work --allow lab      # …and may offer `lab` when `work` is at its limit
 mcc project set default --path ~/site # …and the default profile in ~/site
 mcc project list                      # every project and its profile
 mcc run -- --resume                   # start this project's profile; arguments after `--` go to claude
@@ -256,26 +257,31 @@ mcc run -- --resume      # arguments after `--` go to claude
 
 A project is a directory. `mcc project set` uses the top of the git repository you are in (or the current directory outside one; `--path DIR` picks another). It covers everything below it, and when projects are nested, the deepest one containing the current directory applies. Outside every project, `mcc run` treats the default profile (`~/.claude`) as the default.
 
-`mcc run` starts the project's default. **It never switches to another account on its own.** When the project's profile is at its 5-hour or weekly limit (100% used), it shows when the limit resets and every profile's usage, and asks which one to start. The project's profile is preselected:
+`mcc run` starts the project's default. **It never switches to another account on its own.** When the project's profile is at its 5-hour or weekly limit (100% used), it shows when the limit resets and asks what to do. Waiting is preselected: it starts nothing and exits. Starting the profile anyway comes next. Other profiles are offered only when the project allows them, by name and without their usage:
 
 ```console
+$ mcc project set work --allow lab
 $ mcc run
   ⚠ `work` (the default for ~/code/app) is at its 5-hour limit, resets in 35m
-? Which profile should start? ›
-❯ work — start it anyway (at its 5-hour limit, resets in 35m)
-  default — 5h 70%, week 10% used
-  lab — 5h 1%, week 1% used
+? Wait, or start a profile? ›
+❯ Wait — `work` resets in 35m
+  Start `work` anyway
+  Start `lab` instead
 ```
 
-- **`mcc run --profile NAME`** starts NAME without checking usage (`default` or `claude` for `~/.claude`). It is a one-off choice: the project's default doesn't change.
-- **Without a terminal**, `mcc run` can't ask. At the limit it lists every profile's usage and stops with exit code 2; start one with `--profile`.
-- **Unknown usage:** only the project profile's usage is fetched, unless it is at its limit. If it can't be read (offline, an expired login, `MCC_NO_USAGE=1`), that profile starts. Unknown usage never counts as being at the limit.
-- **`mcc run --dry-run`** prints the project's profile on stdout and why on stderr (with every profile's usage when it is at its limit), and starts nothing.
+- **Allowed profiles:** `mcc project set work --allow lab` lets the prompt offer `lab` (repeat `--allow`, or separate names with commas). Running `mcc project set` again without `--allow` clears the list. Picking a profile other than the project's prints this note on stderr:
+
+  > ⚠ You chose to start an account other than this project's. Use only accounts you own, and don't use several accounts to get around usage limits — doing so can violate Anthropic's Consumer Terms (https://www.anthropic.com/legal/consumer-terms) and Usage Policy (https://www.anthropic.com/legal/aup).
+
+- **`mcc run --profile NAME`** starts NAME without checking usage (`default` or `claude` for `~/.claude`). It is a one-off choice: the project's default doesn't change. Inside a project, a profile other than the project's prints the same note.
+- **Without a terminal**, `mcc run` can't ask. At the limit it stops with exit code 2 and names `mcc run --profile <profile>` to start it anyway.
+- **Unknown usage:** only the project profile's usage is ever fetched. If it can't be read (offline, an expired login, `MCC_NO_USAGE=1`), that profile starts. Unknown usage never counts as being at the limit.
+- **`mcc run --dry-run`** prints the project's profile on stdout and why on stderr (at its limit, that `mcc run` would ask and wait by default), and starts nothing.
 - **Sessions:** Claude Code keeps sessions per profile. If you start another profile, `--resume` and `-c` there only see that profile's sessions, unless both profiles [share sessions](#sharing-sessions-between-profiles).
 - **Why there's no automatic switching:** Anthropic's [Team](https://support.claude.com/en/articles/12004354-purchase-and-manage-seats-on-team-plans) and [Enterprise](https://support.claude.com/en/articles/13393991-purchase-and-manage-seats-on-enterprise-plans) seat rules say you can't route your work through another user's account to use their remaining usage. Its [Consumer Terms](https://www.anthropic.com/legal/consumer-terms) also forbid bypassing its systems or protective measures. So which account to use when one is at its limit is always your call.
 - **`mcc list`** shows your projects under the profile table, with the profile and account each one starts with (and `← here` for the current directory). `mcc list --long` adds a `Default for` row to each profile's card, and `mcc list --json` has a `project_defaults` array per profile.
 - `mcc project list` (`--json`) shows every project and its profile, and `mcc project unset` removes the one that applies here (or the one given with `--path`).
-- `mcc rename` updates the project defaults that name the profile, and `mcc delete` removes them.
+- `mcc rename` updates the project defaults and allow lists that name the profile. `mcc delete` removes the project defaults naming it, and takes it off the allow lists.
 - The usage lookup is the same as for `mcc usage`, described below.
 
 Project defaults live in `~/.mcc/config.toml`:
@@ -283,6 +289,7 @@ Project defaults live in `~/.mcc/config.toml`:
 ```toml
 [projects."/Users/me/code/app"]
 profile = "work"  # an mcc profile, or "default" for ~/.claude
+allow = ["lab"]   # optional: other profiles `mcc run` may offer at the limit
 ```
 
 ### Usage limits: `mcc list` and `mcc usage`
