@@ -112,6 +112,8 @@ mcc delete job              # remove it completely
 | `mcc share ALIAS` | Share the profile's sessions with the other sharing profiles of its group (off by default; see [Sharing sessions](#sharing-sessions-between-profiles)) | `--off`, `--group NAME`, `--allow-cross-org` |
 | `mcc project set PROFILE` | Make PROFILE the one `mcc run` starts in this project (see [Per-project profiles](#per-project-profiles-mcc-project-and-mcc-run)); also `unset` and `list` | `--path DIR`, `--allow PROFILE`, `list --json`, `list --json-v2` |
 | `mcc run [-- CLAUDE_ARGS]` | Start Claude Code with the current project's profile; at its limit, ask whether to wait (the default) or start it anyway | `--profile NAME`, `--dry-run` |
+| `mcc env [PROFILE]` | Print the shell line that sets `CLAUDE_CONFIG_DIR` for the project's profile (or PROFILE), for `eval` or direnv (see [Using a project's profile everywhere](#using-a-projects-profile-everywhere-mcc-env-and-mcc-exec)) | `--shell zsh\|bash\|fish` |
+| `mcc exec PROFILE -- CMD...` | Run a command with a profile's `CLAUDE_CONFIG_DIR` and return its exit status; `--all` runs it once per profile and reports each result | `--all` |
 | `mcc statusline install` | Opt-in: show the active profile in Claude Code's status line and cache each profile's rate limits (see [Status line](#status-line-mcc-statusline)); it edits the default profile's `settings.json`; also `uninstall` | `--prefix`, `-y/--yes` |
 | `mcc refresh-launchers [ALIAS...]` | Rewrite launchers and shell aliases from the current templates (all profiles when none are given); needed once so `<alias> --mcc-share` works for profiles made by an older mcc | |
 | `mcc delete ALIAS` (`rm`) | Log out and remove a profile | `-y/--yes`, `--keep-auth` |
@@ -153,6 +155,8 @@ mcc project list                      # every project, its profile and allowed p
 mcc run -- --resume                   # start this project's profile; arguments after `--` go to claude
 mcc run --profile lab                 # start `lab` here this time; the project's default stays
 mcc run --dry-run                     # print the profile `mcc run` would start, and why
+eval "$(mcc env)"                     # point CLAUDE_CONFIG_DIR at this project's profile (also in .envrc)
+mcc exec --all -- claude plugin list  # run a command once per profile
 mcc refresh-launchers                 # update launchers made by an older mcc
 mcc delete sandbox --yes
 ```
@@ -338,6 +342,36 @@ $ mcc run
 - **`mcc list`** shows your projects under the profile table, with the profile and account each one starts with (and `← here` for the current directory). `mcc list --long` adds a `Default for` row to each profile's card, and `mcc list --json` has a `project_defaults` array per profile.
 - `mcc project list` (`--json`) shows every project with its profile and allowed profiles (an `allow` array in the JSON), and `mcc project unset` removes the one that applies here (or the one given with `--path`).
 - `mcc rename` updates the project defaults and allow lists that name the profile. `mcc delete` removes the project defaults naming it, and takes it off the allow lists.
+
+### Using a project's profile everywhere: `mcc env` and `mcc exec`
+
+`mcc run` only covers Claude Code started through it. `mcc env` prints the shell line that points `CLAUDE_CONFIG_DIR` at the profile `mcc run` would start here (the project's default, else the default profile), so plain `claude`, IDE extensions and scripts use it too:
+
+```sh
+eval "$(mcc env)"        # this shell now uses the project's profile
+mcc env work             # export CLAUDE_CONFIG_DIR='/Users/me/.mcc/profiles/work'
+mcc env default          # unset CLAUDE_CONFIG_DIR (the default profile, ~/.claude)
+mcc env | source         # fish: set -gx CLAUDE_CONFIG_DIR '/Users/me/.mcc/profiles/work'
+```
+
+The shell is `--shell zsh|bash|fish`, else bash inside a direnv `.envrc`, else your `$SHELL`. Paths are single-quoted, so spaces and quotes in them are safe. It never checks usage and never writes anything; the choice stays the one you made with `mcc project set`, and naming a profile other than the project's prints the same note as `mcc run --profile`.
+
+**With [direnv](https://direnv.net/)**, the project's profile applies whenever you `cd` into it. Put this in the project's `.envrc`, then run `direnv allow`:
+
+```sh
+eval "$(mcc env)"
+```
+
+direnv evaluates `.envrc` with bash (fish users included), and `mcc env` prints the bash form there. Leaving the directory restores the previous `CLAUDE_CONFIG_DIR`. `mcc project set` later changes what the `.envrc` prints, after `direnv reload`.
+
+`mcc exec` runs any command with a profile's `CLAUDE_CONFIG_DIR`, which makes Claude Code's own [plugin](https://code.claude.com/docs/en/plugins/cli-reference) and [MCP](https://code.claude.com/docs/en/mcp) commands work per profile:
+
+```sh
+mcc exec work -- claude mcp list                         # as `work`; exits with the command's status
+mcc exec --all -- claude plugin marketplace update       # once per profile, the default first
+```
+
+With `--all`, each profile's output comes under its name followed by its exit status, and mcc exits 0 only if the command succeeded everywhere (else with the first failing status). A command that can't be started counts as exit 127, and Ctrl+C stops at the current profile. mcc holds no lock while the command runs, so the command may run mcc itself.
 - The usage it checks is the same as for `mcc usage`, described below: the statusline cache by default, so a profile at its limit is only recognized once its rate limits have been cached (or with `[usage] live = true`).
 
 Project defaults live in `~/.mcc/config.toml`:

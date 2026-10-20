@@ -58,6 +58,8 @@ Examples:
   mcc share work                 Share `work`'s sessions with your other sharing profiles
   mcc project set work           Start `work` in this project (git repo) with `mcc run`
   mcc run                        Start Claude Code with this project's profile
+  eval \"$(mcc env)\"              Point CLAUDE_CONFIG_DIR at this project's profile
+  mcc exec --all -- claude plugin marketplace update
   mcc statusline install         Show the profile in Claude Code's status line, cache rate limits
   mcc refresh-launchers          Update older launchers so `<alias> --mcc-share` works
   mcc delete personal            Log out and remove the profile completely
@@ -229,6 +231,46 @@ pub enum Command {
         "share sessions (`mcc help share`)."
     ))]
     Run(RunArgs),
+
+    /// Print the shell code that sets CLAUDE_CONFIG_DIR for a profile (for eval or direnv)
+    #[command(after_help = concat!(
+        "Examples:\n",
+        "  eval \"$(mcc env)\"             Use this project's profile in the current shell\n",
+        "  mcc env work                  export CLAUDE_CONFIG_DIR='/Users/me/.mcc/profiles/work'\n",
+        "  mcc env work --shell fish     set -gx CLAUDE_CONFIG_DIR '/Users/me/.mcc/profiles/work'\n",
+        "  mcc env default               unset CLAUDE_CONFIG_DIR (the default profile, ~/.claude)\n",
+        "  mcc env | source              The same as eval, in fish\n",
+        "\n",
+        "Without PROFILE it prints the profile `mcc run` would start here: the\n",
+        "project's default (`mcc project set`), else the default profile. Usage\n",
+        "isn't checked. The shell is --shell, else bash inside a direnv .envrc\n",
+        "(direnv evaluates it with bash), else $SHELL; zsh and bash get the same\n",
+        "POSIX line. With direnv, put this in the project's .envrc:\n",
+        "\n",
+        "  eval \"$(mcc env)\"\n",
+        "\n",
+        "Then `claude`, IDE extensions and scripts started in the project use its\n",
+        "profile. Naming a profile other than the project's prints the note shown\n",
+        "by `mcc help run` on stderr."
+    ))]
+    Env(EnvArgs),
+
+    /// Run a command with one profile's CLAUDE_CONFIG_DIR, or once per profile
+    #[command(after_help = concat!(
+        "Examples:\n",
+        "  mcc exec work -- claude mcp list\n",
+        "  mcc exec default -- claude plugin list\n",
+        "  mcc exec --all -- claude plugin marketplace update\n",
+        "\n",
+        "With PROFILE the command runs with that profile's CLAUDE_CONFIG_DIR (unset for\n",
+        "the default profile), and mcc exits with its exit status. With --all it runs\n",
+        "once per profile, the default first, one after the other. Each profile's output\n",
+        "comes under its name, followed by its exit status. mcc then exits 0 if the\n",
+        "command succeeded in every profile, else with the first failing exit status.\n",
+        "A command that can't be started counts as exit 127. Ctrl+C stops at the current\n",
+        "profile. mcc holds no lock while the command runs, so it may run mcc itself."
+    ))]
+    Exec(ExecArgs),
 
     /// Show the active profile in Claude Code's status line and cache its rate limits (opt-in)
     #[command(
@@ -433,6 +475,31 @@ pub struct RunArgs {
         value_name = "CLAUDE_ARGS"
     )]
     pub args: Vec<OsString>,
+}
+
+#[derive(Debug, Args)]
+pub struct EnvArgs {
+    /// Profile to print (`default` or `claude` for ~/.claude; default: the one `mcc run` would start here)
+    pub profile: Option<String>,
+
+    /// Print for this shell (default: bash inside a direnv .envrc, else detected from $SHELL)
+    #[arg(long, value_enum)]
+    pub shell: Option<Shell>,
+}
+
+#[derive(Debug, Args)]
+pub struct ExecArgs {
+    /// Profile to run the command as (`default` or `claude` for ~/.claude)
+    #[arg(required_unless_present = "all", conflicts_with = "all")]
+    pub profile: Option<String>,
+
+    /// Run the command once per profile, the default first
+    #[arg(long)]
+    pub all: bool,
+
+    /// The command and its arguments, after `--`
+    #[arg(last = true, required = true, value_name = "COMMAND")]
+    pub command: Vec<OsString>,
 }
 
 #[derive(Debug, Args)]

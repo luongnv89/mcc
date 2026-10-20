@@ -27,12 +27,12 @@ use crate::{claude, ui};
 /// Printed on stderr whenever a profile other than the project's starts.
 pub const RUN_TOS_NOTE: &str = crate::cli::run_tos_note!();
 
-/// A profile `mcc run` can start.
-struct Profile {
-    name: String,
+/// A profile `mcc run` can start (also what `mcc env` and `mcc exec` use).
+pub(crate) struct Profile {
+    pub(crate) name: String,
     /// `CLAUDE_CONFIG_DIR` exactly as registered (the keychain login is keyed
     /// on that string); `None` for ~/.claude, which runs with it unset.
-    config_dir: Option<PathBuf>,
+    pub(crate) config_dir: Option<PathBuf>,
 }
 
 impl Profile {
@@ -46,7 +46,7 @@ impl Profile {
 }
 
 /// Every profile: the default, then the mcc profiles in name order.
-fn profiles(cfg: &Config) -> Vec<Profile> {
+pub(crate) fn profiles(cfg: &Config) -> Vec<Profile> {
     std::iter::once(Profile {
         name: "default".into(),
         config_dir: None,
@@ -78,38 +78,14 @@ pub fn run(paths: &Paths, cfg: &Config, args: &RunArgs) -> Result<()> {
     };
 
     if let Some(name) = args.profile.as_deref() {
-        let name = if name == "claude" { "default" } else { name };
-        let Some(p) = all.iter().find(|p| p.name == name) else {
-            return Err(super::unknown_profile(name));
-        };
-        // The project only decides the note: --profile starts even where the
-        // project default is broken.
-        let here = super::project::current_dir()
-            .ok()
-            .and_then(|cwd| super::project::lookup(cfg, &cwd).map(|(_, p)| p.profile.clone()));
-        if needs_tos_note(here.as_deref(), &p.name) {
-            eprintln!("{RUN_TOS_NOTE}");
-        }
+        let p = find(&all, name)?;
+        note_if_not_the_projects(cfg, &p.name);
         ui::info(&format!("{verb} `{}` — picked with --profile", p.name));
         return launch(paths, cfg, p, args);
     }
 
-    let cwd = super::project::current_dir()?;
-    let project = super::project::lookup(cfg, &cwd);
-    let default_name = project.map_or("default", |(_, p)| p.profile.as_str());
-    let Some(default) = all.iter().find(|p| p.name == default_name) else {
-        let (dir, _) = project.expect("the default profile always exists");
-        return Err(CliError::input(format!(
-            "the project default of {} is \"{default_name}\", which is not a profile",
-            paths.display(Path::new(dir))
-        ))
-        .hint("set another with `mcc project set <profile>`, or remove it with `mcc project unset`")
-        .into());
-    };
-    let why = match project {
-        Some((dir, _)) => format!("the default for {}", paths.display(Path::new(dir))),
-        None => "no project default here".to_string(),
-    };
+    let (default, project) = project_default(paths, cfg, &all)?;
+    let why = why(paths, project);
 
     let default_usage = fetch(paths, cfg, &[default]).remove(0);
     if !pick::at_limit(&default_usage) {
@@ -217,6 +193,68 @@ fn needs_tos_note(project: Option<&str>, chosen: &str) -> bool {
     project.is_some_and(|p| p != chosen)
 }
 
+/// The profile named `name` (`claude` also names the default profile).
+pub(crate) fn find<'a>(all: &'a [Profile], name: &str) -> Result<&'a Profile> {
+    let name = if name == "claude" { "default" } else { name };
+    all.iter()
+        .find(|p| p.name == name)
+        .ok_or_else(|| super::unknown_profile(name))
+}
+
+/// The profile that applies in the current directory: the default of the
+/// deepest project containing it, else the default profile (~/.claude).
+/// Also returns that project, if any.
+pub(crate) fn project_default<'a, 'c>(
+    paths: &Paths,
+    cfg: &'c Config,
+    all: &'a [Profile],
+) -> Result<(&'a Profile, Option<(&'c str, &'c crate::config::Project)>)> {
+    let cwd = super::project::current_dir()?;
+    let project = super::project::lookup(cfg, &cwd);
+    let default_name = project.map_or("default", |(_, p)| p.profile.as_str());
+    let Some(default) = all.iter().find(|p| p.name == default_name) else {
+        let (dir, _) = project.expect("the default profile always exists");
+        return Err(CliError::input(format!(
+            "the project default of {} is \"{default_name}\", which is not a profile",
+            paths.display(Path::new(dir))
+        ))
+        .hint("set another with `mcc project set <profile>`, or remove it with `mcc project unset`")
+        .into());
+    };
+    Ok((default, project))
+}
+
+/// Why the project's profile applies: `the default for ~/code/app`.
+pub(crate) fn why(paths: &Paths, project: Option<(&str, &crate::config::Project)>) -> String {
+    match project {
+        Some((dir, _)) => format!("the default for {}", paths.display(Path::new(dir))),
+        None => "no project default here".to_string(),
+    }
+}
+
+/// Print the terms-of-service note when `chosen`, picked by name, is not the
+/// profile of the project here. Only the note depends on the project: a
+/// broken project default never stops a profile picked by name.
+pub(crate) fn note_if_not_the_projects(cfg: &Config, chosen: &str) {
+    let here = super::project::current_dir()
+        .ok()
+        .and_then(|cwd| super::project::lookup(cfg, &cwd).map(|(_, p)| p.profile.clone()));
+    if needs_tos_note(here.as_deref(), chosen) {
+        eprintln!("{RUN_TOS_NOTE}");
+    }
+}
+
+/// Give `cmd` the profile's environment: its `CLAUDE_CONFIG_DIR` exactly as
+/// registered (unset for the default profile), and mcc's view of HOME (so
+/// MCC_HOME sandboxes stay consistent).
+pub(crate) fn profile_env(cmd: &mut std::process::Command, paths: &Paths, p: &Profile) {
+    cmd.env("HOME", &paths.home);
+    match &p.config_dir {
+        Some(dir) => cmd.env("CLAUDE_CONFIG_DIR", dir),
+        None => cmd.env_remove("CLAUDE_CONFIG_DIR"),
+    };
+}
+
 /// Print the profile's name (`--dry-run`), or replace this process with
 /// claude running as that profile.
 fn launch(paths: &Paths, cfg: &Config, p: &Profile, args: &RunArgs) -> Result<()> {
@@ -230,13 +268,8 @@ fn launch(paths: &Paths, cfg: &Config, p: &Profile, args: &RunArgs) -> Result<()
         None => claude::require_binary(cfg.env.as_ref().and_then(|e| e.claude_bin.as_deref()))?,
     };
     let mut cmd = std::process::Command::new(&bin);
-    cmd.args(&args.args)
-        // Keep claude consistent with mcc's view of HOME (MCC_HOME sandboxes).
-        .env("HOME", &paths.home);
-    match &p.config_dir {
-        Some(dir) => cmd.env("CLAUDE_CONFIG_DIR", dir),
-        None => cmd.env_remove("CLAUDE_CONFIG_DIR"),
-    };
+    cmd.args(&args.args);
+    profile_env(&mut cmd, paths, p);
     crate::log::write(
         "INFO",
         &format!("run: exec {} as profile {}", bin.display(), p.name),
