@@ -1,5 +1,7 @@
 # mcc — Implementation Plan
 
+> **Historical document.** This is the original implementation plan for mcc and is no longer maintained. Its task list and command tree are out of date: the tree has none of the commands added since, such as `mcc usage`, `mcc rename`, `mcc share`, `mcc project`, `mcc run`, `mcc refresh-launchers` and `mcc completions`. For current behavior, see the [README](../README.md), `mcc --help` and the [docs site](https://luongnv89.github.io/mcc/docs.html).
+
 `mcc` (Multiple Claude Code) is a Rust CLI for managing multiple Claude Code profiles (accounts) on macOS and Linux. Each profile gets its own `CLAUDE_CONFIG_DIR` and launcher command.
 
 ## Approved design (summary)

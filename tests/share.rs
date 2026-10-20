@@ -9,7 +9,7 @@ use common::{Sandbox, by_name, json, with_profile};
 use predicates::prelude::*;
 
 /// The terms-of-service note, verbatim (issue #25).
-const NOTE: &str = "⚠ Session sharing makes conversation history available across your Claude Code accounts. Use it only between accounts you own. Don't use it to get around usage limits, and never let other people use your account or credentials — doing so can violate Anthropic's Consumer Terms (https://www.anthropic.com/legal/consumer-terms) and Usage Policy (https://www.anthropic.com/legal/aup).";
+const NOTE: &str = "⚠ Session sharing makes conversation history available across your Claude Code accounts. Use it only between accounts you own. Don't use it to get around usage limits, and never let other people use your account or credentials — doing so can violate Anthropic's Consumer Terms (https://www.anthropic.com/legal/consumer-terms) and Usage Policy (https://www.anthropic.com/legal/aup), including the updated Usage Policy that takes effect November 12, 2026.";
 
 const SESSION: &str = "projects/-tmp-proj/session1.jsonl";
 
