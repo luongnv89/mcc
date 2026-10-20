@@ -787,6 +787,10 @@ fn help_documents_the_flag_the_setting_and_the_note() {
         "share_sessions = true  # default: false",
         "does nothing on its own",
         "mcc refresh-launchers",
+        "--group <NAME>",
+        "--allow-cross-org",
+        "~/.mcc/shared/groups/<name>/projects",
+        "share_group",
     ] {
         assert!(help.contains(needle), "missing {needle:?} in:\n{help}");
     }
@@ -802,4 +806,541 @@ fn help_documents_the_flag_the_setting_and_the_note() {
         .success()
         .stdout(predicate::str::contains("mcc share work"))
         .stdout(predicate::str::contains("mcc refresh-launchers"));
+}
+
+// ---- groups and the cross-organization guard (issue #40) -------------------
+
+/// A symlink (false when missing, as for a fresh profile's `projects/`).
+fn linked(sb: &Sandbox, rel: &str) -> bool {
+    std::fs::symlink_metadata(sb.path(rel)).is_ok_and(|m| m.file_type().is_symlink())
+}
+
+fn group_store(sb: &Sandbox, group: &str) -> PathBuf {
+    sb.path(&format!(".mcc/shared/groups/{group}/projects"))
+}
+
+/// A fresh profile logged in to organization `(name, uuid, type)`, with
+/// the `oauthAccount` Claude Code writes to its `.claude.json` (where the
+/// organization type comes from), or to an account without any
+/// organization when `org` is `None`.
+fn add_in_org(sb: &Sandbox, alias: &str, org: Option<(&str, &str, &str)>) {
+    let mut cmd = sb.mcc();
+    cmd.args(["add", alias, "--fresh"]);
+    if let Some((name, id, _)) = org {
+        cmd.env("FAKE_ORG_NAME", name).env("FAKE_ORG_ID", id);
+    }
+    cmd.assert().success();
+    if let Some((name, id, ty)) = org {
+        let rel = format!(".mcc/profiles/{alias}/.claude.json");
+        let mut state = if sb.exists(&rel) {
+            json(sb.read(&rel).as_bytes())
+        } else {
+            serde_json::json!({})
+        };
+        state["oauthAccount"] = serde_json::json!({
+            "emailAddress": "fake@example.com",
+            "organizationName": name,
+            "organizationUuid": id,
+            "organizationType": ty,
+            "billingType": "stripe_subscription",
+        });
+        sb.write(&rel, &state.to_string());
+    }
+}
+
+const TEAM: &str = "claude_team";
+
+#[test]
+fn group_uses_a_store_of_its_own() {
+    let sb = sandbox();
+    with_profile(&sb, "lab", "--fresh");
+    with_profile(&sb, "side", "--fresh");
+    let o = sb
+        .mcc()
+        .args(["share", "work", "--group", "alpha"])
+        .assert()
+        .success();
+    let err = out(&o.get_output().stderr);
+    assert!(err.contains("group \"alpha\""), "{err}");
+    assert_eq!(
+        link_target(&sb, ".mcc/profiles/work/projects"),
+        group_store(&sb, "alpha")
+    );
+    assert!(
+        group_store(&sb, "alpha")
+            .join("-tmp-proj/session1.jsonl")
+            .is_file()
+    );
+    assert!(profile_section(&sb, "work").contains("share_group = \"alpha\""));
+    // The default group's store is another one.
+    sb.mcc().args(["share", "side"]).assert().success();
+    assert_eq!(link_target(&sb, ".mcc/profiles/side/projects"), store(&sb));
+    assert!(!store(&sb).join("-tmp-proj/session1.jsonl").exists());
+    assert!(!profile_section(&sb, "side").contains("share_group"));
+    // Another profile of the group sees work's sessions.
+    sb.mcc()
+        .args(["share", "lab", "--group", "alpha"])
+        .assert()
+        .success();
+    assert!(
+        sb.path(".mcc/profiles/lab/projects/-tmp-proj/session1.jsonl")
+            .is_file()
+    );
+    // Group names are one group whatever the case.
+    with_profile(&sb, "upper", "--fresh");
+    sb.mcc()
+        .args(["share", "upper", "--group", "ALPHA"])
+        .assert()
+        .success();
+    assert_eq!(
+        link_target(&sb, ".mcc/profiles/upper/projects"),
+        group_store(&sb, "alpha")
+    );
+    assert!(profile_section(&sb, "upper").contains("share_group = \"alpha\""));
+    // `--group default` is the default group.
+    sb.mcc()
+        .args(["share", "side", "--group", "default"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("already shared"));
+
+    // The launcher keeps the recorded group.
+    let o = launch(&sb, "work", &["--mcc-share"]);
+    assert!(o.status.success(), "{}", out(&o.stderr));
+    assert_eq!(
+        link_target(&sb, ".mcc/profiles/work/projects"),
+        group_store(&sb, "alpha")
+    );
+
+    let o = sb
+        .mcc()
+        .args(["list", "--json", "--no-usage"])
+        .assert()
+        .success();
+    let all = json(&o.get_output().stdout);
+    let arr = all.as_array().unwrap();
+    assert_eq!(by_name(arr, "work")["share_group"], "alpha");
+    assert_eq!(by_name(arr, "side")["share_group"], "default");
+    assert!(by_name(arr, "default")["share_group"].is_null());
+    sb.mcc()
+        .args(["list", "--no-usage"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("work (shared: alpha)"))
+        .stdout(predicate::str::contains("side (shared)"));
+}
+
+#[test]
+fn switching_groups_needs_off_first() {
+    let sb = sandbox();
+    sb.mcc()
+        .args(["share", "work", "--group", "alpha"])
+        .assert()
+        .success();
+    sb.mcc()
+        .args(["share", "work", "--group", "beta"])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains(
+            "already shares its sessions in group \"alpha\"",
+        ))
+        .stderr(predicate::str::contains("mcc share work --off"));
+    assert_eq!(
+        link_target(&sb, ".mcc/profiles/work/projects"),
+        group_store(&sb, "alpha")
+    );
+    let o = sb.mcc().args(["share", "work", "--off"]).assert().success();
+    assert!(out(&o.get_output().stderr).contains("groups/alpha/projects"));
+    assert!(!is_link(&sb, ".mcc/profiles/work/projects"));
+    // The group is remembered for the next `mcc share`.
+    assert!(profile_section(&sb, "work").contains("share_group = \"alpha\""));
+    sb.mcc()
+        .args(["share", "work", "--group", "beta"])
+        .assert()
+        .success();
+    assert_eq!(
+        link_target(&sb, ".mcc/profiles/work/projects"),
+        group_store(&sb, "beta")
+    );
+}
+
+#[test]
+fn invalid_group_names_are_usage_errors() {
+    let sb = sandbox();
+    for bad in ["../x", "a/b", ".hidden", ""] {
+        sb.mcc()
+            .args(["share", "work", "--group", bad])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("invalid group name"));
+    }
+    assert!(!is_link(&sb, ".mcc/profiles/work/projects"));
+    assert!(!sb.exists(".mcc/shared"));
+}
+
+/// Hand-edit `alias`'s `share_group` in config.toml (it must be set).
+fn set_share_group(sb: &Sandbox, alias: &str, from: &str, to: &str) {
+    let cfg = sb.read(".mcc/config.toml");
+    let section = profile_section(sb, alias);
+    let edited = section.replace(
+        &format!("share_group = \"{from}\""),
+        &format!("share_group = {to:?}"),
+    );
+    assert_ne!(section, edited, "{section}");
+    sb.write(".mcc/config.toml", &cfg.replace(&section, &edited));
+}
+
+/// Every entry under `dir`, recursively, for comparing before and after.
+fn tree(dir: &std::path::Path) -> Vec<PathBuf> {
+    let mut all: Vec<PathBuf> = walkdir::WalkDir::new(dir)
+        .follow_links(false)
+        .into_iter()
+        .map(|e| e.unwrap().into_path())
+        .collect();
+    all.sort();
+    all
+}
+
+#[test]
+fn a_hand_edited_share_group_is_checked_like_the_flag() {
+    for bad in ["../..", "/"] {
+        let sb = sandbox();
+        with_profile(&sb, "side", "--fresh");
+        sb.write(".mcc/profiles/side/projects/-tmp-p/s.jsonl", "{}\n");
+        sb.mcc()
+            .args(["share", "work", "--group", "alpha"])
+            .assert()
+            .success();
+        sb.mcc()
+            .args(["share", "side", "--group", "beta"])
+            .assert()
+            .success();
+        sb.mcc().args(["share", "side", "--off"]).assert().success();
+        set_share_group(&sb, "work", "alpha", bad);
+        set_share_group(&sb, "side", "beta", bad);
+        let home_before = tree(&sb.path(""));
+
+        let refused = |args: &[&str]| {
+            sb.mcc()
+                .args(args)
+                .assert()
+                .code(3)
+                .stderr(predicate::str::contains("invalid share_group"))
+                .stderr(predicate::str::contains("[profiles."))
+                .stderr(predicate::str::contains("config.toml"));
+        };
+        // Sharing: `--off` must not follow the stored group anywhere.
+        refused(&["share", "work", "--off"]);
+        refused(&["share", "work"]);
+        refused(&["share", "work", "--from-launch"]);
+        // Not sharing: turning it on must not create a store anywhere.
+        refused(&["share", "side"]);
+        refused(&["share", "side", "--off"]);
+        let o = launch(&sb, "side", &["--mcc-share"]);
+        assert_eq!(o.status.code(), Some(3), "{}", out(&o.stderr));
+        assert_eq!(out(&o.stdout), "");
+        assert!(out(&o.stderr).contains("invalid share_group"));
+
+        assert_eq!(
+            link_target(&sb, ".mcc/profiles/work/projects"),
+            group_store(&sb, "alpha"),
+            "{bad:?}"
+        );
+        assert!(!is_link(&sb, ".mcc/profiles/side/projects"));
+        assert!(
+            sb.path(".mcc/profiles/side/projects/-tmp-p/s.jsonl")
+                .is_file()
+        );
+        // Nothing created, moved or removed anywhere (logs aside).
+        let logs = sb.path(".mcc/logs");
+        let keep = |v: Vec<PathBuf>| -> Vec<PathBuf> {
+            v.into_iter().filter(|p| !p.starts_with(&logs)).collect()
+        };
+        assert_eq!(keep(tree(&sb.path(""))), keep(home_before), "{bad:?}");
+    }
+}
+
+#[test]
+fn a_hand_edited_share_group_is_normalized_like_the_flag() {
+    let sb = sandbox();
+    sb.mcc()
+        .args(["share", "work", "--group", "alpha"])
+        .assert()
+        .success();
+    sb.mcc().args(["share", "work", "--off"]).assert().success();
+    set_share_group(&sb, "work", "alpha", "ALPHA");
+    sb.mcc().args(["share", "work"]).assert().success();
+    assert_eq!(
+        link_target(&sb, ".mcc/profiles/work/projects"),
+        group_store(&sb, "alpha")
+    );
+    assert!(profile_section(&sb, "work").contains("share_group = \"alpha\""));
+    sb.mcc().args(["share", "work", "--off"]).assert().success();
+    set_share_group(&sb, "work", "alpha", "default");
+    sb.mcc().args(["share", "work"]).assert().success();
+    assert_eq!(link_target(&sb, ".mcc/profiles/work/projects"), store(&sb));
+}
+
+#[test]
+fn sharing_across_organizations_needs_allow_cross_org() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    add_in_org(&sb, "acme", Some(("Acme", "org-acme", TEAM)));
+    add_in_org(&sb, "acme2", Some(("Acme Inc", "org-acme", TEAM)));
+    add_in_org(&sb, "beta", Some(("Beta", "org-beta", "claude_enterprise")));
+    sb.mcc().args(["share", "acme"]).assert().success();
+    // The same organization (by UUID): shared.
+    sb.mcc().args(["share", "acme2"]).assert().success();
+    // Another organization: refused, nothing changes.
+    sb.mcc()
+        .args(["share", "beta"])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("refusing to share"))
+        .stderr(predicate::str::contains("different organizations"))
+        .stderr(predicate::str::contains("\"acme\" (organization Acme)"))
+        .stderr(predicate::str::contains("--allow-cross-org"))
+        .stderr(predicate::function(|e: &str| !has_note(e)));
+    assert!(!linked(&sb, ".mcc/profiles/beta/projects"));
+    assert!(!profile_section(&sb, "beta").contains("share_sessions"));
+    // From the launcher: fails closed, claude never starts.
+    let o = launch(&sb, "beta", &["--mcc-share"]);
+    assert_eq!(o.status.code(), Some(3), "{}", out(&o.stderr));
+    assert_eq!(out(&o.stdout), "");
+    assert!(!linked(&sb, ".mcc/profiles/beta/projects"));
+    // A group of its own is fine.
+    sb.mcc()
+        .args(["share", "beta", "--group", "beta"])
+        .assert()
+        .success();
+    sb.mcc().args(["share", "beta", "--off"]).assert().success();
+    // --allow-cross-org shares, warns and records it.
+    sb.mcc()
+        .args(["share", "beta", "--group", "default", "--allow-cross-org"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("sharing across organizations"));
+    assert_eq!(link_target(&sb, ".mcc/profiles/beta/projects"), store(&sb));
+    let section = profile_section(&sb, "beta");
+    assert!(section.contains("share_cross_org_allowed_at"), "{section}");
+    // Later launches don't warn again.
+    let o = launch(&sb, "beta", &["--mcc-share"]);
+    assert!(o.status.success());
+    assert_eq!(out(&o.stderr).trim_end(), REMINDER);
+    // --off clears the allowance.
+    sb.mcc().args(["share", "beta", "--off"]).assert().success();
+    assert!(!profile_section(&sb, "beta").contains("share_cross_org_allowed_at"));
+}
+
+#[test]
+fn organization_to_personal_is_the_strictest() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    add_in_org(&sb, "work", Some(("Acme", "org-acme", TEAM)));
+    // A personal Max plan: Claude Code gives it an organization of its own.
+    add_in_org(
+        &sb,
+        "home",
+        Some(("fake@example.com's Organization", "org-home", "claude_max")),
+    );
+    sb.mcc().args(["share", "work"]).assert().success();
+    // Organization sessions would reach a personal account: refused…
+    sb.mcc()
+        .args(["share", "home"])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("consumer terms"))
+        .stderr(predicate::str::contains("\"work\" (organization Acme)"))
+        .stderr(predicate::str::contains(
+            "profile \"home\" (a personal account)",
+        ));
+    // …and --allow-cross-org alone is not enough without a terminal.
+    sb.mcc()
+        .args(["share", "home", "--allow-cross-org"])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains(
+            "needs a confirmation in a terminal",
+        ));
+    assert!(!linked(&sb, ".mcc/profiles/home/projects"));
+    assert!(!profile_section(&sb, "home").contains("share_sessions"));
+    // The other direction too: an organization joining personal profiles.
+    sb.mcc().args(["share", "work", "--off"]).assert().success();
+    sb.mcc()
+        .args(["share", "home", "--group", "home"])
+        .assert()
+        .success();
+    sb.mcc()
+        .args(["share", "work", "--group", "home", "--allow-cross-org"])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains(
+            "needs a confirmation in a terminal",
+        ));
+    assert!(!linked(&sb, ".mcc/profiles/work/projects"));
+}
+
+#[test]
+fn a_hand_edited_default_group_still_counts_for_the_guard() {
+    for spelling in ["default", "Default", "DEFAULT"] {
+        let sb = Sandbox::new();
+        sb.seed_default();
+        add_in_org(&sb, "work", Some(("Acme", "org-acme", TEAM)));
+        add_in_org(
+            &sb,
+            "home",
+            Some(("fake@example.com's Organization", "org-home", "claude_max")),
+        );
+        sb.mcc().args(["share", "work"]).assert().success();
+        assert_eq!(link_target(&sb, ".mcc/profiles/work/projects"), store(&sb));
+        // Hand-edit work's entry: still the default group, spelled out.
+        let cfg = sb.read(".mcc/config.toml");
+        let section = profile_section(&sb, "work");
+        let edited = section.replacen(
+            "share_sessions = true",
+            &format!("share_sessions = true\nshare_group = \"{spelling}\""),
+            1,
+        );
+        assert_ne!(section, edited, "{section}");
+        sb.write(".mcc/config.toml", &cfg.replace(&section, &edited));
+        // Organization sessions would reach a personal account: refused.
+        sb.mcc()
+            .args(["share", "home"])
+            .assert()
+            .code(3)
+            .stderr(predicate::str::contains("consumer terms"))
+            .stderr(predicate::str::contains("\"work\" (organization Acme)"));
+        assert!(!linked(&sb, ".mcc/profiles/home/projects"), "{spelling}");
+        assert!(!profile_section(&sb, "home").contains("share_sessions"));
+    }
+}
+
+/// Another sharing profile with an invalid stored group is weighed by the
+/// guard, not skipped.
+#[test]
+fn an_invalid_stored_group_still_counts_for_the_guard() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    add_in_org(&sb, "work", Some(("Acme", "org-acme", TEAM)));
+    add_in_org(
+        &sb,
+        "home",
+        Some(("fake@example.com's Organization", "org-home", "claude_max")),
+    );
+    sb.mcc().args(["share", "work"]).assert().success();
+    let cfg = sb.read(".mcc/config.toml");
+    let section = profile_section(&sb, "work");
+    let edited = section.replacen(
+        "share_sessions = true",
+        "share_sessions = true\nshare_group = \"../..\"",
+        1,
+    );
+    sb.write(".mcc/config.toml", &cfg.replace(&section, &edited));
+    sb.mcc()
+        .args(["share", "home"])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("\"work\" (organization Acme)"));
+    assert!(!linked(&sb, ".mcc/profiles/home/projects"));
+}
+
+#[test]
+fn unknown_accounts_fail_safe() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    add_in_org(&sb, "home", None);
+    add_in_org(&sb, "work", Some(("Acme", "org-acme", TEAM)));
+    sb.mcc()
+        .args(["add", "blank", "--fresh", "--no-login"])
+        .assert()
+        .success();
+    sb.mcc().args(["share", "home"]).assert().success();
+    // No account recorded: can't tell, so refused.
+    sb.mcc()
+        .args(["share", "blank"])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("can't tell which organization"))
+        .stderr(predicate::str::contains("claude auth login"));
+    sb.mcc()
+        .args(["share", "blank", "--allow-cross-org"])
+        .assert()
+        .success();
+    // An organization joining a group with an unknown account counts as
+    // organization → personal.
+    sb.mcc()
+        .args(["share", "work", "--allow-cross-org"])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains(
+            "needs a confirmation in a terminal",
+        ));
+}
+
+/// Upgrading: profiles that shared the one global store before groups and
+/// the guard existed keep it, and their sessions, as they are.
+#[test]
+fn profiles_sharing_the_global_store_keep_their_sessions() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    add_in_org(&sb, "work", Some(("Acme", "org-acme", TEAM)));
+    add_in_org(&sb, "home", None);
+    // What an older mcc left: both linked to ~/.mcc/shared/projects, with
+    // `share_sessions = true` and nothing else.
+    std::fs::create_dir_all(store(&sb).join("-tmp-proj")).unwrap();
+    sb.write(".mcc/shared/projects/-tmp-proj/old.jsonl", "{\"old\":1}\n");
+    for alias in ["work", "home"] {
+        let projects = sb.path(&format!(".mcc/profiles/{alias}/projects"));
+        if projects.exists() {
+            std::fs::remove_dir_all(&projects).unwrap();
+        }
+        std::os::unix::fs::symlink(store(&sb), &projects).unwrap();
+    }
+    let cfg = sb.read(".mcc/config.toml");
+    let cfg = cfg
+        .replace(
+            "[profiles.work]\n",
+            "[profiles.work]\nshare_sessions = true\nshare_note_acknowledged_at = \"2026-10-01T00:00:00+00:00\"\n",
+        )
+        .replace(
+            "[profiles.home]\n",
+            "[profiles.home]\nshare_sessions = true\nshare_note_acknowledged_at = \"2026-10-01T00:00:00+00:00\"\n",
+        );
+    sb.write(".mcc/config.toml", &cfg);
+    let before = sb.read(".mcc/config.toml");
+
+    // Launching still works: a warning, not a refusal; nothing moves.
+    let o = launch(&sb, "home", &["--mcc-share", "--resume"]);
+    let err = out(&o.stderr);
+    assert!(o.status.success(), "{err}");
+    assert_eq!(out(&o.stdout), "fake claude --resume\n");
+    assert!(err.contains("across organizations"), "{err}");
+    assert!(has_reminder(&err), "{err}");
+    assert_eq!(link_target(&sb, ".mcc/profiles/home/projects"), store(&sb));
+    assert_eq!(link_target(&sb, ".mcc/profiles/work/projects"), store(&sb));
+    assert_eq!(
+        sb.read(".mcc/profiles/home/projects/-tmp-proj/old.jsonl"),
+        "{\"old\":1}\n"
+    );
+    sb.mcc()
+        .args(["share", "work"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("already shared"))
+        .stderr(predicate::str::contains("mcc share work --off"));
+    // The config is left as it was: the default group needs no key.
+    assert_eq!(sb.read(".mcc/config.toml"), before);
+
+    // Moving one to a group of its own keeps a copy of every session.
+    sb.mcc().args(["share", "home", "--off"]).assert().success();
+    sb.mcc()
+        .args(["share", "home", "--group", "home"])
+        .assert()
+        .success();
+    assert_eq!(
+        std::fs::read_to_string(group_store(&sb, "home").join("-tmp-proj/old.jsonl")).unwrap(),
+        "{\"old\":1}\n"
+    );
+    // The global store still holds them for work.
+    assert!(store(&sb).join("-tmp-proj/old.jsonl").is_file());
 }

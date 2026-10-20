@@ -46,6 +46,9 @@ pub struct ProfileMetrics {
     /// Sessions are shared with the other sharing profiles (`mcc share`);
     /// always false for the default profile.
     pub share_sessions: bool,
+    /// The sharing group (`mcc share --group`): `default` for the default
+    /// group, null while the profile doesn't share.
+    pub share_group: Option<String>,
     /// False only for an mcc launcher written before session sharing (run
     /// `mcc refresh-launchers`); true when there is nothing to refresh, as
     /// for the default profile or a profile without a launcher.
@@ -84,6 +87,14 @@ pub fn account_info(state_json: &Path) -> Option<Account> {
     account_from_state(&state)
 }
 
+/// A profile's account: what its state file says now, completed from (or,
+/// when the state file has none, replaced by) what `mcc add` recorded.
+pub fn profile_account(p: &Profile) -> Account {
+    account_info(&p.dir.join(".claude.json"))
+        .unwrap_or_default()
+        .or_recorded(p.account.clone())
+}
+
 fn account_from_state(state: &Value) -> Option<Account> {
     let o = state.get("oauthAccount")?;
     let s = |k: &str| o.get(k).and_then(Value::as_str).map(str::to_string);
@@ -92,6 +103,7 @@ fn account_from_state(state: &Value) -> Option<Account> {
         uuid: s("accountUuid"),
         organization: s("organizationName"),
         organization_uuid: s("organizationUuid"),
+        organization_type: s("organizationType"),
         recorded_at: None,
     };
     (a != Account::default()).then_some(a)
@@ -215,6 +227,9 @@ fn collect(
         created_at: reg.map(|r| r.created_at.clone()),
         last_sync: reg.and_then(|r| r.last_sync.clone()),
         share_sessions: reg.is_some_and(|r| r.share_sessions),
+        share_group: reg
+            .filter(|r| r.share_sessions)
+            .map(|r| r.share_group.clone().unwrap_or_else(|| "default".into())),
         launcher_current: reg
             .and_then(|r| r.wrapper.as_deref())
             .is_none_or(|w| !shell::is_mcc_wrapper(w) || shell::launcher_is_current(w)),
@@ -314,13 +329,14 @@ mod tests {
         let state = serde_json::json!({"oauthAccount": {
             "emailAddress": "a@x.com", "accountUuid": "u1",
             "organizationName": "Acme", "organizationUuid": "org-1",
-            "organizationRole": "admin"
+            "organizationRole": "admin", "organizationType": "claude_team"
         }});
         let a = account_from_state(&state).unwrap();
         assert_eq!(a.email.as_deref(), Some("a@x.com"));
         assert_eq!(a.uuid.as_deref(), Some("u1"));
         assert_eq!(a.organization.as_deref(), Some("Acme"));
         assert_eq!(a.organization_uuid.as_deref(), Some("org-1"));
+        assert_eq!(a.organization_type.as_deref(), Some("claude_team"));
         assert_eq!(a.recorded_at, None);
         assert!(account_from_state(&serde_json::json!({"oauthAccount": {}})).is_none());
         assert!(account_from_state(&serde_json::json!({"theme": "dark"})).is_none());

@@ -2,7 +2,7 @@
 //!
 //! `MCC_HOME` overrides `HOME`, which keeps tests and demos fully sandboxed.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::Result;
 
@@ -63,9 +63,30 @@ impl Paths {
         self.profiles_dir.join(alias)
     }
 
-    /// The shared session store: every sharing profile's `projects/` links here.
+    /// The default group's session store: the profiles sharing without a
+    /// group name link their `projects/` here. It is the one store every
+    /// sharing profile used before groups existed.
     pub fn shared_projects_dir(&self) -> PathBuf {
         self.shared_dir.join("projects")
+    }
+
+    /// The session store of sharing group `group` (`None`: the default group).
+    /// `None` when `group` is not a single plain directory name (empty,
+    /// `.`, `..`, absolute, or with a separator), so the store is always
+    /// inside `shared_dir/groups/`.
+    pub fn share_store(&self, group: Option<&str>) -> Option<PathBuf> {
+        match group {
+            None => Some(self.shared_projects_dir()),
+            Some(g) => {
+                let mut parts = Path::new(g).components();
+                match (parts.next(), parts.next()) {
+                    (Some(Component::Normal(name)), None) if name == g => {
+                        Some(self.shared_dir.join("groups").join(g).join("projects"))
+                    }
+                    _ => None,
+                }
+            }
+        }
     }
 
     /// `~/.mcc/state/<profile>`; the default profile is `default`.
@@ -119,6 +140,25 @@ mod tests {
         assert_eq!(
             p.shared_projects_dir(),
             PathBuf::from("/h/.mcc/shared/projects")
+        );
+        assert_eq!(p.share_store(None), Some(p.shared_projects_dir()));
+        assert_eq!(
+            p.share_store(Some("work")),
+            Some(PathBuf::from("/h/.mcc/shared/groups/work/projects"))
+        );
+    }
+
+    #[test]
+    fn share_store_stays_inside_the_groups_dir() {
+        let p = Paths::new(PathBuf::from("/h"));
+        for bad in [
+            "", ".", "..", "../..", "a/b", "/", "/etc", "a/", "./a", "a/..",
+        ] {
+            assert_eq!(p.share_store(Some(bad)), None, "{bad:?}");
+        }
+        assert_eq!(
+            p.share_store(Some("a.b")),
+            Some(PathBuf::from("/h/.mcc/shared/groups/a.b/projects"))
         );
     }
 

@@ -86,7 +86,7 @@ pub fn run(paths: &Paths, cfg: &Config, args: &ListArgs) -> Result<()> {
 fn sharing_notes(all: &[ProfileMetrics]) {
     if all.iter().any(|m| m.share_sessions) {
         ui::info(
-            "shared: sessions shared with every sharing profile (their session counts include all of them)",
+            "shared: sessions shared with every sharing profile of the same group (their session counts include all of them)",
         );
     }
     let stale = all.iter().filter(|m| !m.launcher_current).count();
@@ -263,10 +263,10 @@ fn table_lines(all: &[ProfileMetrics], bar: usize, now: DateTime<Utc>) -> Vec<St
             } else {
                 m.name.clone()
             };
-            let name = if m.share_sessions {
-                format!("{name} (shared)")
-            } else {
-                name
+            let name = match m.share_group.as_deref() {
+                Some(g) if m.share_sessions && g != "default" => format!("{name} (shared: {g})"),
+                _ if m.share_sessions => format!("{name} (shared)"),
+                _ => name,
             };
             let name = if m.exists {
                 name
@@ -469,10 +469,11 @@ fn card(
             "{} ({} sessions{})",
             m.projects,
             m.sessions,
-            if m.share_sessions {
-                ", shared with every sharing profile"
-            } else {
-                ""
+            match m.share_group.as_deref() {
+                Some(g) if m.share_sessions && g != "default" =>
+                    format!(", shared with the sharing profiles of group {g}"),
+                _ if m.share_sessions => ", shared with every sharing profile".to_string(),
+                _ => String::new(),
             }
         ),
     )?;

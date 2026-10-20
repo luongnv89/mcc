@@ -84,6 +84,17 @@ pub struct Profile {
     /// reminder instead. Left out of the file until then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub share_note_acknowledged_at: Option<String>,
+    /// The sharing group whose store this profile's `projects/` links to
+    /// (`mcc share <alias> --group <name>`). Unset means the default group,
+    /// whose store is the one every sharing profile used before groups
+    /// existed (`~/.mcc/shared/projects`). Left out of the file while unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub share_group: Option<String>,
+    /// When sharing across organizations was confirmed for this profile
+    /// (`mcc share <alias> --allow-cross-org`, RFC 3339). Cleared when the
+    /// profile stops sharing. Left out of the file while unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub share_cross_org_allowed_at: Option<String>,
     /// A short label for the account, such as "personal" or the work
     /// organization, asked by `mcc add` (or `--label`). Left out of the file
     /// while unset.
@@ -111,6 +122,11 @@ pub struct Account {
     pub organization: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub organization_uuid: Option<String>,
+    /// Claude Code's `organizationType`, such as `claude_max` (a personal
+    /// plan) or `claude_team`. Personal plans have an organization too, so
+    /// this is what tells them from a work organization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organization_type: Option<String>,
     /// When mcc recorded it (RFC 3339).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recorded_at: Option<String>,
@@ -123,8 +139,73 @@ impl Account {
         self.email.is_none() && self.uuid.is_none()
     }
 
+    /// True when an organization (name or UUID) is known.
+    pub fn has_org(&self) -> bool {
+        self.organization.is_some() || self.organization_uuid.is_some()
+    }
+
+    /// What kind of account this is, for the session-sharing guard.
+    pub fn kind(&self) -> AccountKind {
+        if self.is_anonymous() && !self.has_org() {
+            return AccountKind::Unknown;
+        }
+        if !self.has_org() {
+            return AccountKind::Personal;
+        }
+        match self
+            .organization_type
+            .as_deref()
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("claude_free" | "claude_pro" | "claude_max" | "free" | "pro" | "max") => {
+                AccountKind::Personal
+            }
+            Some("claude_team" | "claude_enterprise" | "team" | "enterprise") => {
+                AccountKind::Organization
+            }
+            _ => AccountKind::Unclassified,
+        }
+    }
+
+    /// How this account's organization compares with `other`'s: equal
+    /// organization UUIDs when both are known, else equal names (ignoring
+    /// case). Two accounts without any organization are both personal, so
+    /// the same; one with and one without are different. Anything that
+    /// can't be compared (a UUID on one side, only a name on the other) is
+    /// [`OrgMatch::Unknown`].
+    pub fn org_match(&self, other: &Account) -> OrgMatch {
+        if let (Some(a), Some(b)) = (&self.organization_uuid, &other.organization_uuid) {
+            return if a == b {
+                OrgMatch::Same
+            } else {
+                OrgMatch::Different
+            };
+        }
+        if let (Some(a), Some(b)) = (&self.organization, &other.organization) {
+            return if a.eq_ignore_ascii_case(b) {
+                OrgMatch::Same
+            } else {
+                OrgMatch::Different
+            };
+        }
+        match (self.has_org(), other.has_org()) {
+            (false, false) => OrgMatch::Same,
+            (true, false) | (false, true) => OrgMatch::Different,
+            (true, true) => OrgMatch::Unknown,
+        }
+    }
+
+    /// The same login in the same organization: what makes two profiles
+    /// share one set of usage limits. The same login in another
+    /// organization (a personal plan and a work seat) is not a duplicate.
+    pub fn same_seat(&self, other: &Account) -> bool {
+        self.same_login(other) && self.org_match(other) != OrgMatch::Different
+    }
+
     /// The same login: equal account UUIDs when both are known, else equal
-    /// emails (ignoring case). Unknown never matches.
+    /// emails (ignoring case). Unknown never matches. The organization is
+    /// not compared; see [`Account::same_seat`].
     pub fn same_login(&self, other: &Account) -> bool {
         match (&self.uuid, &other.uuid) {
             (Some(a), Some(b)) => a == b,
@@ -144,16 +225,59 @@ impl Account {
         }
     }
 
-    /// Fill the fields this one lacks from `other`.
+    /// Fill the fields this one lacks from `other`. The organization fields
+    /// are taken from `other` only when this one knows no organization at
+    /// all, or the same one ([`OrgMatch::Same`]): mixing two organizations'
+    /// fields (one's UUID with the other's type) could make a work seat look
+    /// like a personal plan, defeating the session-sharing guard.
     pub fn or(self, other: Account) -> Account {
+        let inherit_org = !self.has_org() || self.org_match(&other) == OrgMatch::Same;
+        let (organization, organization_uuid, organization_type) = if inherit_org {
+            (
+                self.organization.or(other.organization),
+                self.organization_uuid.or(other.organization_uuid),
+                self.organization_type.or(other.organization_type),
+            )
+        } else {
+            (
+                self.organization,
+                self.organization_uuid,
+                self.organization_type,
+            )
+        };
         Account {
             email: self.email.or(other.email),
             uuid: self.uuid.or(other.uuid),
-            organization: self.organization.or(other.organization),
-            organization_uuid: self.organization_uuid.or(other.organization_uuid),
+            organization,
+            organization_uuid,
+            organization_type,
             recorded_at: self.recorded_at.or(other.recorded_at),
         }
     }
+}
+
+/// What kind of account a profile is logged in to ([`Account::kind`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountKind {
+    /// A work organization: Team or Enterprise.
+    Organization,
+    /// A personal plan (Free, Pro, Max), or an account without any
+    /// organization.
+    Personal,
+    /// In an organization whose type is unknown (not recorded, or a type
+    /// mcc doesn't know): it may be a work organization.
+    Unclassified,
+    /// No account known: never logged in, or `--no-login`.
+    Unknown,
+}
+
+/// How two accounts' organizations compare ([`Account::org_match`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrgMatch {
+    Same,
+    Different,
+    /// Not enough is known to tell.
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -442,6 +566,8 @@ mod tests {
                 last_sync: None,
                 share_sessions: true,
                 share_note_acknowledged_at: None,
+                share_group: None,
+                share_cross_org_allowed_at: None,
                 label: None,
                 account: None,
             },
@@ -576,6 +702,8 @@ mod tests {
             last_sync: None,
             share_sessions: false,
             share_note_acknowledged_at: None,
+            share_group: None,
+            share_cross_org_allowed_at: None,
             label: None,
             account: None,
         }
@@ -702,6 +830,7 @@ mod tests {
             uuid: None,
             organization: Some("Acme".into()),
             organization_uuid: Some("org-1".into()),
+            organization_type: Some("claude_team".into()),
             recorded_at: Some("2026-10-20T00:00:00+02:00".into()),
         });
         cfg.profiles.insert("work".into(), work);
@@ -746,7 +875,142 @@ mod tests {
         assert_eq!(merged.email.as_deref(), Some("a@x.com"));
         assert_eq!(merged.uuid.as_deref(), Some("u1"));
         assert_eq!(merged.organization.as_deref(), Some("Acme"));
-        assert_eq!(merged.organization_uuid.as_deref(), Some("org-1"));
+        // Another organization's fields are never mixed in.
+        assert_eq!(merged.organization_uuid, None);
+    }
+
+    #[test]
+    fn or_recorded_keeps_another_organizations_type_out() {
+        // Recorded at `mcc add` as a personal Max plan...
+        let recorded = Account {
+            email: Some("me@x.com".into()),
+            uuid: Some("u1".into()),
+            organization: Some("Me".into()),
+            organization_uuid: Some("org-x".into()),
+            organization_type: Some("claude_max".into()),
+            recorded_at: Some("2026-01-01T00:00:00+00:00".into()),
+        };
+        // ...now on a Team seat whose type `.claude.json` doesn't give.
+        let live = Account {
+            email: Some("me@x.com".into()),
+            uuid: Some("u1".into()),
+            organization_uuid: Some("org-y".into()),
+            ..Account::default()
+        };
+        let merged = live.or_recorded(Some(recorded.clone()));
+        assert_eq!(merged.organization_uuid.as_deref(), Some("org-y"));
+        assert_eq!(merged.organization, None);
+        assert_eq!(merged.organization_type, None);
+        assert_eq!(merged.kind(), AccountKind::Unclassified);
+        // Login fields are still filled.
+        assert_eq!(merged.recorded_at, recorded.recorded_at);
+
+        // The same organization: its name and type are filled.
+        let same = Account {
+            email: Some("me@x.com".into()),
+            organization_uuid: Some("org-x".into()),
+            ..Account::default()
+        }
+        .or_recorded(Some(recorded.clone()));
+        assert_eq!(same.organization.as_deref(), Some("Me"));
+        assert_eq!(same.organization_type.as_deref(), Some("claude_max"));
+        assert_eq!(same.uuid.as_deref(), Some("u1"));
+        assert_eq!(same.kind(), AccountKind::Personal);
+
+        // No organization known live: the recorded one is taken whole.
+        let none = Account {
+            email: Some("me@x.com".into()),
+            ..Account::default()
+        }
+        .or_recorded(Some(recorded.clone()));
+        assert_eq!(none.organization_uuid.as_deref(), Some("org-x"));
+        assert_eq!(none.organization_type.as_deref(), Some("claude_max"));
+
+        // Names decide when UUIDs are missing on one side.
+        let by_name = Account {
+            email: Some("me@x.com".into()),
+            organization: Some("Work".into()),
+            ..Account::default()
+        }
+        .or_recorded(Some(recorded));
+        assert_eq!(by_name.organization_uuid, None);
+        assert_eq!(by_name.organization_type, None);
+        assert_eq!(by_name.kind(), AccountKind::Unclassified);
+    }
+
+    #[test]
+    fn org_match_prefers_uuids_then_names() {
+        let a = |name: Option<&str>, id: Option<&str>| Account {
+            email: Some("me@x.com".into()),
+            organization: name.map(Into::into),
+            organization_uuid: id.map(Into::into),
+            ..Account::default()
+        };
+        use OrgMatch::*;
+        assert_eq!(a(None, None).org_match(&a(None, None)), Same);
+        assert_eq!(a(Some("Acme"), None).org_match(&a(None, None)), Different);
+        assert_eq!(a(None, None).org_match(&a(None, Some("o1"))), Different);
+        assert_eq!(
+            a(Some("Acme"), None).org_match(&a(Some("ACME"), None)),
+            Same
+        );
+        assert_eq!(
+            a(Some("Acme"), None).org_match(&a(Some("Beta"), None)),
+            Different
+        );
+        // UUIDs win over names.
+        assert_eq!(
+            a(Some("Acme"), Some("o1")).org_match(&a(Some("Acme"), Some("o2"))),
+            Different
+        );
+        assert_eq!(
+            a(Some("Old"), Some("o1")).org_match(&a(Some("New"), Some("o1"))),
+            Same
+        );
+        // A UUID on one side and only a name on the other can't be compared.
+        assert_eq!(
+            a(None, Some("o1")).org_match(&a(Some("Acme"), None)),
+            Unknown
+        );
+    }
+
+    #[test]
+    fn kind_tells_personal_plans_from_work_organizations() {
+        let a = |org: Option<&str>, ty: Option<&str>| Account {
+            email: Some("me@x.com".into()),
+            organization_uuid: org.map(Into::into),
+            organization_type: ty.map(Into::into),
+            ..Account::default()
+        };
+        use AccountKind::*;
+        assert_eq!(Account::default().kind(), Unknown);
+        assert_eq!(a(None, None).kind(), Personal);
+        // Personal plans have an organization of their own.
+        assert_eq!(a(Some("o1"), Some("claude_max")).kind(), Personal);
+        assert_eq!(a(Some("o1"), Some("claude_pro")).kind(), Personal);
+        assert_eq!(a(Some("o1"), Some("claude_team")).kind(), Organization);
+        assert_eq!(
+            a(Some("o1"), Some("claude_enterprise")).kind(),
+            Organization
+        );
+        // An organization of unknown type may be a work one.
+        assert_eq!(a(Some("o1"), None).kind(), Unclassified);
+        assert_eq!(a(Some("o1"), Some("something_new")).kind(), Unclassified);
+    }
+
+    #[test]
+    fn same_seat_needs_the_same_login_and_organization() {
+        let a = |email: &str, org: Option<&str>| Account {
+            email: Some(email.into()),
+            organization_uuid: org.map(Into::into),
+            ..Account::default()
+        };
+        assert!(a("me@x.com", Some("o1")).same_seat(&a("ME@x.com", Some("o1"))));
+        assert!(a("me@x.com", None).same_seat(&a("me@x.com", None)));
+        // Personal plan and work seat on one login: not the same seat.
+        assert!(!a("me@x.com", None).same_seat(&a("me@x.com", Some("o1"))));
+        assert!(!a("me@x.com", Some("o1")).same_seat(&a("me@x.com", Some("o2"))));
+        assert!(!a("me@x.com", Some("o1")).same_seat(&a("you@x.com", Some("o1"))));
     }
 
     #[test]

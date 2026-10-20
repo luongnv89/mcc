@@ -760,6 +760,8 @@ mod tests {
                 last_sync: None,
                 share_sessions: false,
                 share_note_acknowledged_at: None,
+                share_group: None,
+                share_cross_org_allowed_at: None,
                 label: None,
                 account: None,
             },
