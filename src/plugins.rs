@@ -21,6 +21,11 @@
 //! launcher, `mcc run`, `mcc exec` and `mcc env` set it. A profile started
 //! any other way (e.g. `CLAUDE_CONFIG_DIR=… claude`) falls back to its own,
 //! empty, plugins root.
+//!
+//! Version caveat: this was verified on Claude Code 2.1.286; other versions
+//! may treat `CLAUDE_CODE_PLUGIN_CACHE_DIR` differently. If a sharing profile
+//! shows no plugins, `mcc link <alias> plugins --off` gives it its own copy
+//! again (or clone with `--copy-plugins`).
 
 use std::path::PathBuf;
 
