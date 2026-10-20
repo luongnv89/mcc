@@ -97,7 +97,7 @@
             <tr><td><code>~/.mcc/state/&lt;profile&gt;/</code></td><td>Only after <code>mcc statusline install</code>: the 5-hour and weekly rate limits Claude Code passes to its status line (percent used and reset time), and the <code>statusLine</code> setting the shim replaced. No login or token</td></tr>
             <tr><td><code>~/.mcc/profiles/&lt;alias&gt;/</code></td><td>Each profile's Claude Code configuration. Claude Code itself stores that profile's login and history here</td></tr>
             <tr><td><code>~/.mcc/shared/projects/</code></td><td>Session transcripts of the profiles you opted in with <code>mcc share</code>. It exists only once sharing is turned on</td></tr>
-            <tr><td><code>~/.mcc/logs/mcc.log</code></td><td>A log of each command's steps and results, which can include file paths and a profile's account email. It never contains access tokens</td></tr>
+            <tr><td><code>~/.mcc/logs/mcc.log</code></td><td>A log of each command's steps and results, which can include file paths and a profile's account email. It never contains access tokens. At about 1 MB it is moved to <code>mcc.log.1</code>, replacing the previous one, so at most about 2 MB of log is kept</td></tr>
             <tr><td><code>~/.mcc/backups/</code>, <code>&lt;profile&gt;/.mcc-backup/</code></td><td>Copies of your rc file and of the profile files a sync overwrites or removes, taken before mcc changes them, and session files that <code>mcc share</code> could not merge</td></tr>
             <tr><td><code>~/.local/bin/&lt;alias&gt;</code> and your rc file</td><td>The launcher for each profile and a marked alias block</td></tr>
           </tbody>

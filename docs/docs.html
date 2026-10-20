@@ -522,7 +522,7 @@ work       <span class="y">█████████</span><span class="d">░
             <tr><td>Launcher</td><td><code>~/.local/bin/&lt;alias&gt;</code>; works in any shell as soon as it's written</td></tr>
             <tr><td>Shell alias</td><td>A managed block in your rc file, between <code># &gt;&gt;&gt; mcc:&lt;alias&gt; &gt;&gt;&gt;</code> and <code># &lt;&lt;&lt; mcc:&lt;alias&gt; &lt;&lt;&lt;</code></td></tr>
             <tr><td>Config &amp; registry</td><td><code>~/.mcc/config.toml</code></td></tr>
-            <tr><td>Log</td><td><code>~/.mcc/logs/mcc.log</code>; every run is appended here</td></tr>
+            <tr><td>Log</td><td><code>~/.mcc/logs/mcc.log</code>; every run is appended here, and at about 1 MB it is moved to <code>mcc.log.1</code> (replacing the previous one)</td></tr>
             <tr><td>Shared sessions</td><td><code>~/.mcc/shared/projects</code>, only for profiles that opted in with <code>mcc share</code></td></tr>
             <tr><td>Project defaults</td><td><code>[projects."&lt;dir&gt;"]</code> tables in <code>~/.mcc/config.toml</code>, written by <code>mcc project set</code></td></tr>
             <tr><td>rc file backups</td><td><code>~/.mcc/backups/</code></td></tr>
