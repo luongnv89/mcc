@@ -1731,6 +1731,63 @@ fn sync_merges_settings_overlays() {
 }
 
 #[test]
+fn sync_warns_when_overlay_replaces_statusline_shim() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    let mut d = json(sb.read(".claude/settings.json").as_bytes());
+    d["statusLine"] = serde_json::json!({"type": "command", "command": "mcc statusline"});
+    sb.write(".claude/settings.json", &d.to_string());
+    with_profile(&sb, "work", "--clone");
+    const WARNING: &str = "replaces the mcc statusline shim";
+
+    // No overlay: no warning.
+    sb.mcc()
+        .args(["sync", "work"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(WARNING).not());
+
+    // An overlay that only sets another statusLine field keeps the shim.
+    sb.write(
+        ".mcc/profiles/work/settings.mcc.json",
+        r#"{"statusLine": {"padding": 1}}"#,
+    );
+    sb.mcc()
+        .args(["sync", "work"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(WARNING).not());
+    let s = work_settings(&sb);
+    assert_eq!(s["statusLine"]["command"], "mcc statusline", "{s}");
+    assert_eq!(s["statusLine"]["padding"], 1, "{s}");
+
+    // An overlay statusLine.command replaces the shim: warned, still written.
+    sb.write(
+        ".mcc/profiles/work/settings.mcc.json",
+        r#"{"statusLine": {"command": "~/bin/work-status.sh"}}"#,
+    );
+    sb.mcc()
+        .args(["sync", "work"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(format!(
+            "\"work\": the settings overlay sets statusLine.command, which {WARNING}"
+        )));
+    let s = work_settings(&sb);
+    assert_eq!(s["statusLine"]["command"], "~/bin/work-status.sh", "{s}");
+
+    // Without the shim in the default, the same overlay is not warned about.
+    let mut d = json(sb.read(".claude/settings.json").as_bytes());
+    d["statusLine"] = serde_json::json!({"command": "~/.claude/statusline.sh"});
+    sb.write(".claude/settings.json", &d.to_string());
+    sb.mcc()
+        .args(["sync", "work"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(WARNING).not());
+}
+
+#[test]
 fn settings_overlay_keeps_local_edits_and_conflicts_three_way() {
     let sb = Sandbox::new();
     sb.seed_default();
