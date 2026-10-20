@@ -90,6 +90,19 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     log::init(paths.log_file.clone());
     log_invocation();
 
+    if let Command::Config(args) = &cli.command {
+        // No first-run setup, and the config isn't loaded here: `mcc config
+        // edit` must be able to fix a file that doesn't parse, and `get` and
+        // `path` only read. `set` holds the lock for its whole run; `edit`
+        // takes it only to save (see commands/config.rs).
+        let _lock = if writes_config(&cli.command) {
+            Some(config::lock(&paths)?)
+        } else {
+            None
+        };
+        return commands::config::run(&paths, args);
+    }
+
     let explicit_init = matches!(cli.command, Command::Init(_));
     // `<alias> --mcc-share`, `mcc run` and `mcc env` (direnv) run on every
     // launch, and `mcc exec` must not hold the lock its command may need:
@@ -158,7 +171,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Exec(args) => commands::exec::run(&paths, &cfg, &args),
         Command::RefreshLaunchers(args) => commands::refresh_launchers::run(&paths, &cfg, &args),
         Command::Statusline(args) => commands::statusline::run(&paths, &cfg, &args),
-        Command::Completions(_) => unreachable!("handled above"),
+        Command::Completions(_) | Command::Config(_) => unreachable!("handled above"),
     }
 }
 
@@ -192,6 +205,10 @@ fn writes_config(command: &Command) -> bool {
         // install/uninstall edit settings.json files and mcc's state, one
         // run at a time; the bare shim is routed before the lock is taken.
         Command::Statusline(args) => args.action.is_some(),
+        // `set` writes under the lock; `get` and `path` only read. `edit`
+        // takes the lock itself, only to save: holding it while the editor
+        // is open would block every other mcc command until it closes.
+        Command::Config(args) => matches!(args.action, cli::ConfigAction::Set { .. }),
         // These read the config; the one time one of them records the live
         // usage disclosure, it takes the lock for that write alone.
         Command::List(_)

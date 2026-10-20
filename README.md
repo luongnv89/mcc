@@ -114,6 +114,7 @@ mcc delete job              # remove it completely
 | `mcc run [-- CLAUDE_ARGS]` | Start Claude Code with the current project's profile; at its limit, ask whether to wait (the default) or start it anyway | `--profile NAME`, `--dry-run` |
 | `mcc env [PROFILE]` | Print the shell line that sets `CLAUDE_CONFIG_DIR` for the project's profile (or PROFILE), for `eval` or direnv (see [Using a project's profile everywhere](#using-a-projects-profile-everywhere-mcc-env-and-mcc-exec)) | `--shell zsh\|bash\|fish` |
 | `mcc exec PROFILE -- CMD...` | Run a command with a profile's `CLAUDE_CONFIG_DIR` and return its exit status; `--all` runs it once per profile and reports each result | `--all` |
+| `mcc config get\|set\|edit\|path` | Read or change `~/.mcc/config.toml` without hand-editing TOML; `set` and `edit` check values and leave the file unchanged when one is invalid (see [Changing settings](#changing-settings-mcc-config)) | `get KEY`, `set KEY VALUE`, `edit`, `path` |
 | `mcc statusline install` | Opt-in: show the active profile in Claude Code's status line and cache each profile's rate limits (see [Status line](#status-line-mcc-statusline)); it edits the default profile's `settings.json`; also `uninstall` | `--prefix`, `-y/--yes` |
 | `mcc refresh-launchers [ALIAS...]` | Rewrite launchers and shell aliases from the current templates (all profiles when none are given); needed once so `<alias> --mcc-share` works for profiles made by an older mcc | |
 | `mcc delete ALIAS` (`rm`) | Log out and remove a profile | `-y/--yes`, `--keep-auth` |
@@ -224,6 +225,23 @@ mcc completions fish > ~/.config/fish/completions/mcc.fish
 - changed in both, or added on both sides: a **conflict**, kept and reported; `--force` overwrites it (after backing it up).
 
 `--dry-run` shows the same classification and writes nothing, not even the record. A profile without a record yet (created `--fresh` or by an older mcc) is compared two-way once: every difference is taken from the default, as before, and the record starts with that sync. The record belongs to its profile and is never copied. `mcc diff ALIAS` lists each differing path with its class and a line diff (`---` default, `+++` profile), and `mcc list` sums it up in its `SYNC` column (`--json`: `sync.behind`, `sync.local_edits`, `sync.conflicts`).
+
+### Changing settings: `mcc config`
+
+`mcc config` reads and changes `~/.mcc/config.toml` so you don't have to edit TOML by hand:
+
+```sh
+mcc config get usage.live                         # false (lists print one item per line)
+mcc config set usage.live true
+mcc config set sync.exclude plugins,mcp           # comma-separated; "" excludes nothing
+mcc config set profiles.work.label "Acme (work)"  # "" removes the label
+mcc config edit                                   # open the file in $VISUAL or $EDITOR
+mcc config path                                   # print the file's path
+```
+
+`set` accepts `sync.exclude`, `sync.extra`, `usage.show_email`, `usage.live` and `profiles.ALIAS.label`, and checks each value as the command that uses it would: an unknown sync item, a path outside the config dir, a value that isn't `true` or `false`, or an invalid label is refused with exit 2 or 3, and the file is left unchanged. Keys that other commands manage point you to them (`mcc share`, `mcc project`, `mcc init --force`). `get` reads any key, dotted as in TOML (`projects."/Users/me/app".profile`); a key that isn't set exits 1. Comments and formatting are kept.
+
+`edit` opens a copy of the file and saves it only when it is valid mcc config (it parses, and sync items, labels and `share_group` names pass the same checks); otherwise it offers to edit again, or leaves the file unchanged. mcc holds no lock while the editor is open, so other mcc commands, launches included, keep working; if one of them changes the file meanwhile, nothing is saved and your edited copy is kept next to it. `edit` also works on a file that no longer parses, so it can fix one. `get` and `path` never take the lock; `set` holds it like any other write.
 
 ### Customizing sync
 

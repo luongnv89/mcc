@@ -262,7 +262,7 @@ fn other_org_profiles(others: &[(String, Account)], account: &Account) -> Vec<St
 const LABEL_MAX: usize = 64;
 
 /// A label is 1–64 characters of printable text.
-fn check_label(label: &str) -> std::result::Result<(), String> {
+pub(crate) fn check_label(label: &str) -> std::result::Result<(), String> {
     let t = label.trim();
     if t.is_empty() {
         return Err("the label is empty".into());

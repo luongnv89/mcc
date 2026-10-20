@@ -130,7 +130,7 @@ const GROUP_MAX: usize = 64;
 /// lowercased: on a case-insensitive filesystem (macOS by default) `Acme`
 /// and `acme` would be one store, so they must be one group. `default` is
 /// the default group (`None`).
-fn check_group(name: &str) -> Result<Option<String>> {
+pub(crate) fn check_group(name: &str) -> Result<Option<String>> {
     let lower = name.to_ascii_lowercase();
     if lower == "default" {
         return Ok(None);
