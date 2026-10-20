@@ -520,6 +520,50 @@ fn claude_config_dir_in_this_shell_is_a_warning() {
 }
 
 #[test]
+fn claude_config_dir_in_a_fish_shell_is_cleared_with_set_e() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    sb.mcc()
+        .env("SHELL", "/usr/bin/fish")
+        .args(["add", "work", "--clone"])
+        .assert()
+        .success();
+    assert!(
+        sb.read(".mcc/config.toml").contains("fish"),
+        "set up for fish"
+    );
+    let o = sb
+        .mcc()
+        .env("SHELL", "/usr/bin/fish")
+        .env("CLAUDE_CONFIG_DIR", sb.path(".mcc/profiles/work"))
+        .arg("doctor")
+        .output()
+        .unwrap();
+    let err = out(&o.stderr);
+    assert!(
+        err.contains("CLAUDE_CONFIG_DIR is set in this shell (~/.mcc/profiles/work)"),
+        "{err}"
+    );
+    assert!(err.contains("after `mcc env | source`"), "{err}");
+    assert!(err.contains("fix: `set -e CLAUDE_CONFIG_DIR`"), "{err}");
+    assert!(!err.contains("unset CLAUDE_CONFIG_DIR"), "{err}");
+}
+
+#[test]
+fn a_global_claude_config_dir_in_config_fish_points_at_mcc_env_source() {
+    let sb = healthy();
+    sb.write(
+        ".config/fish/config.fish",
+        "set -gx CLAUDE_CONFIG_DIR ~/.claude-work\n",
+    );
+    let err = failing(&sb);
+    assert!(
+        err.contains("fix: remove line 1 from ~/.config/fish/config.fish (start profiles with their alias, `mcc run`, or `mcc env <alias> | source` instead)"),
+        "{err}"
+    );
+}
+
+#[test]
 fn token_expiry_is_not_checked_without_live_usage() {
     let sb = healthy();
     sb.seed_oauth(".mcc/profiles/work", "test-token-work", now_ms() - HOUR_MS);

@@ -592,7 +592,7 @@ mcc statusline uninstall          # put the previous statusLine back
 | mcc is set up, `claude` is found | `mcc init`; install Claude Code or set `MCC_CLAUDE_BIN` |
 | `~/.local/bin` is on PATH | `source ~/.zshrc` when the rc file already adds it, else `mcc init --force` (or the line to add) |
 | No rc file sets `CLAUDE_CONFIG_DIR` for every shell (`export`, a bare assignment, fish's `set -gx`); comments, aliases and mcc's own blocks are ignored. Such a line makes plain `claude` stop starting the default profile | remove line N from the rc file |
-| `CLAUDE_CONFIG_DIR` set in the current shell (a warning: expected inside `mcc exec` or after `eval "$(mcc env)"`) | `unset CLAUDE_CONFIG_DIR` |
+| `CLAUDE_CONFIG_DIR` set in the current shell (a warning: expected inside `mcc exec` or after `eval "$(mcc env)"`) | `unset CLAUDE_CONFIG_DIR` (fish: `set -e CLAUDE_CONFIG_DIR`) |
 | The profile's directory exists, with mode 0700 | `mcc delete ALIAS`; `chmod 700 DIR` |
 | Its launcher is there, written by mcc, executable, starts the profile's directory, sets the plugins root exactly when the profile shares plugins, and is current | `mcc refresh-launchers ALIAS`; `chmod +x`; move a file mcc didn't write out of the way |
 | Its alias block is in the rc file it was added to | the block to paste (no command adds it back) |

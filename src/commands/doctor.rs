@@ -340,8 +340,12 @@ fn check_rc_files(d: &mut Doctor) {
                     line.trim()
                 ),
                 format!(
-                    "remove line {n} from {} (start profiles with their alias, `mcc run`, or `eval \"$(mcc env <alias>)\"` instead), then open a new terminal",
-                    d.show(&rc)
+                    "remove line {n} from {} (start profiles with their alias, `mcc run`, or `{}` instead), then open a new terminal",
+                    d.show(&rc),
+                    env_usage(
+                        matches!(super::refresh_launchers::rc_shell(&rc), env_detect::Shell::Fish),
+                        "<alias>"
+                    )
                 ),
             );
         }
@@ -367,16 +371,45 @@ fn check_environment(d: &mut Doctor) {
         ),
         Some(v) => {
             let dir = PathBuf::from(&v);
+            let fish = matches!(
+                d.cfg.env.as_ref().and_then(|e| e.shell),
+                Some(env_detect::Shell::Fish)
+            );
             d.push_cmd(
                 "env_config_dir",
                 Level::Warn,
                 format!(
-                    "{CONFIG_DIR_VAR} is set in this shell ({}): plain `claude` starts that profile here, not the default. Expected inside `mcc exec` or after `eval \"$(mcc env)\"`; otherwise find where it is set",
-                    d.show(&dir)
+                    "{CONFIG_DIR_VAR} is set in this shell ({}): plain `claude` starts that profile here, not the default. Expected inside `mcc exec` or after `{}`; otherwise find where it is set",
+                    d.show(&dir),
+                    env_usage(fish, "")
                 ),
-                format!("unset {CONFIG_DIR_VAR}"),
+                unset_line(fish),
             );
         }
+    }
+}
+
+/// How a shell applies `mcc env [profile]`: `| source` in fish, `eval` in sh.
+fn env_usage(fish: bool, profile: &str) -> String {
+    let cmd = if profile.is_empty() {
+        "mcc env".to_string()
+    } else {
+        format!("mcc env {profile}")
+    };
+    if fish {
+        format!("{cmd} | source")
+    } else {
+        format!("eval \"$({cmd})\"")
+    }
+}
+
+/// The command that clears `CLAUDE_CONFIG_DIR` in the shell: fish has no
+/// `unset`.
+fn unset_line(fish: bool) -> String {
+    if fish {
+        format!("set -e {CONFIG_DIR_VAR}")
+    } else {
+        format!("unset {CONFIG_DIR_VAR}")
     }
 }
 
