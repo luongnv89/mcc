@@ -117,18 +117,29 @@ fn concurrent_writers_lose_nothing() {
 fn a_writer_waits_for_the_lock() {
     let sb = sandbox();
     let lock = hold_lock(&sb);
+    let log = sb.path("set.err");
     let child = project_set(&sb, "code/app")
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stderr(File::create(&log).unwrap())
         .spawn()
         .unwrap();
-    std::thread::sleep(Duration::from_millis(400));
+    // It says it is waiting, and writes nothing while it waits.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !std::fs::read_to_string(&log)
+        .unwrap()
+        .contains("waiting for another mcc command")
+    {
+        assert!(Instant::now() < deadline, "never said it was waiting");
+        std::thread::sleep(Duration::from_millis(20));
+    }
     assert!(!sb.read(".mcc/config.toml").contains("[projects"));
     drop(lock);
     let o = wait_for(child, 30);
-    let err = String::from_utf8_lossy(&o.stderr);
-    assert!(o.status.success(), "{err}");
-    assert!(err.contains("waiting for another mcc command"), "{err}");
+    assert!(
+        o.status.success(),
+        "{}",
+        std::fs::read_to_string(&log).unwrap()
+    );
     assert!(sb.read(".mcc/config.toml").contains("[projects"));
 }
 
