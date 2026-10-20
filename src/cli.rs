@@ -116,13 +116,13 @@ pub enum Command {
     /// List all profiles with their metrics
     #[command(
         visible_alias = "ls",
-        after_help = "Examples:\n  mcc list\n  mcc list --long\n  mcc list --no-usage\n  mcc list --json | jq '.[] | {name, skills, plugins_installed}'\n  mcc list --json | jq '.[] | {name, five_hour: .usage.five_hour.percent}'\n  mcc list --json-v2 | jq '.profiles[].name'    Versioned: {\"schema\": 2, \"profiles\": [...]}\n\n5H and WEEK show each account's 5-hour and weekly usage (a bar, percent used\nand time until reset) as `mcc statusline` cached it, and UPDATED how old it\nis; `!` marks 80% or more and `!!` 95% or more. Bars shrink to fit the\nterminal; under 80 columns they are dropped when even the smallest does not\nfit. \"—\" when nothing current is cached (run /usage in Claude Code);\n`[usage] live = true` looks usage up with each profile's login instead\n(`mcc list --long` says why it is unavailable). `mcc usage` shows every\nwindow in detail."
+        after_help = "Examples:\n  mcc list\n  mcc list --long               Every metric: command, org, skills, plugins, size...\n  mcc list --show-email\n  mcc list --no-usage\n  mcc list --json | jq '.[] | {name, skills, plugins_installed}'\n  mcc list --json | jq '.[] | {name, five_hour: .usage.five_hour.percent}'\n  mcc list --json-v2 | jq '.profiles[].name'    Versioned: {\"schema\": 2, \"profiles\": [...]}\n\nThe table fits 120 columns: NAME, ACCOUNT (the profile's label, else its\norganization; with the email in front when emails are shown), 5H, WEEK,\nLAST USED and SYNC. `--long` has the rest: command, organization, counts\nof skills, agents, commands, plugins, MCP servers and hooks, size, and\nwhen usage was cached.\n\n5H and WEEK show each account's 5-hour and weekly usage (a bar, percent used\nand time until reset) as `mcc statusline` cached it; `!` marks 80% or more\nand `!!` 95% or more. Bars shrink to fit the terminal; under 80 columns\nthey are dropped when even the smallest does not fit. \"—\" when nothing\ncurrent is cached (run /usage in Claude Code); `[usage] live = true` looks\nusage up with each profile's login instead (`mcc list --long` says why it\nis unavailable). `mcc usage` shows every window in detail.\n\nAccount emails are hidden by default, as in `mcc usage` (`account` is null\nin --json and --json-v2, and so are an `organization` and `label` that\ncontain an email). --show-email shows them for one run; to always show them, set in\n~/.mcc/config.toml:\n\n  [privacy]\n  show_email = true"
     )]
     List(ListArgs),
 
     /// Show each profile's 5-hour and weekly usage in detail
     #[command(
-        after_help = "Examples:\n  mcc usage                     Every profile, the default included\n  mcc usage work                Only the `work` profile\n  mcc usage default             Only the default profile (~/.claude)\n  mcc usage --show-email        Also show each profile's account email\n  mcc usage --json | jq '.[] | {name, weekly: .usage.weekly.percent}'\n  mcc usage --json-v2 | jq '.profiles[].name'   Versioned: {\"schema\": 2, \"profiles\": [...]}\n\nOne table row per profile: for the 5-hour and weekly windows, a bar of the\nlimit used with its percent, then the time until it resets (and the reset\ntime when it fits). `!` marks 80% or more and `!!` 95% or more. On a narrow\nterminal the reset time goes first, then bars shrink; under 80 columns bars\nare dropped when nothing fits. UPDATED is how old the numbers cached by\n`mcc statusline` are; a profile with nothing current cached shows \"—\"\n(run /usage in Claude Code), and one whose usage can't be read shows\n\"unavailable\" and why. MCC_NO_USAGE=1 skips usage entirely.\n\nAccount emails are hidden by default (also `null` in --json). To always\nshow them, or to look usage up live with each profile's login (off by\ndefault; a one-time note explains what it sends), set in ~/.mcc/config.toml:\n\n  [usage]\n  show_email = true\n  live = true"
+        after_help = "Examples:\n  mcc usage                     Every profile, the default included\n  mcc usage work                Only the `work` profile\n  mcc usage default             Only the default profile (~/.claude)\n  mcc usage --show-email        Also show each profile's account email\n  mcc usage --json | jq '.[] | {name, weekly: .usage.weekly.percent}'\n  mcc usage --json-v2 | jq '.profiles[].name'   Versioned: {\"schema\": 2, \"profiles\": [...]}\n\nOne table row per profile: for the 5-hour and weekly windows, a bar of the\nlimit used with its percent, then the time until it resets (and the reset\ntime when it fits). `!` marks 80% or more and `!!` 95% or more. On a narrow\nterminal the reset time goes first, then bars shrink; under 80 columns bars\nare dropped when nothing fits. UPDATED is how old the numbers cached by\n`mcc statusline` are; a profile with nothing current cached shows \"—\"\n(run /usage in Claude Code), and one whose usage can't be read shows\n\"unavailable\" and why. MCC_NO_USAGE=1 skips usage entirely.\n\nAccount emails are hidden by default (also `null` in --json). To always\nshow them, or to look usage up live with each profile's login (off by\ndefault; a one-time note explains what it sends), set in ~/.mcc/config.toml:\n\n  [privacy]\n  show_email = true\n\n  [usage]\n  live = true\n\n`[privacy] show_email` applies to `mcc list` too; `[usage] show_email`, its\nold name, is still read."
     )]
     Usage(UsageArgs),
 
@@ -369,7 +369,7 @@ pub enum Command {
         "Settable keys:\n",
         "  sync.exclude           sync items to skip, comma-separated (\"\" for none)\n",
         "  sync.extra             extra paths to sync, relative to the config dir\n",
-        "  usage.show_email       true or false\n",
+        "  privacy.show_email     true or false (account emails in list and usage)\n",
         "  usage.live             true or false\n",
         "  profiles.ALIAS.label   1–64 characters (\"\" removes it)\n",
         "\n",
@@ -459,6 +459,14 @@ pub struct ListArgs {
     /// Skip fetching 5-hour/weekly usage (no network; also MCC_NO_USAGE=1)
     #[arg(long)]
     pub no_usage: bool,
+
+    /// Show account emails (overrides `[privacy] show_email` in ~/.mcc/config.toml)
+    #[arg(long, conflicts_with = "hide_email")]
+    pub show_email: bool,
+
+    /// Hide account emails (the default)
+    #[arg(long)]
+    pub hide_email: bool,
 }
 
 #[derive(Debug, Args)]
@@ -488,7 +496,7 @@ pub struct UsageArgs {
     #[arg(long = "json-v2")]
     pub json_v2: bool,
 
-    /// Show account emails (overrides `[usage] show_email` in ~/.mcc/config.toml)
+    /// Show account emails (overrides `[privacy] show_email` in ~/.mcc/config.toml)
     #[arg(long, conflicts_with = "hide_email")]
     pub show_email: bool,
 

@@ -710,8 +710,11 @@ fn list_shows_which_profile_each_project_starts() {
                 .args(args),
         )
     };
-    // Under the profile table: each project, its profile and account.
-    let out = list(&[]);
+    // Under the profile table: each project, its profile and account, the
+    // email only when emails are shown (issue #57).
+    let hidden = list(&[]);
+    assert!(!hidden.contains("@example.com"), "{hidden}");
+    let out = list(&["--show-email"]);
     let section = &out[out.find("PROJECT").expect(&out)..];
     let rows: Vec<Vec<&str>> = section
         .lines()

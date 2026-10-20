@@ -38,7 +38,7 @@ pub const SETTABLE: &[(&str, &str)] = &[
         "sync.extra",
         "extra paths to sync, relative to the config dir, comma-separated (\"\" for none)",
     ),
-    ("usage.show_email", "true or false"),
+    ("privacy.show_email", "true or false"),
     ("usage.live", "true or false"),
     (
         "profiles.ALIAS.label",
@@ -96,7 +96,8 @@ fn settable(key: &str, parts: &[String]) -> Result<Key> {
     Ok(match p.as_slice() {
         ["sync", "exclude"] => Key::SyncExclude,
         ["sync", "extra"] => Key::SyncExtra,
-        ["usage", "show_email"] => Key::ShowEmail,
+        // `usage.show_email` is its name from before `[privacy]`.
+        ["privacy" | "usage", "show_email"] => Key::ShowEmail,
         ["usage", "live"] => Key::Live,
         ["profiles", alias, "label"] => Key::Label(alias.to_string()),
         ["profiles", alias, f] if f.starts_with("share_") => {
@@ -162,6 +163,8 @@ fn lookup(cfg: &Config, key: &str, parts: &[String]) -> Result<String> {
         node = node.and_then(|n| n.get(part.as_str()));
     }
     let value = match (node, settable(key, parts)) {
+        // Read through its old name too, and false while unset.
+        (_, Ok(Key::ShowEmail)) => toml::Value::Boolean(cfg.show_email()),
         (Some(v), _) => v.clone(),
         // Left out of the file while it has its default.
         (None, Ok(Key::Live)) => toml::Value::Boolean(false),
@@ -227,7 +230,7 @@ fn apply(cfg: &mut Config, which: &Key, value: &str) -> Result<()> {
             cfg.sync.extra = split_list(value);
             copy::spec(None, &cfg.sync)?;
         }
-        Key::ShowEmail => cfg.usage.show_email = parse_bool(value)?,
+        Key::ShowEmail => cfg.privacy.show_email = Some(parse_bool(value)?),
         Key::Live => cfg.usage.live = parse_bool(value)?,
         Key::Label(alias) => {
             let profile = cfg

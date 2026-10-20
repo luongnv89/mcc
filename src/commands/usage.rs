@@ -93,7 +93,7 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
         },
     };
 
-    let show_email = (cfg.usage.show_email || args.show_email) && !args.hide_email;
+    let show_email = (cfg.show_email() || args.show_email) && !args.hide_email;
     if !show_email {
         for e in &mut entries {
             e.account = None;
