@@ -111,3 +111,80 @@ fn readme_documents_homebrew_install_upgrade_and_uninstall() {
         assert!(readme.contains(needle), "README.md is missing {needle:?}");
     }
 }
+
+const RELEASE_WORKFLOW: &str = ".github/workflows/release.yml";
+
+#[test]
+fn release_workflow_builds_every_target_on_version_tags() {
+    let wf = repo_file(RELEASE_WORKFLOW);
+    for needle in [
+        "tags:\n      - \"v*\"",
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl",
+        "x86_64-apple-darwin",
+        "aarch64-apple-darwin",
+        "cargo build --release --locked --target \"$TARGET\"",
+        "SHA256SUMS",
+        "mcc-$TARGET.tar.gz.sha256",
+    ] {
+        assert!(
+            wf.contains(needle),
+            "{RELEASE_WORKFLOW} is missing {needle:?}"
+        );
+    }
+    assert!(
+        !wf.contains("pull_request"),
+        "{RELEASE_WORKFLOW} must not run for pull requests"
+    );
+}
+
+#[test]
+fn release_workflow_pins_actions_and_limits_permissions() {
+    let wf = repo_file(RELEASE_WORKFLOW);
+    for line in wf.lines().map(str::trim) {
+        let Some(action) = line
+            .strip_prefix("- uses: ")
+            .or_else(|| line.strip_prefix("uses: "))
+        else {
+            continue;
+        };
+        let (_, rev) = action
+            .split_once('@')
+            .unwrap_or_else(|| panic!("unpinned action: {line}"));
+        let sha = rev.split_whitespace().next().unwrap_or("");
+        assert!(
+            sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit()),
+            "action not pinned to a commit SHA: {line}"
+        );
+        assert!(
+            rev.contains("# v"),
+            "pinned action lacks a version comment: {line}"
+        );
+    }
+    // Read-only by default; exactly one job (the uploader) may write.
+    assert!(
+        wf.contains("permissions:\n  contents: read"),
+        "{RELEASE_WORKFLOW}"
+    );
+    assert_eq!(
+        wf.matches("contents: write").count(),
+        1,
+        "{RELEASE_WORKFLOW}"
+    );
+    // Untrusted event text never reaches a script.
+    assert!(!wf.contains("github.event."), "{RELEASE_WORKFLOW}");
+}
+
+#[test]
+fn install_script_verifies_the_checksum_of_prebuilt_binaries() {
+    let script = repo_file("install.sh");
+    for needle in [
+        "releases/latest/download",
+        "mcc-$target.tar.gz",
+        ".sha256",
+        "checksum mismatch",
+        "MCC_FROM_SOURCE",
+    ] {
+        assert!(script.contains(needle), "install.sh is missing {needle:?}");
+    }
+}

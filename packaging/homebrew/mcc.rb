@@ -12,6 +12,18 @@
 #      Formula/mcc.rb in luongnv89/homebrew-tap and push it.
 #   5. Check it: brew audit --strict --online luongnv89/tap/mcc
 #                brew install --build-from-source luongnv89/tap/mcc && brew test mcc
+#
+# Prebuilt binaries: pushing the tag also runs .github/workflows/release.yml,
+# which attaches mcc-<target>.tar.gz, a .sha256 per archive and SHA256SUMS to
+# the release (targets: {x86_64,aarch64}-apple-darwin and
+# {x86_64,aarch64}-unknown-linux-musl). This formula still builds from source.
+# Once a release has those assets, the tap's copy can install them instead,
+# so users never download Rust: replace `url`/`sha256` and `depends_on "rust"`
+# with `on_macos`/`on_linux` + `on_arm`/`on_intel` blocks whose `url` is
+#   https://github.com/luongnv89/mcc/releases/download/vX.Y.Z/mcc-<target>.tar.gz
+# and whose `sha256` comes from SHA256SUMS, and make `install` run
+# `bin.install "mcc"` before generate_completions_from_executable. (Then update
+# tests/metadata.rs, which checks this file's source-build url.)
 class Mcc < Formula
   desc "Manage multiple Claude Code profiles (accounts) from one CLI"
   homepage "https://github.com/luongnv89/mcc"
