@@ -189,9 +189,26 @@ fn clone_with_copy_plugins_copies_them_as_before() {
     );
     assert!(
         !sb.read(".local/bin/work")
-            .contains("CLAUDE_CODE_PLUGIN_CACHE_DIR")
+            .contains("export CLAUDE_CODE_PLUGIN_CACHE_DIR")
     );
     assert!(!sb.read(".mcc/config.toml").contains("plugins"));
+    // The launcher clears mcc's own value of the variable, never the user's.
+    let launch = |inherited: &str| {
+        let out = std::process::Command::new(sb.path(".local/bin/work"))
+            .arg("plugin-root")
+            .env("HOME", sb.home())
+            .env("CLAUDE_CODE_PLUGIN_CACHE_DIR", inherited)
+            .env(
+                "PATH",
+                format!("{}:/usr/bin:/bin", sb.path("fakebin").display()),
+            )
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    let root = sb.path(".claude/plugins").display().to_string();
+    assert_eq!(launch(&root), "plugin root: unset");
+    assert_eq!(launch("/opt/seed"), "plugin root: /opt/seed");
 }
 
 #[test]

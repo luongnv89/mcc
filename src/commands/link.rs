@@ -142,6 +142,9 @@ enum Undo {
     Manifest(PathBuf, Option<Manifest>),
     /// The launcher before mcc rewrote it; written back.
     Launcher(PathBuf, Vec<u8>),
+    /// A backup folder mcc created; removed only while empty, so a backup
+    /// whose contents could not be moved back is kept.
+    BackupDir(PathBuf),
 }
 
 /// Rollback: quiet unless a step fails.
@@ -167,6 +170,11 @@ fn rollback(paths: &Paths, undo: &mut Transaction<Undo>) {
                 Some(m) => m.save(&dir),
                 None => fsutil::remove_any(&dir.join(manifest::FILE)),
             },
+        ),
+        Undo::BackupDir(dir) => (
+            format!("remove the empty {}", paths.display(&dir)),
+            std::fs::remove_dir(&dir)
+                .map_err(|e| anyhow::Error::from(e).context(format!("{} is kept", dir.display()))),
         ),
         Undo::Launcher(path, bytes) => (
             format!("restore {}", paths.display(&path)),
@@ -663,8 +671,9 @@ fn move_plugins_to_backup(dir: &Path, undo: &mut Transaction<Undo>) -> Result<Op
         return Ok(None);
     }
     let dest = super::sync::new_backup_dir(dir)?;
-    // Recorded first, so a rollback moves plugins/ back before removing it.
-    undo.record(Undo::Created(dest.clone()));
+    // Recorded first, so a rollback moves plugins/ back before removing the
+    // (then empty) folder; if the move back fails, the folder is kept.
+    undo.record(Undo::BackupDir(dest.clone()));
     let to = dest.join(plugins::DIR);
     std::fs::rename(&own, &to)
         .with_context(|| format!("moving {} to {}", own.display(), to.display()))?;

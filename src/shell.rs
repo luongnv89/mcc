@@ -45,8 +45,9 @@ pub const SHARE_FLAG: &str = "--mcc-share";
 /// `CLAUDE_CONFIG_DIR` line is unchanged: the keychain login is keyed on it.
 ///
 /// With `plugin_root` (a profile sharing the default's plugins) the script
-/// also exports `CLAUDE_CODE_PLUGIN_CACHE_DIR`; without it the script is
-/// byte for byte what it was before shared plugins existed.
+/// also exports `CLAUDE_CODE_PLUGIN_CACHE_DIR`; without it the script unsets
+/// that variable only when it holds the default's plugins root (mcc's own
+/// value, as `mcc run` and `mcc exec` do), keeping a value of the user's.
 pub fn wrapper_script(
     paths: &Paths,
     alias: &str,
@@ -76,13 +77,20 @@ pub fn wrapper_script(
          if command -v claude >/dev/null 2>&1; then exec claude \"$@\"; fi\n\
          {fallback}\n",
         dir = paths.shell_expr(profile_dir),
-        plugins = plugin_root
-            .map(|r| format!(
+        plugins = match plugin_root {
+            Some(r) => format!(
                 "export {}=\"{}\"\n",
                 crate::plugins::ENV,
                 paths.shell_expr(r)
-            ))
-            .unwrap_or_default(),
+            ),
+            // mcc's own value (left by `eval "$(mcc env work)"`, say) is
+            // cleared; a value of the user's is passed on.
+            None => format!(
+                "[ \"${{{var}:-}}\" = \"{root}\" ] && unset {var}\n",
+                var = crate::plugins::ENV,
+                root = paths.shell_expr(&crate::plugins::shared_root(paths))
+            ),
+        },
     )
 }
 
@@ -440,8 +448,11 @@ mod tests {
         assert!(w.contains("if command -v claude >/dev/null 2>&1; then exec claude \"$@\"; fi\n"));
         assert!(w.contains("exec '/opt/it'\\''s/claude' \"$@\"\n"), "{w}");
         assert!(wrapper_script(&paths, "work", &dir, None, None, None).contains("exit 127"));
-        // Without shared plugins the launcher never mentions the variable.
-        assert!(!w.contains(crate::plugins::ENV));
+        // Without shared plugins the launcher only clears mcc's own value.
+        assert!(w.contains(
+            "[ \"${CLAUDE_CODE_PLUGIN_CACHE_DIR:-}\" = \"$HOME/.claude/plugins\" ] && unset CLAUDE_CODE_PLUGIN_CACHE_DIR\n"
+        ), "{w}");
+        assert!(!w.contains("export CLAUDE_CODE_PLUGIN_CACHE_DIR"));
     }
 
     #[test]
@@ -492,14 +503,16 @@ mod tests {
             w.ends_with(&format!("{}\n{}\n", legacy[4], legacy[5])),
             "{w}"
         );
-        // The only addition on the launch path is the `--mcc-share` branch,
-        // placed between the export and the exec lines.
+        // The only additions on the launch path are clearing mcc's own
+        // plugins root (#47) and the `--mcc-share` branch, placed between the
+        // export and the exec lines.
         let added: Vec<&str> = w.lines().filter(|l| !legacy.contains(l)).collect();
         assert_eq!(
             added,
             [
                 "# mcc-launcher: 2",
                 "# Start it with --mcc-share to share its sessions (see: mcc help share).",
+                "[ \"${CLAUDE_CODE_PLUGIN_CACHE_DIR:-}\" = \"$HOME/.claude/plugins\" ] && unset CLAUDE_CODE_PLUGIN_CACHE_DIR",
                 "case \"$1\" in",
                 "  --mcc-share)",
                 "    shift",

@@ -465,7 +465,7 @@ fn link_plugins_off_copies_them_back_and_drops_the_variable() {
     );
     assert!(
         !sb.read(".local/bin/work")
-            .contains("CLAUDE_CODE_PLUGIN_CACHE_DIR")
+            .contains("export CLAUDE_CODE_PLUGIN_CACHE_DIR")
     );
     assert!(links(&sb).is_empty());
     assert!(manifest_has(&sb, "plugins/"));
