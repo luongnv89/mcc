@@ -17,6 +17,8 @@ pub struct Paths {
     pub default_json: PathBuf,
     pub profiles_dir: PathBuf,
     pub config_file: PathBuf,
+    /// Advisory lock held by every command that writes `config_file`.
+    pub lock_file: PathBuf,
     pub log_file: PathBuf,
     pub backups_dir: PathBuf,
     /// Data shared between profiles that opted in (`mcc share`).
@@ -44,6 +46,7 @@ impl Paths {
             default_json: home.join(".claude.json"),
             profiles_dir: mcc_dir.join("profiles"),
             config_file: mcc_dir.join("config.toml"),
+            lock_file: mcc_dir.join(".lock"),
             log_file: mcc_dir.join("logs").join("mcc.log"),
             backups_dir: mcc_dir.join("backups"),
             shared_dir: mcc_dir.join("shared"),

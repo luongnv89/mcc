@@ -375,6 +375,7 @@ mod tests {
                 rc_file: None,
                 last_sync: None,
                 share_sessions: false,
+                share_note_acknowledged_at: None,
             },
         );
         assert!(!conflicts("claude", &paths, &cfg, None).is_empty());

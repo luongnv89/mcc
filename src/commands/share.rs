@@ -17,8 +17,13 @@ use crate::error::CliError;
 use crate::paths::Paths;
 use crate::{fsutil, shell, ui};
 
-/// Printed verbatim on stderr every time sharing is turned on.
+/// Printed verbatim on stderr the first time sharing is turned on for a
+/// profile (when `share_note_acknowledged_at` is not set yet).
 pub const SHARE_TOS_NOTE: &str = crate::cli::share_tos_note!();
+
+/// Printed on stderr instead of the note on every later `mcc share` and
+/// `--mcc-share`.
+pub const SHARE_TOS_REMINDER: &str = crate::cli::share_tos_reminder!();
 
 /// What a profile's `projects/` currently is.
 enum Projects {
@@ -173,6 +178,8 @@ fn enable(
         _ => {}
     }
     let already = matches!(state, Projects::Shared);
+    // The full note until it was shown once for this profile.
+    let full_note = profile.share_note_acknowledged_at.is_none();
     if !from_launch {
         ui::header(&format!("Share the sessions of profile \"{alias}\""));
     }
@@ -279,7 +286,14 @@ fn enable(
             ));
         }
     }
-    eprintln!("{SHARE_TOS_NOTE}");
+    eprintln!(
+        "{}",
+        if full_note {
+            SHARE_TOS_NOTE
+        } else {
+            SHARE_TOS_REMINDER
+        }
+    );
     if from_launch {
         return Ok(());
     }
@@ -363,16 +377,24 @@ fn disable(paths: &Paths, cfg: &mut Config, alias: &str, profile: &Profile) -> R
     Ok(())
 }
 
+/// Record whether `alias` shares, and, when it does, that the full note was
+/// shown (the first time). Saves only when that changes something.
 fn set_flag(paths: &Paths, cfg: &mut Config, alias: &str, on: bool) -> Result<()> {
     let p = cfg
         .profiles
         .get_mut(alias)
         .expect("checked by sharing_profile");
-    let was = std::mem::replace(&mut p.share_sessions, on);
+    let was = p.clone();
+    p.share_sessions = on;
+    if on && p.share_note_acknowledged_at.is_none() {
+        p.share_note_acknowledged_at =
+            Some(chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false));
+    }
+    if *p == was {
+        return Ok(());
+    }
     if let Err(e) = cfg.save(&paths.config_file) {
-        if let Some(p) = cfg.profiles.get_mut(alias) {
-            p.share_sessions = was;
-        }
+        cfg.profiles.insert(alias.to_string(), was);
         return Err(e);
     }
     Ok(())

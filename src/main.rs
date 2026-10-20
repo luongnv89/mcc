@@ -87,11 +87,28 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     // of setup.
     let launch = matches!(&cli.command, Command::Share(a) if a.from_launch)
         || matches!(cli.command, Command::Run(_));
+    // Held from before the config is loaded until mcc exits, so concurrent
+    // runs never lose each other's changes.
+    let mut lock = if writes_config(&cli.command) {
+        Some(config::lock(&paths)?)
+    } else {
+        None
+    };
     let mut cfg = config::Config::load(&paths.config_file)?;
     if cfg.env.is_none() && !explicit_init && !launch {
-        ui::info("First run — detecting your environment (re-run anytime with `mcc init --force`)");
-        commands::init::detect_and_save(&paths, &mut cfg, None)?;
+        if lock.is_none() {
+            lock = Some(config::lock(&paths)?);
+            // Another command may have finished the first run meanwhile.
+            cfg = config::Config::load(&paths.config_file)?;
+        }
+        if cfg.env.is_none() {
+            ui::info(
+                "First run — detecting your environment (re-run anytime with `mcc init --force`)",
+            );
+            commands::init::detect_and_save(&paths, &mut cfg, None)?;
+        }
     }
+    let _lock = lock;
 
     match cli.command {
         Command::Init(args) => commands::init::run(&paths, &mut cfg, &args),
@@ -106,6 +123,24 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Run(args) => commands::run::run(&paths, &cfg, &args),
         Command::RefreshLaunchers(args) => commands::refresh_launchers::run(&paths, &cfg, &args),
         Command::Completions(_) => unreachable!("handled above"),
+    }
+}
+
+/// Commands that may write ~/.mcc/config.toml, and so take its lock.
+fn writes_config(command: &Command) -> bool {
+    match command {
+        Command::Init(_)
+        | Command::Add(_)
+        | Command::Delete(_)
+        | Command::Sync(_)
+        | Command::Rename(_)
+        | Command::Share(_) => true,
+        Command::Project(args) => !matches!(args.action, cli::ProjectAction::List { .. }),
+        Command::List(_)
+        | Command::Usage(_)
+        | Command::Run(_)
+        | Command::RefreshLaunchers(_)
+        | Command::Completions(_) => false,
     }
 }
 

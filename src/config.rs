@@ -1,7 +1,13 @@
 //! `~/.mcc/config.toml`: detected environment, profile registry, sync settings,
 //! and the profile each project starts with (`mcc project`, `mcc run`).
+//!
+//! The file is safe to edit by hand: saving merges the new settings into the
+//! file as it is on disk, so comments and formatting survive, and a save that
+//! changes nothing leaves the file alone. Commands that write it hold
+//! [`lock`] from before they load it until they exit.
 
 use std::collections::BTreeMap;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -9,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::env_detect::EnvInfo;
 use crate::error::CliError;
+use crate::paths::Paths;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
@@ -62,6 +69,11 @@ pub struct Profile {
     /// the terms-of-service note); editing the key by hand does nothing alone.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub share_sessions: bool,
+    /// When the full session-sharing note was first shown for this profile
+    /// (RFC 3339). Later `mcc share` / `--mcc-share` runs print a one-line
+    /// reminder instead. Left out of the file until then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub share_note_acknowledged_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -109,13 +121,37 @@ impl Config {
         })
     }
 
+    /// Write the config to `path`, merged into the file already there so
+    /// its comments and formatting are kept. Nothing is written when the
+    /// result is the file as it is.
     pub fn save(&self, path: &Path) -> Result<()> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         }
         let body = toml::to_string_pretty(self).context("serializing config")?;
-        let text =
-            format!("# mcc configuration — managed by `mcc`; safe to edit by hand.\n\n{body}");
+        let current = match std::fs::read_to_string(path) {
+            Ok(text) => Some(text),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        // A file that doesn't parse (or is empty) is written afresh.
+        let merged = current
+            .as_deref()
+            .filter(|t| !t.trim().is_empty())
+            .and_then(|t| t.parse::<toml_edit::DocumentMut>().ok())
+            .map(|mut doc| -> Result<String> {
+                let new: toml_edit::DocumentMut =
+                    body.parse().context("re-reading the serialized config")?;
+                merge_table(doc.as_table_mut(), new.as_table());
+                Ok(doc.to_string())
+            })
+            .transpose()?;
+        let text = merged.unwrap_or_else(|| {
+            format!("# mcc configuration — managed by `mcc`; safe to edit by hand.\n\n{body}")
+        });
+        if current.as_deref() == Some(text.as_str()) {
+            return Ok(());
+        }
         crate::fsutil::write_atomic(path, text.as_bytes())
     }
 
@@ -175,6 +211,131 @@ impl Config {
     }
 }
 
+/// Make `old` hold what `new` holds, changing only what differs: kept keys
+/// keep their comments, formatting and order, removed keys go, new keys are
+/// appended.
+fn merge_table(old: &mut toml_edit::Table, new: &toml_edit::Table) {
+    use toml_edit::Item;
+    old.retain(|k, _| new.contains_key(k));
+    for (key, new_item) in new.iter() {
+        match (old.get_mut(key), new_item) {
+            (Some(Item::Table(o)), Item::Table(n)) => merge_table(o, n),
+            (Some(Item::Value(o)), Item::Value(n)) => merge_value(o, n.clone()),
+            // A table written inline by hand stays inline.
+            (Some(Item::Value(o @ toml_edit::Value::InlineTable(_))), Item::Table(n)) => {
+                merge_value(
+                    o,
+                    toml_edit::Value::InlineTable(n.clone().into_inline_table()),
+                )
+            }
+            (Some(slot), _) => *slot = unpositioned(new_item.clone()),
+            (None, _) => {
+                old.insert(key, unpositioned(new_item.clone()));
+            }
+        }
+    }
+}
+
+/// Replace `old` with `new` unless they are equal, keeping `old`'s
+/// surrounding whitespace and trailing comment.
+fn merge_value(old: &mut toml_edit::Value, mut new: toml_edit::Value) {
+    if same_value(old, &new) {
+        return;
+    }
+    *new.decor_mut() = old.decor().clone();
+    *old = new;
+}
+
+/// Equal as data, whatever the formatting.
+fn same_value(a: &toml_edit::Value, b: &toml_edit::Value) -> bool {
+    use toml_edit::Value as V;
+    match (a, b) {
+        (V::String(x), V::String(y)) => x.value() == y.value(),
+        (V::Integer(x), V::Integer(y)) => x.value() == y.value(),
+        (V::Float(x), V::Float(y)) => x.value().to_bits() == y.value().to_bits(),
+        (V::Boolean(x), V::Boolean(y)) => x.value() == y.value(),
+        (V::Datetime(x), V::Datetime(y)) => x.value() == y.value(),
+        (V::Array(x), V::Array(y)) => {
+            x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| same_value(a, b))
+        }
+        (V::InlineTable(x), V::InlineTable(y)) => {
+            x.len() == y.len()
+                && x.iter()
+                    .all(|(k, v)| y.get(k).is_some_and(|w| same_value(v, w)))
+        }
+        _ => false,
+    }
+}
+
+/// `item` with its tables' positions cleared, so they print after the
+/// tables they are appended to rather than where they were in the
+/// serialized config.
+fn unpositioned(mut item: toml_edit::Item) -> toml_edit::Item {
+    fn clear(t: &mut toml_edit::Table) {
+        t.set_position(None);
+        for (_, item) in t.iter_mut() {
+            if let toml_edit::Item::Table(t) = item {
+                clear(t);
+            }
+        }
+    }
+    if let toml_edit::Item::Table(t) = &mut item {
+        clear(t);
+    }
+    item
+}
+
+/// An exclusive advisory lock on `~/.mcc/.lock`, held until dropped (or the
+/// process exits). Every command that writes the config takes it before
+/// loading the config, so concurrent runs never lose each other's changes.
+#[derive(Debug)]
+pub struct ConfigLock {
+    _file: File,
+}
+
+/// Take the config lock, waiting (and saying so) while another mcc command
+/// holds it.
+pub fn lock(paths: &Paths) -> Result<ConfigLock> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let path = &paths.lock_file;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    let flock = |op: libc::c_int| -> std::io::Result<()> {
+        loop {
+            // SAFETY: flock only reads the descriptor, which `file` keeps open.
+            if unsafe { libc::flock(file.as_raw_fd(), op) } == 0 {
+                return Ok(());
+            }
+            let err = std::io::Error::last_os_error();
+            if err.kind() != std::io::ErrorKind::Interrupted {
+                return Err(err);
+            }
+        }
+    };
+    if let Err(e) = flock(libc::LOCK_EX | libc::LOCK_NB) {
+        if e.kind() != std::io::ErrorKind::WouldBlock {
+            return Err(e).with_context(|| format!("locking {}", path.display()));
+        }
+        crate::ui::info(&format!(
+            "waiting for another mcc command to finish (it holds {})",
+            paths.display(path)
+        ));
+        flock(libc::LOCK_EX).with_context(|| format!("locking {}", path.display()))?;
+    }
+    Ok(ConfigLock { _file: file })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,6 +357,7 @@ mod tests {
                 rc_file: Some("/h/.zshrc".into()),
                 last_sync: None,
                 share_sessions: true,
+                share_note_acknowledged_at: None,
             },
         );
         cfg.save(&path).unwrap();
@@ -316,6 +478,95 @@ mod tests {
         assert_eq!(back.projects["/src/b"].allow, ["side"]);
         assert_eq!(back.projects.len(), 3);
         assert!(back.remove_from_allow_lists("nope").is_empty());
+    }
+
+    fn work_profile() -> Profile {
+        Profile {
+            dir: "/h/.mcc/profiles/work".into(),
+            mode: "clone".into(),
+            created_at: "2026-10-10T00:00:00+02:00".into(),
+            wrapper: None,
+            rc_file: None,
+            last_sync: None,
+            share_sessions: false,
+            share_note_acknowledged_at: None,
+        }
+    }
+
+    /// Issue #35: a save changes only what differs and keeps the comments
+    /// and formatting around it.
+    #[test]
+    fn save_keeps_comments_and_formatting() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut cfg = Config::default();
+        cfg.profiles.insert("work".into(), work_profile());
+        cfg.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path)
+            .unwrap()
+            .replace("[sync]\n", "# sync settings\n[sync]\n")
+            .replace("exclude = []", "exclude = [ ]   # nothing skipped")
+            .replace("mode = \"clone\"", "mode = \"clone\"  # copied the default");
+        std::fs::write(&path, &text).unwrap();
+
+        let mut cfg = Config::load(&path).unwrap();
+        cfg.profiles.get_mut("work").unwrap().mode = "fresh".into();
+        let mut lab = work_profile();
+        lab.dir = "/h/.mcc/profiles/lab".into();
+        cfg.profiles.insert("lab".into(), lab);
+        cfg.save(&path).unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.contains("# sync settings\n[sync]\n"), "{after}");
+        assert!(
+            after.contains("exclude = [ ]   # nothing skipped"),
+            "{after}"
+        );
+        assert!(
+            after.contains("mode = \"fresh\"  # copied the default"),
+            "{after}"
+        );
+        // The new profile is appended after the existing one.
+        assert!(after.find("[profiles.work]") < after.find("[profiles.lab]"));
+        let back = Config::load(&path).unwrap();
+        assert_eq!(back.profiles, cfg.profiles);
+
+        // Removing a profile removes only its table.
+        cfg.profiles.remove("lab");
+        cfg.save(&path).unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(!after.contains("lab"), "{after}");
+        assert!(after.contains("# sync settings\n"), "{after}");
+    }
+
+    /// A table written inline by hand stays inline.
+    #[test]
+    fn save_keeps_inline_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "usage = { show_email = false }\n").unwrap();
+        let mut cfg = Config::load(&path).unwrap();
+        cfg.usage.show_email = true;
+        cfg.save(&path).unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            after.starts_with("usage = { show_email = true }\n"),
+            "{after}"
+        );
+        assert!(Config::load(&path).unwrap().usage.show_email);
+    }
+
+    /// Issue #35: a save that changes nothing does not rewrite the file.
+    #[test]
+    fn save_without_changes_writes_nothing() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut cfg = Config::default();
+        cfg.profiles.insert("work".into(), work_profile());
+        cfg.save(&path).unwrap();
+        let ino = std::fs::metadata(&path).unwrap().ino();
+        Config::load(&path).unwrap().save(&path).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().ino(), ino);
     }
 
     #[test]

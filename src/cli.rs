@@ -7,7 +7,8 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::env_detect::Shell;
 
-/// The terms-of-service note printed whenever session sharing is turned on.
+/// The terms-of-service note printed the first time session sharing is
+/// turned on for a profile.
 /// A macro so the help text below can include it verbatim.
 macro_rules! share_tos_note {
     () => {
@@ -15,6 +16,15 @@ macro_rules! share_tos_note {
     };
 }
 pub(crate) use share_tos_note;
+
+/// The one-line reminder printed instead of the note once a profile's
+/// sharing note was shown. A macro so the help text below can include it.
+macro_rules! share_tos_reminder {
+    () => {
+        "⚠ Session sharing is on: use it only between accounts you own, never to get around usage limits or to let other people use your account (Anthropic's Consumer Terms and Usage Policy; full note: `mcc share --help`)."
+    };
+}
+pub(crate) use share_tos_reminder;
 
 /// The terms-of-service note printed whenever `mcc run` starts a profile
 /// other than the project's. A macro so the help text below can include it
@@ -152,9 +162,14 @@ pub enum Command {
         "  share_sessions = true  # default: false; set it with `mcc share`\n",
         "\n",
         "Editing the key by hand does nothing on its own: `mcc share <alias>` links the\n",
-        "directory. Every time sharing is turned on, this note is printed on stderr:\n",
+        "directory. The first time sharing is turned on for a profile, this note is\n",
+        "printed on stderr, and when is kept as `share_note_acknowledged_at`:\n",
         "\n",
-        share_tos_note!()
+        share_tos_note!(),
+        "\n\n",
+        "After that, each `mcc share` or `--mcc-share` prints a one-line reminder:\n",
+        "\n",
+        share_tos_reminder!()
     ))]
     Share(ShareArgs),
 
