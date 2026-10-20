@@ -22,8 +22,10 @@ use crate::{claude, ui};
 
 use super::run::{self, Profile};
 
-/// Exit code for a command that couldn't be started, as shells use it.
-const EXIT_NOT_RUN: i32 = 127;
+/// Exit codes for a command that couldn't be started, as shells use them:
+/// not found, or found but not runnable (permissions, bad format).
+const EXIT_NOT_FOUND: i32 = 127;
+const EXIT_NOT_RUN: i32 = 126;
 
 pub fn run(paths: &Paths, cfg: &Config, args: &ExecArgs) -> Result<()> {
     let all = run::profiles(cfg);
@@ -48,18 +50,20 @@ pub fn run(paths: &Paths, cfg: &Config, args: &ExecArgs) -> Result<()> {
         claude::CHILD_RUNNING.store(true, Ordering::SeqCst);
         let status = command(paths, p, &args.command).status();
         claude::CHILD_RUNNING.store(false, Ordering::SeqCst);
+        // Ctrl+C reached the command too (whether it died of it or handled
+        // it): stop, don't go on to the next profile.
+        let interrupted = claude::INTERRUPTED.swap(false, Ordering::SeqCst)
+            || matches!(&status, Ok(s) if s.signal() == Some(libc::SIGINT));
+        if interrupted {
+            ui::warn(&format!("`{}`: interrupted", p.name));
+            std::process::exit(EXIT_INTERRUPTED);
+        }
         let code = match status {
-            Ok(status) => {
-                if status.signal() == Some(libc::SIGINT) {
-                    // Ctrl+C reached the command too: stop, don't go on to the next profile.
-                    ui::warn(&format!("`{}`: interrupted", p.name));
-                    std::process::exit(EXIT_INTERRUPTED);
-                }
-                exit_code(status)
-            }
+            Ok(status) => exit_code(status),
             Err(err) => {
-                ui::warn(&format!("`{}`: {:#}", p.name, not_started(&shown, err)));
-                EXIT_NOT_RUN
+                let err = not_started(&shown, err);
+                ui::warn(&format!("`{}`: {err:#}", p.name));
+                crate::error::classify(&err).0
             }
         };
         if code == 0 {
@@ -97,8 +101,9 @@ fn report(shown: &str, total: usize, failed: &[(String, i32)]) -> Result<()> {
     Err(CliError {
         code: *first,
         message: format!(
-            "`{shown}` failed in {} of {total} profiles: {}",
+            "`{shown}` failed in {} of {total} profile{}: {}",
             failed.len(),
+            if total == 1 { "" } else { "s" },
             names.join(", ")
         ),
         hint: Some("the output above each result shows what went wrong".into()),
@@ -115,15 +120,20 @@ fn exit_code(status: ExitStatus) -> i32 {
 }
 
 fn not_started(shown: &str, err: std::io::Error) -> anyhow::Error {
-    let code = if err.kind() == std::io::ErrorKind::NotFound {
-        EXIT_NOT_RUN
-    } else {
-        crate::error::EXIT_RUNTIME
+    let (code, hint) = match err.kind() {
+        std::io::ErrorKind::NotFound => (
+            EXIT_NOT_FOUND,
+            "check the command name, or that it is on your PATH",
+        ),
+        _ => (
+            EXIT_NOT_RUN,
+            "check that the command is executable and that you may run it",
+        ),
     };
     CliError {
         code,
         message: format!("couldn't run `{shown}`: {err}"),
-        hint: Some("check the command name, or that it is on your PATH".into()),
+        hint: Some(hint.into()),
     }
     .into()
 }

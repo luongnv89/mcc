@@ -222,6 +222,7 @@ fn log_invocation() {
 fn install_ctrlc_handler() {
     let _ = ctrlc::set_handler(|| {
         if claude::CHILD_RUNNING.load(Ordering::SeqCst) {
+            claude::INTERRUPTED.store(true, Ordering::SeqCst);
             return;
         }
         let term = console::Term::stderr();

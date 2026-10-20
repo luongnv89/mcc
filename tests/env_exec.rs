@@ -201,3 +201,42 @@ fn exec_holds_no_lock_so_its_command_can_change_the_config() {
         .success();
     assert!(sb.read(".mcc/config.toml").contains("profile = \"lab\""));
 }
+
+#[test]
+fn exec_all_stops_at_ctrl_c_even_when_the_command_handles_it() {
+    use std::os::unix::process::CommandExt;
+    let sb = sandbox();
+    // Exits 0 on Ctrl+C, as programs that catch SIGINT do.
+    sb.write(
+        "bin/trap",
+        "#!/bin/sh\ntrap 'sleep 0.3; exit 0' INT\necho \"ran ${CLAUDE_CONFIG_DIR-unset}\" >> \"$HOME/ran\"\n\
+         touch \"$HOME/ready\"\nsleep 5 & wait\n",
+    );
+    common::chmod_x(&sb.path("bin/trap"));
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_mcc"));
+    cmd.env_clear()
+        .env("HOME", sb.home())
+        .env("MCC_HOME", sb.home())
+        .env("PATH", "/usr/bin:/bin")
+        .env("MCC_NON_INTERACTIVE", "1")
+        .current_dir(sb.home())
+        .args(["exec", "--all", "--"])
+        .arg(sb.path("bin/trap"))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .process_group(0);
+    let mut child = cmd.spawn().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !sb.exists("ready") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the command never started"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    // Ctrl+C in a terminal signals the whole foreground process group.
+    // SAFETY: plain kill(2) on the process group the test just created.
+    assert_eq!(unsafe { libc::kill(-(child.id() as i32), libc::SIGINT) }, 0);
+    assert_eq!(child.wait().unwrap().code(), Some(130));
+    assert_eq!(sb.read("ran"), "ran unset\n", "went on to the next profile");
+}

@@ -343,6 +343,16 @@ $ mcc run
 - `mcc project list` (`--json`) shows every project with its profile and allowed profiles (an `allow` array in the JSON), and `mcc project unset` removes the one that applies here (or the one given with `--path`).
 - `mcc rename` updates the project defaults and allow lists that name the profile. `mcc delete` removes the project defaults naming it, and takes it off the allow lists.
 
+- The usage it checks is the same as for `mcc usage`, described below: the statusline cache by default, so a profile at its limit is only recognized once its rate limits have been cached (or with `[usage] live = true`).
+
+Project defaults live in `~/.mcc/config.toml`:
+
+```toml
+[projects."/Users/me/code/app"]
+profile = "work"  # an mcc profile, or "default" for ~/.claude
+allow = ["lab"]   # optional: other profiles `mcc run` may offer at the limit
+```
+
 ### Using a project's profile everywhere: `mcc env` and `mcc exec`
 
 `mcc run` only covers Claude Code started through it. `mcc env` prints the shell line that points `CLAUDE_CONFIG_DIR` at the profile `mcc run` would start here (the project's default, else the default profile), so plain `claude`, IDE extensions and scripts use it too:
@@ -354,7 +364,7 @@ mcc env default          # unset CLAUDE_CONFIG_DIR (the default profile, ~/.clau
 mcc env | source         # fish: set -gx CLAUDE_CONFIG_DIR '/Users/me/.mcc/profiles/work'
 ```
 
-The shell is `--shell zsh|bash|fish`, else bash inside a direnv `.envrc`, else your `$SHELL`. Paths are single-quoted, so spaces and quotes in them are safe. It never checks usage and never writes anything; the choice stays the one you made with `mcc project set`, and naming a profile other than the project's prints the same note as `mcc run --profile`.
+The shell is `--shell zsh|bash|fish`, else bash inside a direnv `.envrc`, else your `$SHELL` (pass `--shell bash` when evaluating it in another shell than your login shell). Paths are single-quoted, so spaces and quotes in them are safe. It never checks usage and never writes anything; the choice stays the one you made with `mcc project set`, and naming a profile other than the project's prints the same note as `mcc run --profile`.
 
 **With [direnv](https://direnv.net/)**, the project's profile applies whenever you `cd` into it. Put this in the project's `.envrc`, then run `direnv allow`:
 
@@ -371,16 +381,7 @@ mcc exec work -- claude mcp list                         # as `work`; exits with
 mcc exec --all -- claude plugin marketplace update       # once per profile, the default first
 ```
 
-With `--all`, each profile's output comes under its name followed by its exit status, and mcc exits 0 only if the command succeeded everywhere (else with the first failing status). A command that can't be started counts as exit 127, and Ctrl+C stops at the current profile. mcc holds no lock while the command runs, so the command may run mcc itself.
-- The usage it checks is the same as for `mcc usage`, described below: the statusline cache by default, so a profile at its limit is only recognized once its rate limits have been cached (or with `[usage] live = true`).
-
-Project defaults live in `~/.mcc/config.toml`:
-
-```toml
-[projects."/Users/me/code/app"]
-profile = "work"  # an mcc profile, or "default" for ~/.claude
-allow = ["lab"]   # optional: other profiles `mcc run` may offer at the limit
-```
+With `--all`, each profile's output comes under its name followed by its exit status, and mcc exits 0 only if the command succeeded everywhere (else with the first failing status). A command that can't be found counts as exit 127 (126 when it can't be run), and Ctrl+C stops at the current profile. mcc holds no lock while the command runs, so the command may run mcc itself.
 
 ### Accounts, organizations and labels
 

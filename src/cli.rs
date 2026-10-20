@@ -267,8 +267,8 @@ pub enum Command {
         "once per profile, the default first, one after the other. Each profile's output\n",
         "comes under its name, followed by its exit status. mcc then exits 0 if the\n",
         "command succeeded in every profile, else with the first failing exit status.\n",
-        "A command that can't be started counts as exit 127. Ctrl+C stops at the current\n",
-        "profile. mcc holds no lock while the command runs, so it may run mcc itself."
+        "A command that can't be found counts as exit 127 (126 when it can't be run).\n",
+        "Ctrl+C stops at the current profile. mcc holds no lock while the command runs, so it may run mcc itself."
     ))]
     Exec(ExecArgs),
 
