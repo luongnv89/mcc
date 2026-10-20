@@ -225,14 +225,32 @@ impl Account {
         }
     }
 
-    /// Fill the fields this one lacks from `other`.
+    /// Fill the fields this one lacks from `other`. The organization fields
+    /// are taken from `other` only when this one knows no organization at
+    /// all, or the same one ([`OrgMatch::Same`]): mixing two organizations'
+    /// fields (one's UUID with the other's type) could make a work seat look
+    /// like a personal plan, defeating the session-sharing guard.
     pub fn or(self, other: Account) -> Account {
+        let inherit_org = !self.has_org() || self.org_match(&other) == OrgMatch::Same;
+        let (organization, organization_uuid, organization_type) = if inherit_org {
+            (
+                self.organization.or(other.organization),
+                self.organization_uuid.or(other.organization_uuid),
+                self.organization_type.or(other.organization_type),
+            )
+        } else {
+            (
+                self.organization,
+                self.organization_uuid,
+                self.organization_type,
+            )
+        };
         Account {
             email: self.email.or(other.email),
             uuid: self.uuid.or(other.uuid),
-            organization: self.organization.or(other.organization),
-            organization_uuid: self.organization_uuid.or(other.organization_uuid),
-            organization_type: self.organization_type.or(other.organization_type),
+            organization,
+            organization_uuid,
+            organization_type,
             recorded_at: self.recorded_at.or(other.recorded_at),
         }
     }
@@ -857,7 +875,67 @@ mod tests {
         assert_eq!(merged.email.as_deref(), Some("a@x.com"));
         assert_eq!(merged.uuid.as_deref(), Some("u1"));
         assert_eq!(merged.organization.as_deref(), Some("Acme"));
-        assert_eq!(merged.organization_uuid.as_deref(), Some("org-1"));
+        // Another organization's fields are never mixed in.
+        assert_eq!(merged.organization_uuid, None);
+    }
+
+    #[test]
+    fn or_recorded_keeps_another_organizations_type_out() {
+        // Recorded at `mcc add` as a personal Max plan...
+        let recorded = Account {
+            email: Some("me@x.com".into()),
+            uuid: Some("u1".into()),
+            organization: Some("Me".into()),
+            organization_uuid: Some("org-x".into()),
+            organization_type: Some("claude_max".into()),
+            recorded_at: Some("2026-01-01T00:00:00+00:00".into()),
+        };
+        // ...now on a Team seat whose type `.claude.json` doesn't give.
+        let live = Account {
+            email: Some("me@x.com".into()),
+            uuid: Some("u1".into()),
+            organization_uuid: Some("org-y".into()),
+            ..Account::default()
+        };
+        let merged = live.or_recorded(Some(recorded.clone()));
+        assert_eq!(merged.organization_uuid.as_deref(), Some("org-y"));
+        assert_eq!(merged.organization, None);
+        assert_eq!(merged.organization_type, None);
+        assert_eq!(merged.kind(), AccountKind::Unclassified);
+        // Login fields are still filled.
+        assert_eq!(merged.recorded_at, recorded.recorded_at);
+
+        // The same organization: its name and type are filled.
+        let same = Account {
+            email: Some("me@x.com".into()),
+            organization_uuid: Some("org-x".into()),
+            ..Account::default()
+        }
+        .or_recorded(Some(recorded.clone()));
+        assert_eq!(same.organization.as_deref(), Some("Me"));
+        assert_eq!(same.organization_type.as_deref(), Some("claude_max"));
+        assert_eq!(same.uuid.as_deref(), Some("u1"));
+        assert_eq!(same.kind(), AccountKind::Personal);
+
+        // No organization known live: the recorded one is taken whole.
+        let none = Account {
+            email: Some("me@x.com".into()),
+            ..Account::default()
+        }
+        .or_recorded(Some(recorded.clone()));
+        assert_eq!(none.organization_uuid.as_deref(), Some("org-x"));
+        assert_eq!(none.organization_type.as_deref(), Some("claude_max"));
+
+        // Names decide when UUIDs are missing on one side.
+        let by_name = Account {
+            email: Some("me@x.com".into()),
+            organization: Some("Work".into()),
+            ..Account::default()
+        }
+        .or_recorded(Some(recorded));
+        assert_eq!(by_name.organization_uuid, None);
+        assert_eq!(by_name.organization_type, None);
+        assert_eq!(by_name.kind(), AccountKind::Unclassified);
     }
 
     #[test]

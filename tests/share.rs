@@ -978,6 +978,109 @@ fn invalid_group_names_are_usage_errors() {
     assert!(!sb.exists(".mcc/shared"));
 }
 
+/// Hand-edit `alias`'s `share_group` in config.toml (it must be set).
+fn set_share_group(sb: &Sandbox, alias: &str, from: &str, to: &str) {
+    let cfg = sb.read(".mcc/config.toml");
+    let section = profile_section(sb, alias);
+    let edited = section.replace(
+        &format!("share_group = \"{from}\""),
+        &format!("share_group = {to:?}"),
+    );
+    assert_ne!(section, edited, "{section}");
+    sb.write(".mcc/config.toml", &cfg.replace(&section, &edited));
+}
+
+/// Every entry under `dir`, recursively, for comparing before and after.
+fn tree(dir: &std::path::Path) -> Vec<PathBuf> {
+    let mut all: Vec<PathBuf> = walkdir::WalkDir::new(dir)
+        .follow_links(false)
+        .into_iter()
+        .map(|e| e.unwrap().into_path())
+        .collect();
+    all.sort();
+    all
+}
+
+#[test]
+fn a_hand_edited_share_group_is_checked_like_the_flag() {
+    for bad in ["../..", "/"] {
+        let sb = sandbox();
+        with_profile(&sb, "side", "--fresh");
+        sb.write(".mcc/profiles/side/projects/-tmp-p/s.jsonl", "{}\n");
+        sb.mcc()
+            .args(["share", "work", "--group", "alpha"])
+            .assert()
+            .success();
+        sb.mcc()
+            .args(["share", "side", "--group", "beta"])
+            .assert()
+            .success();
+        sb.mcc().args(["share", "side", "--off"]).assert().success();
+        set_share_group(&sb, "work", "alpha", bad);
+        set_share_group(&sb, "side", "beta", bad);
+        let home_before = tree(&sb.path(""));
+
+        let refused = |args: &[&str]| {
+            sb.mcc()
+                .args(args)
+                .assert()
+                .code(3)
+                .stderr(predicate::str::contains("invalid share_group"))
+                .stderr(predicate::str::contains("[profiles."))
+                .stderr(predicate::str::contains("config.toml"));
+        };
+        // Sharing: `--off` must not follow the stored group anywhere.
+        refused(&["share", "work", "--off"]);
+        refused(&["share", "work"]);
+        refused(&["share", "work", "--from-launch"]);
+        // Not sharing: turning it on must not create a store anywhere.
+        refused(&["share", "side"]);
+        refused(&["share", "side", "--off"]);
+        let o = launch(&sb, "side", &["--mcc-share"]);
+        assert_eq!(o.status.code(), Some(3), "{}", out(&o.stderr));
+        assert_eq!(out(&o.stdout), "");
+        assert!(out(&o.stderr).contains("invalid share_group"));
+
+        assert_eq!(
+            link_target(&sb, ".mcc/profiles/work/projects"),
+            group_store(&sb, "alpha"),
+            "{bad:?}"
+        );
+        assert!(!is_link(&sb, ".mcc/profiles/side/projects"));
+        assert!(
+            sb.path(".mcc/profiles/side/projects/-tmp-p/s.jsonl")
+                .is_file()
+        );
+        // Nothing created, moved or removed anywhere (logs aside).
+        let logs = sb.path(".mcc/logs");
+        let keep = |v: Vec<PathBuf>| -> Vec<PathBuf> {
+            v.into_iter().filter(|p| !p.starts_with(&logs)).collect()
+        };
+        assert_eq!(keep(tree(&sb.path(""))), keep(home_before), "{bad:?}");
+    }
+}
+
+#[test]
+fn a_hand_edited_share_group_is_normalized_like_the_flag() {
+    let sb = sandbox();
+    sb.mcc()
+        .args(["share", "work", "--group", "alpha"])
+        .assert()
+        .success();
+    sb.mcc().args(["share", "work", "--off"]).assert().success();
+    set_share_group(&sb, "work", "alpha", "ALPHA");
+    sb.mcc().args(["share", "work"]).assert().success();
+    assert_eq!(
+        link_target(&sb, ".mcc/profiles/work/projects"),
+        group_store(&sb, "alpha")
+    );
+    assert!(profile_section(&sb, "work").contains("share_group = \"alpha\""));
+    sb.mcc().args(["share", "work", "--off"]).assert().success();
+    set_share_group(&sb, "work", "alpha", "default");
+    sb.mcc().args(["share", "work"]).assert().success();
+    assert_eq!(link_target(&sb, ".mcc/profiles/work/projects"), store(&sb));
+}
+
 #[test]
 fn sharing_across_organizations_needs_allow_cross_org() {
     let sb = Sandbox::new();

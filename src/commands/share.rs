@@ -154,6 +154,14 @@ fn check_group(name: &str) -> Result<Option<String>> {
     }
 }
 
+/// The store of `group`; never a path outside `~/.mcc/shared`, even for a
+/// group that skipped [`check_group`].
+fn store_of(paths: &Paths, group: &Option<String>) -> Result<PathBuf> {
+    paths.share_store(group.as_deref()).ok_or_else(|| {
+        CliError::input(format!("invalid group name \"{}\"", group_name(group))).into()
+    })
+}
+
 /// The same group, ignoring case (see [`check_group`]).
 fn same_group(a: &Option<String>, b: &Option<String>) -> bool {
     a.as_deref().map(str::to_ascii_lowercase) == b.as_deref().map(str::to_ascii_lowercase)
@@ -393,7 +401,7 @@ fn sharing_profile(paths: &Paths, cfg: &Config, alias: &str) -> Result<Profile> 
                 .into(),
         );
     }
-    let Some(profile) = cfg.profiles.get(alias).cloned() else {
+    let Some(mut profile) = cfg.profiles.get(alias).cloned() else {
         return Err(super::unknown_profile(alias));
     };
     let fix = format!(
@@ -416,6 +424,22 @@ fn sharing_profile(paths: &Paths, cfg: &Config, alias: &str) -> Result<Profile> 
         ))
         .hint(fix)
         .into());
+    }
+    // The stored group becomes a path: hold it to the `--group` rules
+    // before anything on disk changes (no fallback to another store, which
+    // could merge sessions somewhere unintended).
+    if let Some(stored) = profile.share_group.take() {
+        profile.share_group = check_group(&stored).map_err(|_| {
+            anyhow::Error::from(
+                CliError::input(format!(
+                    "invalid share_group \"{stored}\" for profile \"{alias}\" in {}",
+                    paths.display(&paths.config_file)
+                ))
+                .hint(format!(
+                    "fix `share_group` in the [profiles.{alias}] entry: use 1–{GROUP_MAX} letters, digits, `-`, `_` or `.`, starting with a letter or digit, or remove it for the default group"
+                )),
+            )
+        })?;
     }
     Ok(profile)
 }
@@ -441,7 +465,7 @@ fn enable(
         ))
         .into());
     }
-    let store = paths.share_store(group.as_deref());
+    let store = store_of(paths, group)?;
     let projects = profile.dir.join("projects");
     let state = projects_state(&projects, &store)?;
     let retry = format!("move it out of the way, then run `mcc share {alias}` again");
@@ -625,7 +649,7 @@ fn enable(
 }
 
 fn disable(paths: &Paths, cfg: &mut Config, alias: &str, profile: &Profile) -> Result<()> {
-    let store = paths.share_store(profile.share_group.as_deref());
+    let store = store_of(paths, &profile.share_group)?;
     let projects = profile.dir.join("projects");
     ui::header(&format!("Stop sharing the sessions of profile \"{alias}\""));
     if !matches!(projects_state(&projects, &store)?, Projects::Shared) {
