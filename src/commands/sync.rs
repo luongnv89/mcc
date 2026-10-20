@@ -1,8 +1,8 @@
 //! `mcc sync` — one-way copy of the default profile's setup into profiles.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::cli::SyncArgs;
 use crate::config::Config;
@@ -11,7 +11,9 @@ use crate::error::CliError;
 use crate::paths::Paths;
 use crate::{fsutil, ui};
 
-/// Files backed up before a sync overwrites them.
+/// Profile config files backed up before every sync that writes, even when the
+/// plan leaves them as they are. Everything the plan overwrites or removes is
+/// backed up as well (see [`backup`]).
 const BACKED_UP: &[&str] = &["settings.json", "settings.local.json", ".claude.json"];
 
 pub fn run(paths: &Paths, cfg: &mut Config, args: &SyncArgs) -> Result<()> {
@@ -164,7 +166,7 @@ fn sync_one(
     }
 
     let step = steps.start("Back up profile config");
-    match backup(&dir)? {
+    match backup(&dir, &plan)? {
         Some(b) => step.ok(&paths.display(&b)),
         None => step.skip("nothing to back up"),
     }
@@ -252,23 +254,42 @@ fn print_plan(plan: &Plan, dry_run: bool) {
     }
 }
 
-/// Copy the profile's config files to `<profile>/.mcc-backup/<timestamp>/`.
-/// Never reuses an earlier backup folder (two syncs can land in one millisecond).
-fn backup(dir: &Path) -> Result<Option<std::path::PathBuf>> {
-    let existing: Vec<&&str> = BACKED_UP.iter().filter(|f| dir.join(f).is_file()).collect();
-    if existing.is_empty() {
+/// Copy everything the sync is about to overwrite or remove — each path in
+/// [`Plan::backup_paths`] (files, whole dirs, symlinks kept as symlinks) plus
+/// the [`BACKED_UP`] config files — to `<profile>/.mcc-backup/<timestamp>/`,
+/// at the same relative paths. Runs before anything is written, so a failed
+/// backup leaves the profile untouched. Never reuses an earlier backup folder
+/// (two syncs can land in one millisecond).
+fn backup(dir: &Path, plan: &Plan) -> Result<Option<PathBuf>> {
+    let rels = copy::outermost_existing(
+        dir,
+        BACKED_UP
+            .iter()
+            .map(PathBuf::from)
+            .chain(plan.backup_paths(dir)),
+    );
+    if rels.is_empty() {
         return Ok(None);
     }
     let root = dir.join(".mcc-backup");
+    std::fs::create_dir_all(&root).with_context(|| format!("creating {}", root.display()))?;
+    fsutil::set_private_dir(&root)?;
     let base = chrono::Local::now().format("%Y%m%d-%H%M%S%.3f").to_string();
     let mut dest = root.join(&base);
     let mut n = 1;
-    while dest.exists() {
-        dest = root.join(format!("{base}.{n}"));
-        n += 1;
+    loop {
+        match std::fs::create_dir(&dest) {
+            Ok(()) => break,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                dest = root.join(format!("{base}.{n}"));
+                n += 1;
+            }
+            Err(e) => return Err(e).with_context(|| format!("creating {}", dest.display())),
+        }
     }
-    for f in existing {
-        fsutil::write_atomic(&dest.join(f), &std::fs::read(dir.join(f))?)?;
+    fsutil::set_private_dir(&dest)?;
+    for rel in rels {
+        fsutil::copy_path(&dir.join(&rel), &dest.join(&rel))?;
     }
     Ok(Some(dest))
 }
