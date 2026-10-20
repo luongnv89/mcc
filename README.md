@@ -51,7 +51,7 @@ Claude Code reads its config from `CLAUDE_CONFIG_DIR`, which defaults to `~/.cla
 - **Opt-in session sharing.** Off by default. `mcc share work` (or starting a profile with `work --mcc-share`) lets that profile's `--resume` see the sessions of every other sharing profile. Credentials and account files are never shared.
 - **Per-project profiles.** `mcc project set work` makes `work` the profile `mcc run` starts in this repository, so a project stays on one account. mcc never switches accounts on its own: if that account is at its 5-hour or weekly limit, `mcc run` asks whether to wait (the default) or start it anyway, and offers another profile only when the project allows it (`--allow`).
 - **`delete`.** Logs the profile out (clearing its keychain entry), then removes its directory, launcher, shell alias, and registry entry. It refuses the old name of a renamed profile, so that profile's files are never removed by mistake.
-- **Clear progress everywhere.** Steps are numbered with a status and timing. Every run is logged to `~/.mcc/logs/mcc.log`.
+- **Clear progress everywhere.** Steps are numbered with a status and timing. Every run is logged to `~/.mcc/logs/mcc.log`, which is rotated to `mcc.log.1` at about 1 MB.
 - **Safe by design.** Changes are rolled back if `add` fails. Your rc file is backed up before mcc edits it, and `sync` backs up every file it overwrites or removes. mcc only removes what it created.
 
 Supports **macOS and Linux**.
@@ -177,7 +177,7 @@ mcc completions fish > ~/.config/fish/completions/mcc.fish
 | Shared sessions | `~/.mcc/shared/projects` (the `default` group) and `~/.mcc/shared/groups/<name>/projects` (`--group <name>`), only for profiles that opted in with `mcc share` (their `projects/` links there) |
 | Project defaults | `[projects."<dir>"]` tables in `~/.mcc/config.toml`, written by `mcc project set` |
 | Statusline state | `~/.mcc/state/<profile>/usage.json` (rate limits cached by `mcc statusline`) and `statusline.json` (the `statusLine` it replaced), only after `mcc statusline install` |
-| mcc state | `~/.mcc/config.toml` (environment + registry; safe to edit by hand, mcc keeps your comments and formatting), `~/.mcc/.lock` (held while a command writes the config), `~/.mcc/logs/mcc.log`, `~/.mcc/backups/` (rc file backups, session-merge conflicts) |
+| mcc state | `~/.mcc/config.toml` (environment + registry; safe to edit by hand, mcc keeps your comments and formatting), `~/.mcc/.lock` (held while a command writes the config), `~/.mcc/logs/mcc.log` (rotated to `mcc.log.1` at about 1 MB), `~/.mcc/backups/` (rc file backups, session-merge conflicts) |
 
 ### What clone and sync copy
 

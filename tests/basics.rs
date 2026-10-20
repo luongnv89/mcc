@@ -111,6 +111,20 @@ fn init_detects_and_saves() {
 }
 
 #[test]
+fn log_rotates_at_about_one_megabyte() {
+    let sb = Sandbox::new();
+    let big = format!("{}\n", "x".repeat(1024 * 1024));
+    sb.write(".mcc/logs/mcc.log", &big);
+    sb.write(".mcc/logs/mcc.log.1", "older rotation\n");
+    sb.mcc().arg("init").assert().success();
+    // The full log became the single rotation, replacing the older one.
+    assert_eq!(sb.read(".mcc/logs/mcc.log.1"), big);
+    let log = sb.read(".mcc/logs/mcc.log");
+    assert!(log.len() < 1024 * 1024, "{}", log.len());
+    assert!(log.contains("[1/4] Operating system and terminal"), "{log}");
+}
+
+#[test]
 fn init_shell_override() {
     let sb = Sandbox::new();
     sb.mcc()

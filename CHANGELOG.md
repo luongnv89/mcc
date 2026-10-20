@@ -24,6 +24,7 @@ All notable changes to mcc are recorded here. The format follows [Keep a Changel
 
 ### Fixed
 
+- `~/.mcc/logs/mcc.log` no longer grows without bound: once it reaches about 1 MB it is moved to `mcc.log.1` (replacing the previous one) before the next line is written, so at most about 2 MB of log, which can include account emails, is kept. A failed rotation never breaks a command. ([#51](https://github.com/luongnv89/mcc/issues/51))
 - `mcc add` no longer warns about a duplicate account (and suggests `mcc delete`) when the same login is used in another organization, such as a personal plan and a work seat: those have usage limits of their own, so it prints a note instead. The warning stays for the same login in the same organization. ([#40](https://github.com/luongnv89/mcc/issues/40))
 - The Keychain login lookup (live usage) no longer needs `USER`: when it is unset, as under launchd, cron or some IDE tasks, the account name comes from the password database (`getpwuid_r`) or `id -un`, so a logged-in profile is no longer reported as `not_logged_in`. ([#37](https://github.com/luongnv89/mcc/issues/37))
 - Saving `~/.mcc/config.toml` keeps hand-written comments and formatting, and a command that changes nothing (such as `ALIAS --mcc-share` on a profile that already shares) no longer rewrites it. Every command that writes the config holds an advisory lock on `~/.mcc/.lock` from loading it to saving it, so concurrent runs no longer lose each other's changes; a command that has to wait says so. ([#35](https://github.com/luongnv89/mcc/issues/35))
