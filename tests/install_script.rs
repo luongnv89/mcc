@@ -7,6 +7,7 @@
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -353,4 +354,57 @@ fn fails_clearly_without_cargo_or_a_binary() {
     );
     assert!(!fx.install_dir().join("mcc").exists());
     assert!(!fx.cargo_root().join("bin/mcc").exists());
+}
+
+#[test]
+fn rejects_a_release_url_that_is_not_https() {
+    let fx = Fixture::new();
+    let out = fx.run_with_path(
+        Some(join_path(&[fx.install_dir()], &fx.path_with_stub_cargo())),
+        &[("MCC_RELEASE_URL", "http://127.0.0.1:9/")],
+    );
+    let log = text(&out);
+    assert!(!out.status.success(), "install.sh should fail:\n{log}");
+    assert!(
+        log.contains("MCC_RELEASE_URL must start with https://"),
+        "{log}"
+    );
+    assert!(!fx.install_dir().join("mcc").exists());
+    assert!(!fx.cargo_root().join("bin/mcc").exists());
+    assert!(fx.cargo_installs().is_empty(), "cargo must not be used");
+}
+
+#[test]
+fn piped_install_ignores_an_mcc_checkout_in_the_current_directory() {
+    let fx = Fixture::new();
+    let cwd = fx.root.path().join("elsewhere");
+    fs::create_dir_all(&cwd).unwrap();
+    fs::write(
+        cwd.join("Cargo.toml"),
+        "[package]\nname = \"mcc\"\nversion = \"0.0.0\"\n",
+    )
+    .unwrap();
+
+    // `curl … | sh`: the script arrives on stdin and $0 is a bare `sh`, so
+    // `dirname "$0"` is the current directory.
+    let script = fs::File::open(fx.root.path().join("install.sh")).unwrap();
+    let base = fx.command(Some(join_path(
+        &[fx.install_dir()],
+        &fx.path_with_stub_cargo(),
+    )));
+    let mut piped = Command::new("/bin/sh");
+    piped.arg0("sh").arg("-s").current_dir(&cwd).stdin(script);
+    for (k, v) in base.get_envs() {
+        match v {
+            Some(v) => piped.env(k, v),
+            None => piped.env_remove(k),
+        };
+    }
+    let out = piped.output().unwrap();
+    let log = text(&out);
+    assert!(out.status.success(), "install.sh failed:\n{log}");
+    assert!(log.contains("checksum: sha256 "), "{log}");
+    assert!(log.contains("installed mcc 9.9.9-test"), "{log}");
+    assert!(fx.cargo_installs().is_empty(), "cargo must not be used");
+    assert!(fx.install_dir().join("mcc").exists());
 }

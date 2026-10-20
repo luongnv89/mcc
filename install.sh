@@ -16,7 +16,8 @@
 #   MCC_VERSION=v0.4.0    install that release instead of the latest one
 #                         (a source build then builds that tag)
 #   MCC_RELEASE_URL=URL   download from URL/<asset> (a mirror) instead of
-#                         the GitHub release
+#                         the GitHub release; https:// only (file:// for
+#                         testing)
 #
 # Supports macOS and Linux (x86_64 and arm64).
 set -eu
@@ -77,6 +78,16 @@ sha256_of() {
 # 2a. Prebuilt binary. Returns 1 (so the caller builds from source) when there
 # is no binary to download; exits on anything that looks like tampering.
 install_prebuilt() {
+  # Only https (and file://, for local testing) is accepted: over plain http
+  # the checksum would arrive alongside the archive and prove nothing.
+  proto='=https'
+  if [ -n "${MCC_RELEASE_URL:-}" ]; then
+    case "$MCC_RELEASE_URL" in
+      https://*) ;;
+      file://*) proto='=file' ;;
+      *) fail "MCC_RELEASE_URL must start with https:// (got $MCC_RELEASE_URL)" "nothing was installed" ;;
+    esac
+  fi
   [ -n "$target_arch" ] || return 1
   command -v curl >/dev/null 2>&1 || return 1
   command -v tar >/dev/null 2>&1 || return 1
@@ -96,11 +107,11 @@ install_prebuilt() {
   trap "rm -rf '$tmp'" EXIT
 
   info "downloading $asset"
-  if ! curl -fsSL --retry 2 -o "$tmp/$asset" "$base/$asset" 2>/dev/null; then
+  if ! curl -fsSL --proto "$proto" --proto-redir '=https' --retry 2 -o "$tmp/$asset" "$base/$asset" 2>/dev/null; then
     info "no prebuilt binary for $target at $base"
     return 1
   fi
-  if ! curl -fsSL --retry 2 -o "$tmp/$asset.sha256" "$base/$asset.sha256" 2>/dev/null; then
+  if ! curl -fsSL --proto "$proto" --proto-redir '=https' --retry 2 -o "$tmp/$asset.sha256" "$base/$asset.sha256" 2>/dev/null; then
     fail "downloaded $asset but not its checksum ($asset.sha256)" "try again, or set MCC_FROM_SOURCE=1 to build with cargo"
   fi
 
@@ -146,7 +157,17 @@ install_from_source() {
   bin_dir="${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}/bin"
 }
 
-script_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || script_dir=""
+# Only a script run from a file named install.sh can be in a checkout. When
+# piped (`curl ... | sh`), $0 is the shell, and the current directory must
+# not be mistaken for the source tree.
+script_dir=""
+case "$0" in
+  install.sh | */install.sh)
+    if [ -f "$0" ]; then
+      script_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || script_dir=""
+    fi
+    ;;
+esac
 in_checkout=""
 if [ -n "$script_dir" ] && [ -f "$script_dir/Cargo.toml" ] && grep -q '^name = "mcc"' "$script_dir/Cargo.toml"; then
   in_checkout=1
