@@ -26,6 +26,16 @@ fn set(sb: &Sandbox, key: &str, value: &str) {
         .success();
 }
 
+/// Turn the banner on and rewrite the launchers, as the hint says.
+fn turn_on(sb: &Sandbox) {
+    set(sb, "launch.banner", "true");
+    sb.mcc()
+        .args(["refresh-launchers"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("1 refreshed"));
+}
+
 #[test]
 fn the_banner_is_off_by_default_and_set_with_mcc_config() {
     let sb = sandbox();
@@ -36,7 +46,23 @@ fn the_banner_is_off_by_default_and_set_with_mcc_config() {
         .success()
         .stdout("false\n");
 
-    set(&sb, "launch.banner", "true");
+    // Turning it on (or off) says to refresh the launchers, which mcc
+    // doesn't rewrite on its own.
+    let launcher = sb.read(".local/bin/work");
+    sb.mcc()
+        .args(["config", "set", "launch.banner", "true"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "run `mcc refresh-launchers` so profiles' launchers show the launch banner",
+        ));
+    assert_eq!(sb.read(".local/bin/work"), launcher);
+    // Setting it to what it already is: no hint.
+    sb.mcc()
+        .args(["config", "set", "launch.banner", "true"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("refresh-launchers").not());
     assert!(
         sb.read(CONFIG).contains("[launch]\nbanner = true\n"),
         "{}",
@@ -56,7 +82,13 @@ fn the_banner_is_off_by_default_and_set_with_mcc_config() {
         .stderr(predicate::str::contains("expected true or false"));
     assert_eq!(sb.read(CONFIG), before);
 
-    set(&sb, "launch.banner", "false");
+    sb.mcc()
+        .args(["config", "set", "launch.banner", "false"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "run `mcc refresh-launchers` so profiles' launchers stop calling the launch banner",
+        ));
     assert!(!sb.read(CONFIG).contains("[launch]"), "{}", sb.read(CONFIG));
 
     // `mcc help config` lists it.
@@ -65,6 +97,32 @@ fn the_banner_is_off_by_default_and_set_with_mcc_config() {
         .assert()
         .success()
         .stdout(predicate::str::contains("launch.banner"));
+}
+
+#[test]
+fn launchers_call_launch_banner_only_while_it_is_on() {
+    let sb = sandbox();
+    // Off: the launcher runs nothing but claude (no `mcc` on a plain launch).
+    let off = sb.read(".local/bin/work");
+    assert!(!off.contains("launch-banner"), "{off}");
+    assert!(off.contains("# mcc-launcher: 2\n"), "{off}");
+
+    // On: refresh-launchers adds the call; a profile added now has it too.
+    turn_on(&sb);
+    let on = sb.read(".local/bin/work");
+    assert!(
+        on.contains("mcc launch-banner 'work' >&2 2>/dev/null"),
+        "{on}"
+    );
+    assert!(on.contains("# mcc-launcher: 2\n"), "{on}");
+    with_profile(&sb, "lab", "--fresh");
+    assert!(sb.read(".local/bin/lab").contains("launch-banner 'lab'"));
+
+    // Off again: refresh-launchers takes it out, back to the same bytes.
+    set(&sb, "launch.banner", "false");
+    sb.mcc().args(["refresh-launchers"]).assert().success();
+    assert_eq!(sb.read(".local/bin/work"), off);
+    assert!(!sb.read(".local/bin/lab").contains("launch-banner"));
 }
 
 #[test]
@@ -98,7 +156,7 @@ fn launch_banner_never_prints_or_fails_without_a_terminal() {
 #[test]
 fn piped_launches_get_no_banner_and_a_clean_stdout() {
     let sb = sandbox();
-    set(&sb, "launch.banner", "true");
+    turn_on(&sb);
     let o = sb.launcher("work").args(["-p", "hi"]).output().unwrap();
     assert!(o.status.success());
     assert_eq!(String::from_utf8_lossy(&o.stdout), "fake claude -p hi\n");
@@ -151,7 +209,7 @@ fn a_launch_on_a_terminal_shows_the_banner_on_stderr_from_cached_data_only() {
     };
     assert!(!shown.contains('▶'), "{shown}");
 
-    set(&sb, "launch.banner", "true");
+    turn_on(&sb);
     let shown = on_a_terminal(&sb, &piped, &env).unwrap();
     assert_eq!(shown, format!("{BANNER}\n"));
     // Claude Code's stdout (here a file, as with `| jq`) has no banner.
@@ -180,8 +238,9 @@ fn a_launch_on_a_terminal_shows_the_banner_on_stderr_from_cached_data_only() {
 fn the_banner_leaves_out_what_is_unknown_or_hidden() {
     let sb = Sandbox::new();
     sb.seed_default();
-    with_profile(&sb, "work", "--fresh");
+    // Turned on before the profile is added: its launcher has the call.
     set(&sb, "launch.banner", "true");
+    with_profile(&sb, "work", "--fresh");
     let launcher = format!("'{}' > out.txt", sb.path(".local/bin/work").display());
     // No label, no cached usage: the name alone.
     let Some(shown) = on_a_terminal(&sb, &launcher, &[]) else {

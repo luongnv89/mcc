@@ -749,13 +749,25 @@ fn one_profile_only() {
 fn launchers_from_before_sharing_or_the_banner_are_out_of_date() {
     let sb = healthy();
     let current = sb.read(".local/bin/work");
-    assert!(current.contains("# mcc-launcher: 3\n"), "{current}");
+    assert!(current.contains("# mcc-launcher: 2\n"), "{current}");
 
-    // Version 2 understands --mcc-share, but can't show the launch banner.
-    sb.write(
-        ".local/bin/work",
-        &current.replace("# mcc-launcher: 3\n", "# mcc-launcher: 2\n"),
-    );
+    // With the banner off (the default), a launcher without the banner block
+    // is current: doctor is happy and `mcc list` has nothing to say.
+    assert!(!current.contains("launch-banner"), "{current}");
+    let all = findings(&sb, &[]);
+    assert_eq!(one(&all, Some("work"), "launcher")["status"], "ok");
+    sb.mcc()
+        .arg("list")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("refresh-launchers").not());
+
+    // With it on, the same launcher doesn't show the banner: a warning, and
+    // `mcc list` says so too.
+    sb.mcc()
+        .args(["config", "set", "launch.banner", "true"])
+        .assert()
+        .success();
     let all = findings(&sb, &[]);
     let f = one(&all, Some("work"), "launcher");
     assert_eq!(f["status"], "warn", "{f}");
@@ -763,15 +775,36 @@ fn launchers_from_before_sharing_or_the_banner_are_out_of_date() {
         f["message"]
             .as_str()
             .unwrap()
-            .contains("predates the launch banner"),
+            .contains("doesn't show the launch banner"),
         "{f}"
     );
     assert_eq!(f["fix"], "mcc refresh-launchers work");
+    sb.mcc()
+        .arg("list")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "2 launchers are out of date — run `mcc refresh-launchers` so `<alias> --mcc-share` and the launch banner work",
+        ));
+    // A warning: doctor still passes, and refresh-launchers adds the block.
+    passing(&sb);
+    sb.mcc()
+        .args(["refresh-launchers", "work"])
+        .assert()
+        .success();
+    let with_banner = sb.read(".local/bin/work");
+    assert!(
+        with_banner.contains(" launch-banner 'work' "),
+        "{with_banner}"
+    );
+    assert!(with_banner.contains("# mcc-launcher: 2\n"), "{with_banner}");
+    let all = findings(&sb, &[]);
+    assert_eq!(one(&all, Some("work"), "launcher")["status"], "ok");
 
-    // Without a version it predates session sharing too.
+    // Without a version it predates session sharing, banner or not.
     sb.write(
         ".local/bin/work",
-        &current.replace("# mcc-launcher: 3\n", ""),
+        &with_banner.replace("# mcc-launcher: 2\n", ""),
     );
     let all = findings(&sb, &[]);
     let f = one(&all, Some("work"), "launcher");
@@ -783,14 +816,20 @@ fn launchers_from_before_sharing_or_the_banner_are_out_of_date() {
             .contains("predates session sharing"),
         "{f}"
     );
+    assert_eq!(f["fix"], "mcc refresh-launchers work");
 
-    // A warning: doctor still passes, and refresh-launchers makes it current.
-    passing(&sb);
+    // Turning the banner off again: a leftover block is harmless (no
+    // warning), and refresh-launchers takes it out, back to the original.
+    sb.write(".local/bin/work", &with_banner);
     sb.mcc()
-        .args(["refresh-launchers", "work"])
+        .args(["config", "set", "launch.banner", "false"])
         .assert()
         .success();
     let all = findings(&sb, &[]);
     assert_eq!(one(&all, Some("work"), "launcher")["status"], "ok");
+    sb.mcc()
+        .args(["refresh-launchers", "work"])
+        .assert()
+        .success();
     assert_eq!(sb.read(".local/bin/work"), current);
 }

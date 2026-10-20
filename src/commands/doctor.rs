@@ -642,7 +642,7 @@ fn check_launcher(d: &mut Doctor, name: &str, p: &Profile) {
             refresh.clone(),
         );
     }
-    if !shell::launcher_supports_share(w) {
+    if !shell::launcher_is_current(w) {
         ok = false;
         d.push_cmd(
             "launcher",
@@ -653,13 +653,13 @@ fn check_launcher(d: &mut Doctor, name: &str, p: &Profile) {
             ),
             refresh,
         );
-    } else if !shell::launcher_is_current(w) {
+    } else if d.cfg.launch.banner && !shell::launcher_shows_banner(w) {
         ok = false;
         d.push_cmd(
             "launcher",
             Level::Warn,
             format!(
-                "the launcher {shown} predates the launch banner (`[launch] banner` doesn't show it)"
+                "the launcher {shown} doesn't show the launch banner, which `[launch] banner` turns on"
             ),
             refresh,
         );

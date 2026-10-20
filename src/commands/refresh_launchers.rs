@@ -88,6 +88,7 @@ pub fn run(paths: &Paths, cfg: &Config, args: &RefreshLaunchersArgs) -> Result<(
                 &p.dir,
                 claude_bin.as_deref(),
                 crate::plugins::root_for(paths, p).as_deref(),
+                cfg.launch.banner,
             );
             if existing.as_deref() != Some(script.as_bytes()) {
                 undo.record(Undo::Wrapper(wrapper.clone(), existing));

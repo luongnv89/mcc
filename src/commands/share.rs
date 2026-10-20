@@ -649,7 +649,7 @@ fn enable(
         "credentials, account (.claude.json), history, live sessions, shell snapshots",
     );
     match &profile.wrapper {
-        Some(w) if shell::is_mcc_wrapper(w) && !shell::launcher_supports_share(w) => {
+        Some(w) if shell::is_mcc_wrapper(w) && !shell::launcher_is_current(w) => {
             ui::hint(&format!(
                 "run `mcc refresh-launchers {alias}` so `{alias} {}` works from your shell",
                 shell::SHARE_FLAG

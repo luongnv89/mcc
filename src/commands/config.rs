@@ -217,6 +217,7 @@ fn set(paths: &Paths, key: &str, value: &str) -> Result<()> {
     let which = settable(key, &parts)?;
     // Held since main.rs took the lock, so nothing changes it meanwhile.
     let mut cfg = load(paths)?;
+    let banner = cfg.launch.banner;
     apply(&mut cfg, &which, value)?;
     cfg.save(&paths.config_file)?;
     crate::log::write("INFO", &format!("config: set {key} = {value:?}"));
@@ -224,6 +225,18 @@ fn set(paths: &Paths, key: &str, value: &str) -> Result<()> {
         "{key} set in {}",
         paths.display(&paths.config_file)
     ));
+    // Launchers include the banner call only while it is on; mcc never
+    // rewrites them on its own.
+    if which == Key::Banner && cfg.launch.banner != banner && !cfg.profiles.is_empty() {
+        ui::hint(&format!(
+            "run `mcc refresh-launchers` so profiles' launchers {} the launch banner",
+            if cfg.launch.banner {
+                "show"
+            } else {
+                "stop calling"
+            }
+        ));
+    }
     Ok(())
 }
 
