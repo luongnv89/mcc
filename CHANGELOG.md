@@ -11,6 +11,10 @@ All notable changes to mcc are recorded here. The format follows [Keep a Changel
 - `mcc list` shows the project defaults under the profile table (project, profile and account, with `← here` for the current directory). `--long` cards have a `Default for` row, and `--json` has a `project_defaults` array per profile.
 - `project` and `run` are reserved and can't be used as aliases.
 
+### Fixed
+
+- `mcc sync` backs up every file or folder it overwrites or removes (such as `CLAUDE.md`, skills and agents) to `<profile>/.mcc-backup/<timestamp>/`, not only `settings.json`, `settings.local.json` and `.claude.json`, so edits made in a profile can be restored. A symlink is backed up as the link itself. `sync.extra` entries that are empty, `.` or inside `.mcc-backup` are rejected. ([#30](https://github.com/luongnv89/mcc/issues/30))
+
 ## [0.3.0] - 2026-10-13
 
 Profiles can now opt in to session sharing with `mcc share ALIAS` or `ALIAS --mcc-share`, so `--resume` lists the sessions of every sharing profile, and `mcc refresh-launchers` updates launchers and shell aliases made by an older mcc.

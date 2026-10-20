@@ -52,7 +52,7 @@ Claude Code reads its config from `CLAUDE_CONFIG_DIR`, which defaults to `~/.cla
 - **Per-project profiles.** `mcc project set work` makes `work` the profile `mcc run` starts in this repository, so a project stays on one account. mcc never switches accounts on its own: if that account is at its 5-hour or weekly limit, `mcc run` shows every profile's usage and asks which one to start.
 - **`delete`.** Logs the profile out (clearing its keychain entry), then removes its directory, launcher, shell alias, and registry entry. It refuses the old name of a renamed profile, so that profile's files are never removed by mistake.
 - **Clear progress everywhere.** Steps are numbered with a status and timing. Every run is logged to `~/.mcc/logs/mcc.log`.
-- **Safe by design.** Changes are rolled back if `add` fails. Your rc file is backed up before mcc edits it. mcc only removes what it created.
+- **Safe by design.** Changes are rolled back if `add` fails. Your rc file is backed up before mcc edits it, and `sync` backs up every file it overwrites or removes. mcc only removes what it created.
 
 Supports **macOS and Linux**.
 
@@ -189,7 +189,7 @@ mcc completions fish > ~/.config/fish/completions/mcc.fish
 
 **Paths are rewritten** so each profile uses its own copies. In settings, plugin manifests, and MCP server entries, any `~/.claude/…`, `$HOME/.claude/…`, or `/Users/you/.claude/…` path that points at a *copied* item (for example `~/.claude/hooks/notify.sh`) is rewritten to the profile directory. Paths to things that aren't copied, such as `~/.claude/statusline/run.sh`, keep pointing at the default profile, so nothing dangles. Symlinks stay symlinks: a link into the default profile is re-pointed into the copy, and a relative link elsewhere (such as `skills/x -> ../../.agents/skills/x`) is resolved so it still works from the new location.
 
-**`sync` is one-way** (default → profile), because most tools assume the default config path. Before writing, `sync` backs up the profile's `settings.json`, `settings.local.json`, and `.claude.json` to `<profile>/.mcc-backup/<timestamp>/`. Files that exist only in the profile are kept unless you pass `--prune`, and pruning asks for confirmation (or needs `--yes`).
+**`sync` is one-way** (default → profile), because most tools assume the default config path. Before writing, `sync` copies every file or folder it is about to overwrite or remove (such as `CLAUDE.md`, skills, agents, `settings.json`, and `.claude.json`) to `<profile>/.mcc-backup/<timestamp>/`, at the same paths, so your own edits can be restored from there. `--dry-run` changes nothing in the profile and makes no backup. Files that exist only in the profile are kept unless you pass `--prune`, and pruning asks for confirmation (or needs `--yes`).
 
 ### Customizing sync
 
