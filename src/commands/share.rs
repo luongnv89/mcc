@@ -163,8 +163,18 @@ fn store_of(paths: &Paths, group: &Option<String>) -> Result<PathBuf> {
 }
 
 /// The same group, ignoring case (see [`check_group`]).
+///
+/// Both sides are normalized like `--group` (`default` and `Default` are
+/// the default group), so a hand-edited `share_group` counts in the group
+/// whose store it resolves to. A name [`check_group`] rejects never gets a
+/// store, but it counts as the same group: the cross-organization guard
+/// then weighs that profile too instead of skipping it (fail safe).
 fn same_group(a: &Option<String>, b: &Option<String>) -> bool {
-    a.as_deref().map(str::to_ascii_lowercase) == b.as_deref().map(str::to_ascii_lowercase)
+    let norm = |g: &Option<String>| g.as_deref().map_or(Ok(None), check_group);
+    match (norm(a), norm(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => true,
+    }
 }
 
 /// A group as people read it.
@@ -972,6 +982,13 @@ mod tests {
         assert_eq!(check_group("DEFAULT").unwrap(), None);
         assert!(same_group(&Some("Acme".into()), &Some("acme".into())));
         assert!(!same_group(&Some("acme".into()), &None));
+        // Hand-edited spellings of the default group are the default group.
+        assert!(same_group(&Some("Default".into()), &None));
+        assert!(same_group(&None, &Some("default".into())));
+        assert!(!same_group(&Some("default".into()), &Some("acme".into())));
+        // An invalid stored name is never skipped by the guard.
+        assert!(same_group(&Some("../..".into()), &None));
+        assert!(same_group(&Some("a/b".into()), &Some("acme".into())));
         for bad in ["", ".", "..", "-x", "a/b", "a b", "é", &"x".repeat(65)] {
             assert!(check_group(bad).is_err(), "{bad:?}");
         }

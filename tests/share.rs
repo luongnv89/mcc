@@ -1181,6 +1181,70 @@ fn organization_to_personal_is_the_strictest() {
 }
 
 #[test]
+fn a_hand_edited_default_group_still_counts_for_the_guard() {
+    for spelling in ["default", "Default", "DEFAULT"] {
+        let sb = Sandbox::new();
+        sb.seed_default();
+        add_in_org(&sb, "work", Some(("Acme", "org-acme", TEAM)));
+        add_in_org(
+            &sb,
+            "home",
+            Some(("fake@example.com's Organization", "org-home", "claude_max")),
+        );
+        sb.mcc().args(["share", "work"]).assert().success();
+        assert_eq!(link_target(&sb, ".mcc/profiles/work/projects"), store(&sb));
+        // Hand-edit work's entry: still the default group, spelled out.
+        let cfg = sb.read(".mcc/config.toml");
+        let section = profile_section(&sb, "work");
+        let edited = section.replacen(
+            "share_sessions = true",
+            &format!("share_sessions = true\nshare_group = \"{spelling}\""),
+            1,
+        );
+        assert_ne!(section, edited, "{section}");
+        sb.write(".mcc/config.toml", &cfg.replace(&section, &edited));
+        // Organization sessions would reach a personal account: refused.
+        sb.mcc()
+            .args(["share", "home"])
+            .assert()
+            .code(3)
+            .stderr(predicate::str::contains("consumer terms"))
+            .stderr(predicate::str::contains("\"work\" (organization Acme)"));
+        assert!(!linked(&sb, ".mcc/profiles/home/projects"), "{spelling}");
+        assert!(!profile_section(&sb, "home").contains("share_sessions"));
+    }
+}
+
+/// Another sharing profile with an invalid stored group is weighed by the
+/// guard, not skipped.
+#[test]
+fn an_invalid_stored_group_still_counts_for_the_guard() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    add_in_org(&sb, "work", Some(("Acme", "org-acme", TEAM)));
+    add_in_org(
+        &sb,
+        "home",
+        Some(("fake@example.com's Organization", "org-home", "claude_max")),
+    );
+    sb.mcc().args(["share", "work"]).assert().success();
+    let cfg = sb.read(".mcc/config.toml");
+    let section = profile_section(&sb, "work");
+    let edited = section.replacen(
+        "share_sessions = true",
+        "share_sessions = true\nshare_group = \"../..\"",
+        1,
+    );
+    sb.write(".mcc/config.toml", &cfg.replace(&section, &edited));
+    sb.mcc()
+        .args(["share", "home"])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("\"work\" (organization Acme)"));
+    assert!(!linked(&sb, ".mcc/profiles/home/projects"));
+}
+
+#[test]
 fn unknown_accounts_fail_safe() {
     let sb = Sandbox::new();
     sb.seed_default();
