@@ -156,12 +156,33 @@ fn invalid_values_leave_the_file_unchanged() {
     }
 }
 
+/// Issue #57: the email setting lives in `[privacy]`; `usage.show_email`,
+/// its old name, still reads and sets it.
+#[test]
+fn privacy_show_email_is_settable_under_both_names() {
+    let sb = sandbox();
+    let get = |key: &str| stdout_of(sb.mcc().args(["config", "get", key]));
+    assert_eq!(get("privacy.show_email"), "false\n");
+    sb.mcc()
+        .args(["config", "set", "privacy.show_email", "true"])
+        .assert()
+        .success();
+    assert!(sb.read(CONFIG).contains("[privacy]\nshow_email = true\n"));
+    assert_eq!(get("privacy.show_email"), "true\n");
+    assert_eq!(get("usage.show_email"), "true\n");
+    sb.mcc()
+        .args(["config", "set", "usage.show_email", "false"])
+        .assert()
+        .success();
+    assert_eq!(get("privacy.show_email"), "false\n");
+}
+
 #[test]
 fn edit_saves_a_valid_edit() {
     let sb = sandbox();
     let ed = editor(
         &sb,
-        "printf '# my note\\n' >> \"$1\"\nsed -i.bak 's/show_email = false/show_email = true/' \"$1\"\nrm -f \"$1.bak\"\n",
+        "printf '\\n[privacy]\\nshow_email = true\\n# my note\\n' >> \"$1\"\n",
     );
     sb.mcc()
         .args(["config", "edit"])

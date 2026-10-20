@@ -1,4 +1,9 @@
 //! `mcc list` — all profiles with their metrics (table, cards, or JSON).
+//!
+//! The table keeps to the columns that fit 120 columns (NAME, ACCOUNT, 5H,
+//! WEEK, LAST USED, SYNC); `--long` cards and JSON have every metric.
+//! Account emails are hidden unless `[privacy] show_email` or
+//! `--show-email` says otherwise, as in `mcc usage`.
 
 use std::io::Write;
 use std::path::Path;
@@ -37,6 +42,13 @@ pub fn run(paths: &Paths, cfg: &Config, args: &ListArgs) -> Result<()> {
     if !usage_disabled(args) {
         attach_usage(paths, cfg, &mut all);
     }
+    let show_email = (cfg.show_email() || args.show_email) && !args.hide_email;
+    // Which profiles have an account email, so cards can tell a hidden one
+    // from none.
+    let known: Vec<bool> = all.iter().map(|m| m.account.is_some()).collect();
+    if !show_email {
+        all.iter_mut().for_each(hide_email);
+    }
 
     let mut out = std::io::stdout().lock();
     if args.json || args.json_v2 {
@@ -44,8 +56,8 @@ pub fn run(paths: &Paths, cfg: &Config, args: &ListArgs) -> Result<()> {
     } else if args.long {
         let now = Utc::now();
         let bar = card_bar(&all, now);
-        for m in &all {
-            card(&mut out, m, bar, now, paths)?;
+        for (m, known) in all.iter().zip(known) {
+            card(&mut out, m, known && !show_email, bar, now, paths)?;
         }
     } else {
         table(&mut out, &all)?;
@@ -98,6 +110,34 @@ fn sharing_notes(all: &[ProfileMetrics]) {
     }
 }
 
+/// Leave the account email out (null in JSON), and the organization too when
+/// its name contains an email, as personal plans' do ("me@x.com's
+/// Organization").
+fn hide_email(m: &mut ProfileMetrics) {
+    m.account = None;
+    if m.organization.as_deref().is_some_and(|o| o.contains('@')) {
+        m.organization = None;
+    }
+}
+
+/// The widest ACCOUNT cell; longer ones end in "…", so the table keeps to
+/// 120 columns.
+const ACCOUNT_WIDTH: usize = 32;
+
+/// The ACCOUNT cell: the profile's label, else its organization, with the
+/// email in front when it is shown ("me@x.com (work)"); "—" when nothing is
+/// known.
+fn account_cell(m: &ProfileMetrics) -> String {
+    let tag = m.label.as_deref().or(m.organization.as_deref());
+    let cell = match (m.account.as_deref(), tag) {
+        (Some(a), Some(t)) => format!("{a} ({t})"),
+        (Some(a), None) => a.to_string(),
+        (None, Some(t)) => t.to_string(),
+        (None, None) => "—".into(),
+    };
+    console::truncate_str(&cell, ACCOUNT_WIDTH, "…").into_owned()
+}
+
 /// `--no-usage`, or `MCC_NO_USAGE` set to anything but "" / "0".
 fn usage_disabled(args: &ListArgs) -> bool {
     args.no_usage || usage::disabled_by_env()
@@ -145,14 +185,6 @@ fn usage_cell(u: &Usage, w: Option<&Window>, bar: usize, now: DateTime<Utc>) -> 
         (Status::Ok, None) => "—".into(),
         _ if matches!(u.reason, Some(Reason::Disabled | Reason::NoData)) => "—".into(),
         _ => "unavailable".into(),
-    }
-}
-
-/// How old the cached usage is ("12m ago"), or "—".
-fn updated_cell(u: &Usage, now: DateTime<Utc>) -> String {
-    match u.status {
-        Status::Ok => u.age(now).unwrap_or_else(|| "—".into()),
-        Status::Unavailable => "—".into(),
     }
 }
 
@@ -232,28 +264,10 @@ fn sync_cell(m: &ProfileMetrics) -> String {
         .map_or_else(|| "—".into(), super::sync::status_text)
 }
 
-/// Header and rows, with usage bars `bar` cells wide.
-///
-/// UPDATED (how old cached usage is) follows WEEK when any profile's usage
-/// came from the statusline cache.
+/// Header and rows, with usage bars `bar` cells wide. Counts, size, the
+/// command and the organization are in the `--long` cards and JSON.
 fn table_lines(all: &[ProfileMetrics], bar: usize, now: DateTime<Utc>) -> Vec<String> {
-    let cached = all.iter().any(|m| m.usage.updated_at.is_some());
-    let mut headers = vec!["NAME", "COMMAND", "ACCOUNT", "ORG", "5H", "WEEK"];
-    if cached {
-        headers.push("UPDATED");
-    }
-    headers.extend([
-        "SKILLS",
-        "AGENTS",
-        "CMDS",
-        "PLUGINS",
-        "MCP",
-        "HOOKS",
-        "SIZE",
-        "LAST USED",
-        "SYNCED",
-        "SYNC",
-    ]);
+    let headers = ["NAME", "ACCOUNT", "5H", "WEEK", "LAST USED", "SYNC"];
     let rows: Vec<Vec<String>> = all
         .iter()
         .map(|m| {
@@ -272,42 +286,16 @@ fn table_lines(all: &[ProfileMetrics], bar: usize, now: DateTime<Utc>) -> Vec<St
             } else {
                 format!("{name} (missing)")
             };
-            let mut cells = vec![
+            vec![
                 name,
-                m.command.clone(),
-                m.account.clone().unwrap_or_else(|| "—".into()),
-                m.organization.clone().unwrap_or_else(|| "—".into()),
+                account_cell(m),
                 usage_cell(&m.usage, m.usage.five_hour.as_ref(), bar, now),
                 usage_cell(&m.usage, m.usage.weekly.as_ref(), bar, now),
-            ];
-            if cached {
-                cells.push(updated_cell(&m.usage, now));
-            }
-            cells.extend([
-                m.skills.to_string(),
-                m.agents.to_string(),
-                m.commands.to_string(),
-                format!("{}/{}", m.plugins_enabled, m.plugins_installed),
-                m.mcp_servers.to_string(),
-                m.hooks.to_string(),
-                ui::human_size(m.size_bytes),
                 metrics::ago(m.last_used_time),
-                if m.is_default {
-                    "source".into()
-                } else {
-                    metrics::ago_str(m.last_sync.as_deref())
-                },
                 sync_cell(m),
-            ]);
-            cells
+            ]
         })
         .collect();
-    let numeric = |i: usize| {
-        matches!(
-            headers[i],
-            "SKILLS" | "AGENTS" | "CMDS" | "PLUGINS" | "MCP" | "HOOKS" | "SIZE"
-        )
-    };
     let widths: Vec<usize> = (0..headers.len())
         .map(|i| {
             rows.iter()
@@ -320,15 +308,8 @@ fn table_lines(all: &[ProfileMetrics], bar: usize, now: DateTime<Utc>) -> Vec<St
     let fmt_row = |cells: Vec<String>| -> String {
         cells
             .iter()
-            .enumerate()
-            .map(|(i, c)| {
-                let pad = widths[i].saturating_sub(measure_text_width(c));
-                if numeric(i) {
-                    format!("{}{c}", " ".repeat(pad))
-                } else {
-                    format!("{c}{}", " ".repeat(pad))
-                }
-            })
+            .zip(&widths)
+            .map(|(c, w)| format!("{c}{}", " ".repeat(w.saturating_sub(measure_text_width(c)))))
             .collect::<Vec<_>>()
             .join("  ")
             .trim_end()
@@ -345,8 +326,15 @@ fn table_lines(all: &[ProfileMetrics], bar: usize, now: DateTime<Utc>) -> Vec<St
 ///
 /// ```text
 /// PROJECT      PROFILE  ACCOUNT
-/// ~/code/app   work     work@corp.com  ← here
-/// ~/code/site  default  me@example.com
+/// ~/code/app   work     Acme  ← here
+/// ~/code/site  default  personal
+/// ```
+///
+/// ACCOUNT is the table's ([`account_cell`]), so emails show only when
+/// they are shown there:
+///
+/// ```text
+/// ~/code/app   work     work@corp.com (Acme)  ← here
 /// ```
 fn project_lines(paths: &Paths, cfg: &Config, all: &[ProfileMetrics]) -> Vec<String> {
     let here = super::project::current_dir().ok();
@@ -370,8 +358,7 @@ fn project_lines(paths: &Paths, cfg: &Config, all: &[ProfileMetrics]) -> Vec<Str
                     Some(_) => p.profile.clone(),
                     None => format!("{} (no such profile)", p.profile),
                 },
-                m.and_then(|m| m.account.clone())
-                    .unwrap_or_else(|| "—".into()),
+                m.map_or_else(|| "—".into(), account_cell),
                 if Some(dir.as_str()) == here {
                     "← here".into()
                 } else {
@@ -405,9 +392,12 @@ fn project_lines(paths: &Paths, cfg: &Config, all: &[ProfileMetrics]) -> Vec<Str
         .collect()
 }
 
+/// `email_hidden`: the profile has an account email, left out because
+/// emails are hidden.
 fn card(
     out: &mut impl Write,
     m: &ProfileMetrics,
+    email_hidden: bool,
     bar: usize,
     now: DateTime<Utc>,
     paths: &Paths,
@@ -432,6 +422,8 @@ fn card(
         match (&m.account, &m.organization) {
             (Some(a), Some(o)) => format!("{a} ({o})"),
             (Some(a), None) => a.clone(),
+            (None, Some(o)) if email_hidden => format!("{o} (email hidden; --show-email shows it)"),
+            (None, None) if email_hidden => "email hidden (--show-email shows it)".into(),
             _ => "— (no account info yet; log in by running the command)".into(),
         },
     )?;

@@ -214,8 +214,9 @@
 <span class="p">$ </span>mcc add lab --fresh --no-login  <span class="cm"># empty profile; log in later by running `lab`</span></pre></div>
 
         <h3 id="cmd-list"><code>mcc list</code> <a class="anchor" href="#cmd-list" aria-label="Link to mcc list">#</a></h3>
-        <p class="synopsis">mcc list [--json | --json-v2 | -l/--long] [--no-usage]   <span style="color:var(--muted)">alias: mcc ls</span></p>
-        <p>One row per profile, the default included: command, account, organization, 5-hour and weekly usage (with a bar), skills, agents, commands, plugins (enabled/installed), MCP servers, hooks, size, last used and last sync, and a <code>SYNC</code> column saying how the profile compares with the default (<code>✓</code>, <code>3 behind</code>, <code>2 local edits</code>, <code>1 conflict</code>; <code>sync</code> in <code>--json</code>). When projects have a default profile (<code>mcc project set</code>), a second table lists each project with its profile and account, marking the one that applies in the current directory with <code>← here</code>. <code>--long</code> cards show them in a <code>Default for</code> row, and <code>--json</code> has a <code>project_defaults</code> array per profile. Cards also show the organization's ID and the profile's label, and <code>--json</code> has <code>organization</code>, <code>organization_uuid</code> and <code>label</code>.</p>
+        <p class="synopsis">mcc list [--json | --json-v2 | -l/--long] [--no-usage] [--show-email | --hide-email]   <span style="color:var(--muted)">alias: mcc ls</span></p>
+        <p>One row per profile, the default included, in a table that fits 120 columns: name, account (the profile's label, else its organization, after the email only when emails are shown; a long cell is cut with <code>…</code>), 5-hour and weekly usage (with a bar), last used, and a <code>SYNC</code> column saying how the profile compares with the default (<code>✓</code>, <code>3 behind</code>, <code>2 local edits</code>, <code>1 conflict</code>; <code>sync</code> in <code>--json</code>). When projects have a default profile (<code>mcc project set</code>), a second table lists each project with its profile and account, marking the one that applies in the current directory with <code>← here</code>. <code>--long</code> cards show them in a <code>Default for</code> row, and <code>--json</code> has a <code>project_defaults</code> array per profile. <code>--long</code> cards have everything else: the command, the organization and its ID, the label, skills, agents, commands, plugins (enabled/installed), MCP servers, hooks, size, last sync and how old cached usage is; <code>--json</code> has <code>organization</code>, <code>organization_uuid</code> and <code>label</code> too.</p>
+        <p>Account emails are hidden by default, as in <code>mcc usage</code>: <code>account</code> is <code>null</code> in <code>--json</code> and <code>--json-v2</code> (so is an <code>organization</code> whose name contains the email, as personal plans' do; no field is left out). <code>--show-email</code> shows them for one run, and <code>show_email = true</code> under <code>[privacy]</code> every time.</p>
         <div class="table-wrap"><table>
           <thead><tr><th>Option</th><th>Effect</th></tr></thead>
           <tbody>
@@ -223,22 +224,24 @@
             <tr><td><code>--json-v2</code></td><td>Print versioned JSON: <code>{"schema": 2, "profiles": [...]}</code>, the same objects as <code>--json</code>; fields are only ever added within a schema</td></tr>
             <tr><td><code>-l</code>, <code>--long</code></td><td>Show a detailed card per profile</td></tr>
             <tr><td><code>--no-usage</code></td><td>Skip fetching usage: no network, no keychain (same as <code>MCC_NO_USAGE=1</code>)</td></tr>
+            <tr><td><code>--show-email</code></td><td>Show account emails for this run</td></tr>
+            <tr><td><code>--hide-email</code></td><td>Hide account emails for this run, even with <code>show_email = true</code> in the config</td></tr>
           </tbody>
         </table></div>
         <div class="term" style="margin:0 0 1.2em"><pre><span class="p">$ </span><span class="c">mcc list</span>
-NAME       COMMAND  ACCOUNT         ORG   5H                     WEEK                   SKILLS  …
-default ★  claude   me@example.com  —     <span class="g">████</span><span class="d">░░░░░░</span> 42% (2h)    <span class="g">██</span><span class="d">░░░░░░░░</span> 18% (3d)         2  …
-work       work     work@corp.com   Corp  <span class="y">█████████</span><span class="d">░</span> <span class="y">85%!</span> (35m)  <span class="r">██████████</span> <span class="r">96%!!</span> (3d)       2  …
-lab        lab      —               —     <span class="d">unavailable            unavailable</span>                 0  …</pre></div>
+NAME       ACCOUNT   5H                     WEEK                   LAST USED  SYNC
+default ★  Acme      <span class="g">████</span><span class="d">░░░░░░</span> 42% (2h)    <span class="g">██</span><span class="d">░░░░░░░░</span> 18% (3d)    just now   —
+work       personal  <span class="y">█████████</span><span class="d">░</span> <span class="y">85%!</span> (35m)  <span class="r">██████████</span> <span class="r">96%!!</span> (3d)  2h ago     ✓
+lab        —         <span class="d">unavailable            unavailable</span>            1d ago     3 behind</pre></div>
         <div class="code"><pre><span class="p">$ </span>mcc list --long
 <span class="p">$ </span>mcc list --no-usage            <span class="cm"># offline: skip the usage lookup</span>
-<span class="p">$ </span>mcc list --json | jq '.[] | {name, account, skills, plugins_installed}'
+<span class="p">$ </span>mcc list --json --show-email | jq '.[] | {name, account, skills, plugins_installed}'
 <span class="p">$ </span>mcc list --json | jq '.[] | {name, five_hour: .usage.five_hour.percent, weekly: .usage.weekly.percent}'</pre></div>
 
         <h3 id="cmd-usage"><code>mcc usage</code> <a class="anchor" href="#cmd-usage" aria-label="Link to mcc usage">#</a></h3>
         <p class="synopsis">mcc usage [PROFILE] [--json | --json-v2] [--show-email | --hide-email]</p>
         <p>Shows only usage, as a compact table with one row per profile: for each window a bar with the percent used, the time until it resets, and the reset time in your local time zone. Pass a profile name to see just one; use <code>default</code> or <code>claude</code> for <code>~/.claude</code>. An unknown name is a usage error (exit 2).</p>
-        <p>Account emails are hidden by default, so the output is safe to share on screen. <code>--show-email</code> adds an <code>ACCOUNT</code> column; to show it every time, set <code>show_email = true</code> under <code>[usage]</code> in <code>~/.mcc/config.toml</code> (see <a href="#configuration">Configuration</a>).</p>
+        <p>Account emails are hidden by default, so the output is safe to share on screen. <code>--show-email</code> adds an <code>ACCOUNT</code> column; to show it every time, set <code>show_email = true</code> under <code>[privacy]</code> in <code>~/.mcc/config.toml</code>, which applies to <code>mcc list</code> too (see <a href="#configuration">Configuration</a>).</p>
         <div class="table-wrap"><table>
           <thead><tr><th>Option</th><th>Effect</th></tr></thead>
           <tbody>
@@ -423,13 +426,15 @@ lab        lab      —               —     <span class="d">unavailable       
 
       <section id="configuration">
         <h2>Configuration <a class="anchor" href="#configuration" aria-label="Link to Configuration">#</a></h2>
-        <p>mcc keeps its environment and profile registry in <code>~/.mcc/config.toml</code>. You can customize what <code>sync</code> and clone copy with a <code>[sync]</code> table, and whether <code>mcc usage</code> shows account emails with a <code>[usage]</code> table:</p>
+        <p>mcc keeps its environment and profile registry in <code>~/.mcc/config.toml</code>. You can customize what <code>sync</code> and clone copy with a <code>[sync]</code> table, whether <code>mcc list</code> and <code>mcc usage</code> show account emails with a <code>[privacy]</code> table, and how usage is looked up with a <code>[usage]</code> table:</p>
         <div class="code"><pre>[sync]
 exclude = ["plugins"]          <span class="cm"># built-in items to skip</span>
 extra = ["my-tool/config.yml"] <span class="cm"># additional paths (relative to the config dir) to copy</span>
 
+[privacy]
+show_email = true              <span class="cm"># show account emails in `mcc list` and `mcc usage` (default: false)</span>
+
 [usage]
-show_email = true              <span class="cm"># show account emails in `mcc usage` (default: false)</span>
 <span class="cm"># live = true                  # look usage up live with each profile's login (default: off)</span>
 
 [profiles.work]
@@ -487,7 +492,7 @@ allow = ["lab"]                <span class="cm"># optional: offered when `work` 
 
       <section id="usage-limits">
         <h2>Usage limits <a class="anchor" href="#usage-limits" aria-label="Link to Usage limits">#</a></h2>
-        <p><code>mcc list</code> shows 5-hour and weekly usage in its <code>5H</code> and <code>WEEK</code> columns, and how old those numbers are in <code>UPDATED</code>; <code>mcc usage</code> shows it in full.</p>
+        <p><code>mcc list</code> shows 5-hour and weekly usage in its <code>5H</code> and <code>WEEK</code> columns (<code>--long</code> says how old those numbers are); <code>mcc usage</code> shows it in full.</p>
         <div class="term" style="margin:0 0 1.4em"><pre><span class="p">$ </span><span class="c">mcc usage</span>
 <span class="w">PROFILE    5-HOUR           RESETS IN                  WEEKLY            RESETS IN                 UPDATED</span>
 default ★  <span class="g">████</span><span class="d">░░░░░░</span> 42%   2h 14m <span class="d">(Sat Oct 10 16:00)</span>  <span class="g">██</span><span class="d">░░░░░░░░</span> 18%    3d 4h <span class="d">(Wed Oct 14 00:00)</span>  12m ago

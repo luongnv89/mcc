@@ -19,14 +19,18 @@ fn usage_json(out: &str) -> Vec<serde_json::Value> {
     json(out.as_bytes()).as_array().unwrap().clone()
 }
 
-/// Turn `[usage] show_email` on in the sandbox's config.
-fn show_email_in_config(sb: &common::Sandbox) {
+/// Turn `show_email` on in the sandbox's config, under `table`
+/// (`[privacy]`, or `[usage]`, its old home).
+fn show_email_in_config(sb: &common::Sandbox, table: &str) {
     let cfg = sb.read(".mcc/config.toml");
-    assert!(cfg.contains("show_email = false"), "{cfg}");
-    sb.write(
-        ".mcc/config.toml",
-        &cfg.replace("show_email = false", "show_email = true"),
-    );
+    assert!(!cfg.contains("show_email"), "{cfg}");
+    let head = format!("[{table}]\n");
+    let cfg = if cfg.contains(&head) {
+        cfg.replacen(&head, &format!("{head}show_email = true\n"), 1)
+    } else {
+        format!("{cfg}\n{head}show_email = true\n")
+    };
+    sb.write(".mcc/config.toml", &cfg);
 }
 
 #[test]
@@ -93,17 +97,36 @@ fn usage_shows_emails_only_when_asked() {
         "me@example.com"
     );
 
-    // `[usage] show_email = true` makes it the default; --hide-email wins.
-    show_email_in_config(&sb);
+    // `[privacy] show_email = true` makes it the default, for `mcc list`
+    // too (issue #57); --hide-email wins.
+    show_email_in_config(&sb, "privacy");
     shown(&run(&["usage"]));
     assert_eq!(json_account(&["usage", "--json"]), "me@example.com");
     hidden(&run(&["usage", "--hide-email"]));
+    let list = run(&["list"]);
+    assert_match(r"(?m)^default ★\s+me@example\.com \(Acme\)\s", &list);
+    assert_eq!(json_account(&["list", "--json"]), "me@example.com");
+    hidden(&run(&["list", "--hide-email"]));
     // Other commands keep the setting when they save the config.
     sb.mcc()
         .args(["add", "other", "--fresh", "--no-login"])
         .assert()
         .success();
     assert!(sb.read(".mcc/config.toml").contains("show_email = true"));
+}
+
+/// Issue #57: `[usage] show_email = true`, the setting's old name, still
+/// shows emails, in `mcc usage` and `mcc list` alike.
+#[test]
+fn legacy_usage_show_email_still_applies_to_both_commands() {
+    let sb = usage_sandbox();
+    let stub = usage_stub();
+    let run = |args: &[&str]| stdout_of(sb.mcc().env("MCC_USAGE_URL", &stub.url).args(args));
+    assert!(!run(&["list"]).contains("me@example.com"));
+    show_email_in_config(&sb, "usage");
+    for args in [&["usage"][..], &["list"], &["list", "--long"]] {
+        assert!(run(args).contains("me@example.com"), "{args:?}");
+    }
 }
 
 #[test]
@@ -470,18 +493,13 @@ fn list_reads_the_statusline_cache_and_shows_its_age() {
         .success();
     let out = String::from_utf8(o.get_output().stdout.clone()).unwrap();
     let err = String::from_utf8(o.get_output().stderr.clone()).unwrap();
+    // The table keeps to 120 columns; the age is in --long (issue #56).
+    assert_match(r"(?m)^NAME\s+ACCOUNT\s+5H\s+WEEK\s+LAST USED\s+SYNC$", &out);
     assert_match(
-        r"(?m)^NAME\s+COMMAND\s+ACCOUNT\s+ORG\s+5H\s+WEEK\s+UPDATED\s+SKILLS",
+        r"(?m)^default ★\s+Acme\s+████░░░░░░ 42% \(2h\)\s+██░░░░░░░░ 18% \(3d\)\s",
         &out,
     );
-    assert_match(
-        r"(?m)^default ★\s+claude\s+me@example\.com\s+Acme\s+████░░░░░░ 42% \(2h\)\s+██░░░░░░░░ 18% \(3d\)\s+12m ago\s+2\s",
-        &out,
-    );
-    assert_match(
-        r"(?m)^lab\s+lab\s+fake@example\.com\s+—\s+—\s+—\s+—\s+0\s",
-        &out,
-    );
+    assert_match(r"(?m)^lab\s+—\s+—\s+—\s", &out);
     assert!(err.contains("no recent usage cached for `lab`"), "{err}");
 
     let long = stdout_of(sb.mcc().args(["list", "--long"]));

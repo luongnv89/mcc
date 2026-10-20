@@ -25,6 +25,10 @@ pub struct Config {
     pub sync: SyncConfig,
     #[serde(default)]
     pub usage: UsageConfig,
+    /// `[privacy]`: what `mcc list` and `mcc usage` may show on screen.
+    /// Left out of the file while it has its defaults.
+    #[serde(default, skip_serializing_if = "PrivacyConfig::is_default")]
+    pub privacy: PrivacyConfig,
     #[serde(default)]
     pub profiles: BTreeMap<String, Profile>,
     /// Project directory (absolute, symlinks resolved) → the profile `mcc run`
@@ -43,12 +47,28 @@ pub struct SyncConfig {
     pub extra: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PrivacyConfig {
+    /// Show account emails in `mcc list` and `mcc usage` (hidden by default;
+    /// `--show-email` / `--hide-email` override it for one run). Unset
+    /// means hidden; read it with [`Config::show_email`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_email: Option<bool>,
+}
+
+impl PrivacyConfig {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UsageConfig {
-    /// Show each profile's account email in `mcc usage` (hidden by default;
-    /// `--show-email` / `--hide-email` override it for one run).
-    #[serde(default)]
-    pub show_email: bool,
+    /// The setting's old home, `[usage] show_email`, still read: [`Config::load`]
+    /// moves `true` to `[privacy]`, and a `false` loads the same as unset.
+    /// Never written.
+    #[serde(default, skip_serializing)]
+    pub show_email: Option<bool>,
     /// Look usage up live: read each profile's OAuth token and ask
     /// Anthropic's usage endpoint. Off by default, which reads only the
     /// rate limits `mcc statusline` caches. Left out of the file while off,
@@ -330,7 +350,7 @@ impl Config {
         }
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        toml::from_str(&text).map_err(|e| {
+        let mut cfg: Self = toml::from_str(&text).map_err(|e| -> anyhow::Error {
             CliError::input(format!(
                 "{} is not valid mcc config: {}",
                 path.display(),
@@ -338,7 +358,19 @@ impl Config {
             ))
             .hint("fix the file by hand, or move it away and run `mcc init --force`".to_string())
             .into()
-        })
+        })?;
+        // `[usage] show_email = true` from before `[privacy]`: honored, and
+        // moved to `[privacy]` by the next save. `[privacy]` wins when set.
+        if cfg.usage.show_email.take() == Some(true) && cfg.privacy.show_email.is_none() {
+            cfg.privacy.show_email = Some(true);
+        }
+        Ok(cfg)
+    }
+
+    /// Whether account emails are shown (`[privacy] show_email`; hidden by
+    /// default).
+    pub fn show_email(&self) -> bool {
+        self.privacy.show_email.unwrap_or(false)
     }
 
     /// Write the config to `path`, merged into the file already there so
@@ -570,7 +602,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         let mut cfg = Config::default();
         cfg.sync.exclude = vec!["plugins".into()];
-        cfg.usage.show_email = true;
+        cfg.privacy.show_email = Some(true);
         cfg.profiles.insert(
             "work".into(),
             Profile {
@@ -594,7 +626,7 @@ mod tests {
         let back = Config::load(&path).unwrap();
         assert_eq!(back.profiles, cfg.profiles);
         assert_eq!(back.sync.exclude, vec!["plugins".to_string()]);
-        assert!(back.usage.show_email);
+        assert!(back.show_email());
     }
 
     /// A config written before session sharing existed: loads with sharing
@@ -779,16 +811,16 @@ mod tests {
     fn save_keeps_inline_tables() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        std::fs::write(&path, "usage = { show_email = false }\n").unwrap();
+        std::fs::write(&path, "privacy = { show_email = false }\n").unwrap();
         let mut cfg = Config::load(&path).unwrap();
-        cfg.usage.show_email = true;
+        cfg.privacy.show_email = Some(true);
         cfg.save(&path).unwrap();
         let after = std::fs::read_to_string(&path).unwrap();
         assert!(
-            after.starts_with("usage = { show_email = true }\n"),
+            after.starts_with("privacy = { show_email = true }\n"),
             "{after}"
         );
-        assert!(Config::load(&path).unwrap().usage.show_email);
+        assert!(Config::load(&path).unwrap().show_email());
     }
 
     /// Issue #34: a hand-written `live = false` and its comment survive a
@@ -799,11 +831,11 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(
             &path,
-            "[usage]\nshow_email = false\n# off for privacy\nlive = false\n",
+            "[privacy]\nshow_email = false\n\n[usage]\n# off for privacy\nlive = false\n",
         )
         .unwrap();
         let mut cfg = Config::load(&path).unwrap();
-        cfg.usage.show_email = true;
+        cfg.privacy.show_email = Some(true);
         cfg.save(&path).unwrap();
         let after = std::fs::read_to_string(&path).unwrap();
         assert!(after.contains("show_email = true\n"), "{after}");
@@ -1038,9 +1070,46 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "[sync]\nexclude = []\n").unwrap();
-        assert!(!Config::load(&path).unwrap().usage.show_email);
+        assert!(!Config::load(&path).unwrap().show_email());
+        std::fs::write(&path, "[privacy]\nshow_email = true\n").unwrap();
+        assert!(Config::load(&path).unwrap().show_email());
+    }
+
+    /// Issue #57: `[usage] show_email`, the setting's old home, still works,
+    /// and a save moves `true` to `[privacy]`; `[privacy]` wins when both
+    /// are set.
+    #[test]
+    fn legacy_usage_show_email_moves_to_privacy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
         std::fs::write(&path, "[usage]\nshow_email = true\n").unwrap();
-        assert!(Config::load(&path).unwrap().usage.show_email);
+        let cfg = Config::load(&path).unwrap();
+        assert!(cfg.show_email());
+        cfg.save(&path).unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.contains("[privacy]\nshow_email = true\n"), "{after}");
+        assert!(!after.contains("[usage]\nshow_email"), "{after}");
+        assert!(Config::load(&path).unwrap().show_email());
+
+        // A legacy `false` is the default: it is kept, and no `[privacy]`
+        // table is added.
+        std::fs::write(&path, "[usage]\nshow_email = false\n").unwrap();
+        let cfg = Config::load(&path).unwrap();
+        assert!(!cfg.show_email());
+        cfg.save(&path).unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            after.starts_with("[usage]\nshow_email = false\n"),
+            "{after}"
+        );
+        assert!(!after.contains("privacy"), "{after}");
+
+        std::fs::write(
+            &path,
+            "[usage]\nshow_email = true\n\n[privacy]\nshow_email = false\n",
+        )
+        .unwrap();
+        assert!(!Config::load(&path).unwrap().show_email());
     }
 
     #[test]

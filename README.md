@@ -44,7 +44,7 @@ Claude Code reads its config from `CLAUDE_CONFIG_DIR`, which defaults to `~/.cla
 
 - **First-run detection.** mcc detects your OS, terminal, shell (zsh, bash, fish) and the right rc file, so new commands work in your shell.
 - **`add`.** If `~/.claude` doesn't exist yet, `add` creates your default profile. Otherwise it asks for an alias and checks that the name isn't already taken by a command, alias, function, shell builtin, or existing profile. You then either **clone** the default's setup (without credentials) or start **fresh**, and the new profile's login opens.
-- **`list`.** One row per profile: command, account, 5-hour and weekly usage (with a usage bar), skills, agents, commands, plugins (enabled/installed), MCP servers, hooks, size, last used, last sync, and a `SYNC` column saying how the profile compares with the default (`✓`, `3 behind`, `2 local edits`, `1 conflict`). Profiles that share sessions are marked `(shared)`, and a hint names `mcc refresh-launchers` while a launcher is out of date. A second table lists your projects and the profile (and account) `mcc run` starts in each. `--long` and `--json` give more detail.
+- **`list`.** One row per profile, in a table that fits 120 columns: account (label or organization; emails are hidden unless you ask for them), 5-hour and weekly usage (with a usage bar), last used, and a `SYNC` column saying how the profile compares with the default (`✓`, `3 behind`, `2 local edits`, `1 conflict`). Profiles that share sessions are marked `(shared)`, and a hint names `mcc refresh-launchers` while a launcher is out of date. A second table lists your projects and the profile (and account) `mcc run` starts in each. `--long` adds the command, skills, agents, commands, plugins, MCP servers, hooks, size and last sync; `--json` has everything.
 - **`usage`.** Every profile's 5-hour and weekly limits in one compact table: a usage bar with the percent used, time until reset and the reset time. Near-limit accounts stand out with `!` / `!!` markers and colour. Account emails are hidden unless you ask for them. `--json` for scripts.
 - **`rename`.** Gives a profile a new name, and with it a new command. The new name is checked like an alias in `add`. The profile's directory, login and setup stay as they are.
 - **`sync`.** A one-way copy of setup from the default profile into a profile, with `--dry-run`, `--prune`, `--only`, and `--all`.
@@ -104,7 +104,7 @@ mcc delete job              # remove it completely
 |---|---|---|
 | `mcc init` | Detect OS, arch, terminal, shell, rc file, the `claude` binary, and whether `~/.local/bin` is on PATH (and offer to add it) | `--force`, `--shell zsh\|bash\|fish` |
 | `mcc add [ALIAS]` | Create the default profile, or a new profile with its own command; records the account and its organization, warns when another profile already uses that account, and asks for an optional label. A clone shares the default's plugins instead of copying them | `--clone`, `--fresh`, `--link ITEMS`, `--copy-plugins`, `--no-login`, `--label LABEL`, `-y` |
-| `mcc list` (`ls`) | Show every profile with metrics and 5-hour/weekly usage | `--json`, `--json-v2`, `-l/--long`, `--no-usage` |
+| `mcc list` (`ls`) | Show every profile with its account, 5-hour/weekly usage and sync state in a table that fits 120 columns; `--long` adds every metric | `--json`, `--json-v2`, `-l/--long`, `--no-usage`, `--show-email`, `--hide-email` |
 | `mcc usage [PROFILE]` | Show each profile's 5-hour and weekly usage in a table (`default` or `claude` for the default profile) | `--json`, `--json-v2`, `--show-email`, `--hide-email` |
 | `mcc sync [ALIAS]` | Copy the default's setup into a profile (default → profile only), keeping edits made in the profile | `--all`, `--dry-run`, `--prune`, `--force`, `--only ITEMS`, `-y` |
 | `mcc diff ALIAS` | Show how a profile differs from the default's setup, path by path, as `sync` classifies it | `--only ITEMS` |
@@ -132,7 +132,7 @@ mcc add                               # interactive: asks for the alias and clon
 mcc add lab --fresh --no-login        # empty profile; log in later by running `lab`
 mcc add side --clone --label personal # label the account instead of being asked
 mcc list --long                       # one detailed card per profile
-mcc list --json | jq '.[] | {name, account, skills, plugins_installed}'
+mcc list --json --show-email | jq '.[] | {name, account, skills, plugins_installed}'
 mcc list --json | jq '.[] | {name, organization, organization_uuid, label}'
 mcc list --json | jq '.[] | {name, five_hour: .usage.five_hour.percent, weekly: .usage.weekly.percent}'
 mcc list --json | jq '.[] | {name, project_defaults}'   # the projects each profile starts in
@@ -242,7 +242,7 @@ mcc config edit                                   # open the file in $VISUAL or 
 mcc config path                                   # print the file's path
 ```
 
-`set` accepts `sync.exclude`, `sync.extra`, `usage.show_email`, `usage.live` and `profiles.ALIAS.label`, and checks each value as the command that uses it would: an unknown sync item, a path outside the config dir, a value that isn't `true` or `false`, or an invalid label is refused with exit 2 or 3, and the file is left unchanged. Keys that other commands manage point you to them (`mcc share`, `mcc link`, `mcc project`, `mcc init --force`). `get` reads any key, dotted as in TOML (`projects."/Users/me/app".profile`); a key that isn't set exits 1. Comments and formatting are kept.
+`set` accepts `sync.exclude`, `sync.extra`, `privacy.show_email` (also under its old name, `usage.show_email`), `usage.live` and `profiles.ALIAS.label`, and checks each value as the command that uses it would: an unknown sync item, a path outside the config dir, a value that isn't `true` or `false`, or an invalid label is refused with exit 2 or 3, and the file is left unchanged. Keys that other commands manage point you to them (`mcc share`, `mcc link`, `mcc project`, `mcc init --force`). `get` reads any key, dotted as in TOML (`projects."/Users/me/app".profile`); a key that isn't set exits 1. Comments and formatting are kept.
 
 `edit` opens a copy of the file and saves it only when it is valid mcc config (it parses, and sync items, `link` items, labels and `share_group` names pass the same checks); otherwise it offers to edit again, or leaves the file unchanged. mcc holds no lock while the editor is open, so other mcc commands, launches included, keep working; if one of them changes the file meanwhile, nothing is saved and your edited copy is kept next to it. `edit` also works on a file that no longer parses, so it can fix one. `get` and `path` never take the lock; `set` holds it like any other write.
 
@@ -330,14 +330,16 @@ ANTHROPIC_DEFAULT_SONNET_MODEL = "claude-sonnet-5"
 - **Status line.** An overlay `statusLine` replaces the default's, the `mcc statusline` shim included, so that profile's rate limits are no longer cached. To keep the shim with a profile-specific command, leave `statusLine` out of the overlay, or exclude `settings` and use `mcc statusline install`, which wraps each profile's own `statusLine`. `mcc sync` warns when an overlay replaces the shim this way.
 - `settings.mcc.json` belongs to its profile: it is never copied, pruned or backed up by sync, and a `[sync] extra` entry naming it is rejected. An overlay that isn't a JSON object, or a default `settings.json` that isn't valid JSON while an overlay is set, stops the sync before anything is written.
 
-### Showing account emails in `mcc usage`
+### Showing account emails
 
-Also in `~/.mcc/config.toml` (emails are hidden by default):
+`mcc list` and `mcc usage` hide account emails by default, so their output is safe to share on screen. To show them every time, set in `~/.mcc/config.toml` (or `mcc config set privacy.show_email true`):
 
 ```toml
-[usage]
+[privacy]
 show_email = true
 ```
+
+`--show-email` and `--hide-email` override it for one run. `show_email` under `[usage]`, where mcc 0.3 and earlier read it, still works: `true` there is moved to `[privacy]` the next time mcc saves the config, and `[privacy]` wins when both are set.
 
 ### Live usage lookup (opt-in)
 
@@ -493,22 +495,22 @@ organization_uuid = "…"
 recorded_at = "2026-10-20T09:00:00+02:00"
 ```
 
-`mcc list` shows the organization in its `ORG` column; `--long` adds `Organization ID` and `Label` rows, and `--json` has `organization`, `organization_uuid` and `label` per profile. What the profile's `.claude.json` says now wins over what was recorded. Profiles added before mcc recorded accounts, or with `--no-login`, have no `account` table and show only what `.claude.json` says.
+`mcc list` shows the label in its `ACCOUNT` column, else the organization; `--long` shows the organization in its `Account` row and adds `Organization ID` and `Label` rows, and `--json` has `organization`, `organization_uuid` and `label` per profile. What the profile's `.claude.json` says now wins over what was recorded. Profiles added before mcc recorded accounts, or with `--no-login`, have no `account` table and show only what `.claude.json` says.
 
 ### Usage limits: `mcc list` and `mcc usage`
 
-The `5H` and `WEEK` columns of `mcc list` show how much of each account's 5-hour and weekly limit is used, and how long until it resets, for every profile including the default. `UPDATED` says how old those numbers are:
+The `5H` and `WEEK` columns of `mcc list` show how much of each account's 5-hour and weekly limit is used, and how long until it resets, for every profile including the default. The table keeps to what fits 120 columns: `NAME`, `ACCOUNT` (the profile's label, else its organization; the email comes first only when [emails are shown](#showing-account-emails), and a long cell is cut with `…`), `5H`, `WEEK`, `LAST USED` and `SYNC`. Bars shrink when the terminal is narrower than the table:
 
 ```console
-NAME       COMMAND  ACCOUNT         ORG   5H                     WEEK                   UPDATED  SKILLS  …
-default ★  claude   me@example.com  —     ████░░░░░░ 42% (2h)    ██░░░░░░░░ 18% (3d)    12m ago       2  …
-work       work     work@corp.com   Corp  █████████░ 85%! (35m)  ██████████ 96%!! (3d)  just now      2  …
-lab        lab      —               —     —                      —                      —             0  …
+NAME       ACCOUNT   5H                     WEEK                   LAST USED  SYNC
+default ★  Acme      ████░░░░░░ 42% (2h)    ██░░░░░░░░ 18% (3d)    just now   —
+work       personal  █████████░ 85%! (35m)  ██████████ 96%!! (3d)  2h ago     ✓
+lab        —         —                      —                      1d ago     3 behind
 ```
 
-`mcc list --long` spells it out (`5h usage: ████████░░░░░░░░░░░░ 42% (resets in 2h 14m)`, `Usage updated: 12m ago (statusline cache)`), or says why there is none (`Usage: — (no recent usage cached; run /usage in Claude Code)`).
+`mcc list --long` has the rest: the command, the organization, the counts of skills, agents, commands, plugins, MCP servers and hooks, the size, and how old cached usage is. It spells usage out (`5h usage: ████████░░░░░░░░░░░░ 42% (resets in 2h 14m)`, `Usage updated: 12m ago (statusline cache)`), or says why there is none (`Usage: — (no recent usage cached; run /usage in Claude Code)`).
 
-`mcc usage` shows only usage, as a compact table with one row per profile: for each window a bar with the percent used, the time until it resets, and the reset time in your local time zone. `mcc usage work` shows one profile (`mcc usage default` for `~/.claude`); an unknown name is a usage error (exit 2). Account emails are hidden by default, so the output is safe to share on screen; `--show-email` adds an `ACCOUNT` column for one run, and `show_email = true` under `[usage]` in `~/.mcc/config.toml` shows it every time (`--hide-email` then hides it again).
+`mcc usage` shows only usage, as a compact table with one row per profile: for each window a bar with the percent used, the time until it resets, and the reset time in your local time zone. `mcc usage work` shows one profile (`mcc usage default` for `~/.claude`); an unknown name is a usage error (exit 2). Account emails are hidden by default, so the output is safe to share on screen; `--show-email` adds an `ACCOUNT` column for one run, and `show_email = true` under `[privacy]` in `~/.mcc/config.toml` shows it every time (`--hide-email` then hides it again). The same setting applies to `mcc list`.
 
 ```console
 $ mcc usage
@@ -527,7 +529,7 @@ work       █████████░ 85%!  35m (Sat Oct 10 14:21)     █�
 - **Tokens stay private.** With the live lookup, the access token is only sent to that endpoint, for its own profile. It is never printed, logged, or written anywhere. mcc never refreshes tokens: if a login has expired, start the profile in Claude Code once (`work`, `claude`, …) and it refreshes itself.
 - **Turn it off** with `mcc list --no-usage` or `MCC_NO_USAGE=1` (which also applies to `mcc usage` and `mcc run`); usage then shows `—` and nothing reads the cache, the network or the keychain.
 
-In `mcc list --json`, every profile has a `usage` object. `mcc usage --json` prints one object per profile with `name`, `command`, `is_default`, `account` (`null` when logged out, or when emails are hidden, as they are by default since v0.2.0; scripts that read `account` need `--show-email` or `[usage] show_email = true`) and the same `usage` object:
+In `mcc list --json`, every profile has a `usage` object. `mcc usage --json` prints one object per profile with `name`, `command`, `is_default`, `account` (`null` when logged out, or when emails are hidden, as they are by default since v0.2.0; scripts that read `account` need `--show-email` or `[privacy] show_email = true`) and the same `usage` object. `mcc list --json` and `--json-v2` keep `account` the same way: `null` while emails are hidden, as is an `organization` whose name contains the email (personal plans are named after it); the fields are never left out:
 
 ```json
 "usage": {

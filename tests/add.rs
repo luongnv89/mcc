@@ -430,7 +430,7 @@ fn records_account_organization_and_label() {
     // oauthAccount into the profile's state file).
     let out = sb
         .mcc()
-        .args(["list", "--json", "--no-usage"])
+        .args(["list", "--json", "--no-usage", "--show-email"])
         .assert()
         .success()
         .get_output()
@@ -452,8 +452,15 @@ fn records_account_organization_and_label() {
         .args(["list", "--no-usage"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("ORG"))
-        .stdout(predicate::str::is_match(r"work\s+work\s+dev@acme\.test\s+Acme").unwrap());
+        .stdout(predicate::str::is_match(r"(?m)^work\s+Acme \(work\)\s").unwrap())
+        .stdout(predicate::str::contains("dev@acme.test").not());
+    sb.mcc()
+        .args(["list", "--no-usage", "--show-email"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::is_match(r"(?m)^work\s+dev@acme\.test \(Acme \(work\)\)\s").unwrap(),
+        );
     sb.mcc()
         .args(["list", "--long", "--no-usage"])
         .assert()
@@ -496,7 +503,7 @@ fn state_file_account_wins_over_the_recorded_one() {
     );
     let out = sb
         .mcc()
-        .args(["list", "--json", "--no-usage"])
+        .args(["list", "--json", "--no-usage", "--show-email"])
         .assert()
         .success()
         .get_output()

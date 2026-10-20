@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use common::{
     HOUR_MS, REFUSED_URL, Sandbox, UsageStub, by_name, enable_live_usage, json, now_ms, rfc3339_in,
-    stdout_of, usage_sandbox, usage_stub, with_profile,
+    seed_usage_cache, stdout_of, usage_sandbox, usage_stub, with_profile,
 };
 use predicates::prelude::*;
 
@@ -35,7 +35,8 @@ fn list_json_reports_metrics() {
     let d = &arr[0];
     assert_eq!(d["command"], "claude");
     assert_eq!(d["is_default"], true);
-    assert_eq!(d["account"], "me@example.com");
+    // Emails are hidden by default (issue #57).
+    assert!(d["account"].is_null(), "{d}");
     assert_eq!(d["organization"], "Acme");
     assert_eq!(d["skills"], 2);
     assert_eq!(d["agents"], 1);
@@ -68,20 +69,152 @@ fn list_table_and_long() {
         .assert()
         .success()
         .stdout(
-            predicate::str::is_match(r"(?m)^NAME\s+COMMAND\s+ACCOUNT\s+ORG\s+5H\s+WEEK\s+SKILLS")
+            predicate::str::is_match(r"(?m)^NAME\s+ACCOUNT\s+5H\s+WEEK\s+LAST USED\s+SYNC$")
                 .unwrap(),
         )
-        .stdout(predicate::str::is_match(r"(?m)^default ★\s+claude\s+me@example.com").unwrap())
-        .stdout(predicate::str::is_match(r"(?m)^work\s+work\s+").unwrap())
+        .stdout(predicate::str::is_match(r"(?m)^default ★\s+Acme\s").unwrap())
+        .stdout(predicate::str::contains("me@example.com").not())
+        .stdout(predicate::str::is_match(r"(?m)^work\s+").unwrap())
         .stderr(predicate::str::contains("2 profiles"));
     sb.mcc()
         .args(["list", "--long"])
         .assert()
         .success()
+        .stdout(predicate::str::contains("Command:         claude"))
+        .stdout(predicate::str::is_match(r"Skills:\s+2").unwrap())
+        .stdout(predicate::str::is_match(r"Agents:\s+1").unwrap())
+        .stdout(predicate::str::is_match(r"Commands:\s+1").unwrap())
+        .stdout(predicate::str::is_match(r"MCP servers:\s+1").unwrap())
+        .stdout(predicate::str::is_match(r"Hooks:\s+1").unwrap())
+        .stdout(predicate::str::contains("Size:"))
         .stdout(predicate::str::is_match(r"Plugins:\s+1 enabled / 2 installed").unwrap())
         .stdout(predicate::str::is_match(r"Projects:\s+1 \(1 sessions\)").unwrap())
         .stdout(predicate::str::contains("Last sync:"));
     sb.mcc().args(["list", "--json", "--long"]).assert().code(2);
+}
+
+/// Issue #57: `mcc list` hides account emails by default, like `mcc usage`,
+/// in every output; `--show-email` shows them for one run. An organization
+/// named after the email (as personal plans' are) is hidden with it.
+#[test]
+fn list_hides_emails_unless_asked() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    with_profile(&sb, "solo", "--fresh");
+    sb.write(
+        ".mcc/profiles/solo/.claude.json",
+        r#"{"oauthAccount":{"emailAddress":"solo@example.com","organizationName":"solo@example.com's Organization"}}"#,
+    );
+    let list = |args: &[&str]| stdout_of(sb.mcc().arg("list").arg("--no-usage").args(args));
+
+    let table = list(&[]);
+    assert!(!table.contains('@'), "{table}");
+    assert!(
+        regex::Regex::new(r"(?m)^default ★\s+Acme\s")
+            .unwrap()
+            .is_match(&table),
+        "{table}"
+    );
+    assert!(
+        regex::Regex::new(r"(?m)^solo\s+—\s")
+            .unwrap()
+            .is_match(&table),
+        "{table}"
+    );
+    let long = list(&["--long"]);
+    assert!(!long.contains('@'), "{long}");
+    assert!(
+        long.contains("Account:         Acme (email hidden; --show-email shows it)"),
+        "{long}"
+    );
+    assert!(
+        long.contains("Account:         email hidden (--show-email shows it)"),
+        "{long}"
+    );
+    for args in [&["--json"][..], &["--json-v2"]] {
+        let out = list(args);
+        assert!(!out.contains('@'), "{out}");
+        let v = json(out.as_bytes());
+        let arr = v.get("profiles").unwrap_or(&v).as_array().unwrap();
+        // The fields stay, null (the schema only ever adds fields).
+        let d = by_name(arr, "default");
+        assert!(d["account"].is_null(), "{d}");
+        assert_eq!(d["organization"], "Acme");
+        let s = by_name(arr, "solo");
+        assert!(s.get("account").is_some_and(|a| a.is_null()), "{s}");
+        assert!(s.get("organization").is_some_and(|o| o.is_null()), "{s}");
+    }
+
+    let shown = list(&["--show-email"]);
+    assert!(shown.contains("me@example.com (Acme)"), "{shown}");
+    // Long cells are cut to keep the table narrow.
+    assert!(
+        shown.contains("solo@example.com (solo@example.…"),
+        "{shown}"
+    );
+    let v = json(list(&["--json-v2", "--show-email"]).as_bytes());
+    assert_eq!(
+        by_name(v["profiles"].as_array().unwrap(), "default")["account"],
+        "me@example.com"
+    );
+    assert!(list(&["--long", "--show-email"]).contains("Account:         me@example.com (Acme)"));
+}
+
+/// Issue #56: the default table has NAME · ACCOUNT · 5H · WEEK · LAST USED
+/// · SYNC, and fits 120 columns even with long values.
+#[test]
+fn list_default_table_fits_120_columns() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    let alias = "acme-enterprise-prod";
+    with_profile(&sb, alias, "--clone");
+    sb.write(
+        &format!(".mcc/profiles/{alias}/.claude.json"),
+        r#"{"oauthAccount":{"emailAddress":"firstname.lastname@acme-enterprise.example.com","organizationName":"Acme Enterprise Holdings International"}}"#,
+    );
+    sb.mcc()
+        .args([
+            "config",
+            "set",
+            &format!("profiles.{alias}.label"),
+            "Acme Enterprise (production)",
+        ])
+        .assert()
+        .success();
+    for name in ["default", alias] {
+        seed_usage_cache(
+            &sb,
+            name,
+            Some((96.0, 4 * 3600)),
+            Some((99.5, 6 * 86400)),
+            60,
+        );
+    }
+    // Drift: 3 items behind, and local edits.
+    sb.write(".claude/agents/reviewer.md", "agent v2");
+    sb.write(".claude/commands/deploy.md", "cmd v2");
+    sb.write(".claude/skills/gamma/SKILL.md", "new");
+    sb.write(&format!(".mcc/profiles/{alias}/CLAUDE.md"), "# mine\n");
+    sb.write(&format!(".mcc/profiles/{alias}/hooks/notify.sh"), "mine");
+
+    for email in ["--hide-email", "--show-email"] {
+        let table = stdout_of(sb.mcc().env("COLUMNS", "120").args(["list", email]));
+        let lines: Vec<&str> = table.lines().collect();
+        assert_eq!(
+            lines[0].split_whitespace().collect::<Vec<_>>(),
+            ["NAME", "ACCOUNT", "5H", "WEEK", "LAST", "USED", "SYNC"],
+            "{table}"
+        );
+        let row = lines.iter().find(|l| l.starts_with(alias)).expect(&table);
+        assert!(
+            row.contains("96%!!") && row.contains("3 behind, "),
+            "{table}"
+        );
+        for l in &lines {
+            let w = console::measure_text_width(l);
+            assert!(w <= 120, "{w} columns: {l}\n{table}");
+        }
+    }
 }
 
 #[test]
@@ -149,14 +282,10 @@ fn list_shows_usage_for_every_profile() {
             "{re}\n{table}"
         )
     };
-    has(r"(?m)^NAME\s+COMMAND\s+ACCOUNT\s+ORG\s+5H\s+WEEK\s+SKILLS");
-    has(
-        r"(?m)^default ★\s+claude\s+me@example\.com\s+Acme\s+████░░░░░░ 42% \(2h\)\s+██░░░░░░░░ 18% \(3d\)\s+2\s",
-    );
-    has(
-        r"(?m)^work\s+work\s+fake@example\.com\s+—\s+█░░░░░░░░░ 7% \(2h\)\s+██████░░░░ 64% \(3d\)\s",
-    );
-    has(r"(?m)^lab\s+lab\s+fake@example\.com\s+—\s+unavailable\s+unavailable\s");
+    has(r"(?m)^NAME\s+ACCOUNT\s+5H\s+WEEK\s+LAST USED\s+SYNC$");
+    has(r"(?m)^default ★\s+Acme\s+████░░░░░░ 42% \(2h\)\s+██░░░░░░░░ 18% \(3d\)\s");
+    has(r"(?m)^work\s+—\s+█░░░░░░░░░ 7% \(2h\)\s+██████░░░░ 64% \(3d\)\s");
+    has(r"(?m)^lab\s+—\s+unavailable\s+unavailable\s");
 
     let long = stdout_of(
         sb.mcc()
@@ -198,10 +327,8 @@ fn list_usage_unavailable_offline_still_succeeds() {
         .assert()
         .success()
         .stdout(
-            predicate::str::is_match(
-                r"(?m)^default ★\s+claude\s+me@example\.com\s+Acme\s+unavailable\s+unavailable\s",
-            )
-            .unwrap(),
+            predicate::str::is_match(r"(?m)^default ★\s+Acme\s+unavailable\s+unavailable\s")
+                .unwrap(),
         )
         .stderr(predicate::str::contains("unavailable").not())
         .stderr(predicate::str::contains("3 profiles"));
@@ -310,12 +437,7 @@ fn list_no_usage_skips_the_fetch() {
         .arg("list")
         .assert()
         .success()
-        .stdout(
-            predicate::str::is_match(
-                r"(?m)^default ★\s+claude\s+me@example\.com\s+Acme\s+—\s+—\s+2\s",
-            )
-            .unwrap(),
-        )
+        .stdout(predicate::str::is_match(r"(?m)^default ★\s+Acme\s+—\s+—\s").unwrap())
         .stdout(predicate::str::contains("unavailable").not());
     sb.mcc()
         .env("MCC_USAGE_URL", &stub.url)
@@ -474,9 +596,11 @@ fn list_marks_near_limit_usage() {
     let (sb, stub) = near_limit();
     let table = stdout_of(sb.mcc().env("MCC_USAGE_URL", &stub.url).arg("list"));
     assert!(
-        regex::Regex::new(r"(?m)^default ★\s+claude\s+me@example\.com\s+Acme\s+█████████░ 85%! \(2h\)\s+██████████ 96%!! \(3d\)\s")
-            .unwrap()
-            .is_match(&table),
+        regex::Regex::new(
+            r"(?m)^default ★\s+Acme\s+█████████░ 85%! \(2h\)\s+██████████ 96%!! \(3d\)\s"
+        )
+        .unwrap()
+        .is_match(&table),
         "{table}"
     );
     let long = stdout_of(
@@ -508,11 +632,9 @@ fn list_drops_bars_in_narrow_terminals() {
     };
     let narrow = list("40", &["list"]);
     assert!(
-        regex::Regex::new(
-            r"(?m)^default ★\s+claude\s+me@example\.com\s+Acme\s+42% \(2h\)\s+18% \(3d\)\s+2\s"
-        )
-        .unwrap()
-        .is_match(&narrow),
+        regex::Regex::new(r"(?m)^default ★\s+Acme\s+42% \(2h\)\s+18% \(3d\)\s")
+            .unwrap()
+            .is_match(&narrow),
         "{narrow}"
     );
     let long = list("40", &["list", "--long"]);
@@ -523,11 +645,11 @@ fn list_drops_bars_in_narrow_terminals() {
     for out in [&narrow, &long] {
         assert!(!out.contains('█') && !out.contains('░'), "{out}");
     }
-    // From 80 columns the table keeps a compact bar even when it wraps.
+    // 120 columns fit the full bars (issue #56).
     let medium = list("120", &["list"]);
     assert!(
         regex::Regex::new(
-            r"(?m)^default ★\s+claude\s+me@example\.com\s+Acme\s+██░░░ 42% \(2h\)\s+█░░░░ 18% \(3d\)\s"
+            r"(?m)^default ★\s+Acme\s+████░░░░░░ 42% \(2h\)\s+██░░░░░░░░ 18% \(3d\)\s"
         )
         .unwrap()
         .is_match(&medium),
