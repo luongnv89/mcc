@@ -226,7 +226,7 @@ fn table(out: &mut impl Write, all: &[ProfileMetrics]) -> Result<()> {
 /// came from the statusline cache.
 fn table_lines(all: &[ProfileMetrics], bar: usize, now: DateTime<Utc>) -> Vec<String> {
     let cached = all.iter().any(|m| m.usage.updated_at.is_some());
-    let mut headers = vec!["NAME", "COMMAND", "ACCOUNT", "5H", "WEEK"];
+    let mut headers = vec!["NAME", "COMMAND", "ACCOUNT", "ORG", "5H", "WEEK"];
     if cached {
         headers.push("UPDATED");
     }
@@ -263,6 +263,7 @@ fn table_lines(all: &[ProfileMetrics], bar: usize, now: DateTime<Utc>) -> Vec<St
                 name,
                 m.command.clone(),
                 m.account.clone().unwrap_or_else(|| "—".into()),
+                m.organization.clone().unwrap_or_else(|| "—".into()),
                 usage_cell(&m.usage, m.usage.five_hour.as_ref(), bar, now),
                 usage_cell(&m.usage, m.usage.weekly.as_ref(), bar, now),
             ];
@@ -420,6 +421,12 @@ fn card(
             _ => "— (no account info yet; log in by running the command)".into(),
         },
     )?;
+    if let Some(uuid) = &m.organization_uuid {
+        row(out, "Organization ID", uuid.clone())?;
+    }
+    if let Some(label) = &m.label {
+        row(out, "Label", label.clone())?;
+    }
     for (k, v) in usage_rows(&m.usage, bar, now) {
         row(out, k, v)?;
     }

@@ -105,7 +105,7 @@ pub enum Command {
 
     /// Add a Claude Code profile (creates the default one if ~/.claude is missing)
     #[command(
-        after_help = "Examples:\n  mcc add                       Interactive: asks for alias and setup\n  mcc add work --clone          Copy the default's setup (no credentials), then log in\n  mcc add lab --fresh --no-login\n\nAfter it finishes, start the profile with its alias, e.g. `work`."
+        after_help = "Examples:\n  mcc add                       Interactive: asks for alias and setup\n  mcc add work --clone          Copy the default's setup (no credentials), then log in\n  mcc add lab --fresh --no-login\n  mcc add side --clone --label personal\n\nAfter logging in, mcc records the account's email and organization under\n[profiles.ALIAS.account] in ~/.mcc/config.toml (shown by `mcc list`) and\nwarns when another profile is already logged in to the same account. It\nthen asks for an optional label, such as \"personal\" or the work\norganization; --label sets it without asking, and -y skips it.\n\nAfter it finishes, start the profile with its alias, e.g. `work`."
     )]
     Add(AddArgs),
 
@@ -254,6 +254,10 @@ pub struct AddArgs {
     /// Skip `claude auth login` (log in later by running the alias)
     #[arg(long)]
     pub no_login: bool,
+
+    /// Label the account, e.g. "personal" or the work organization (asked if omitted)
+    #[arg(long, value_name = "LABEL")]
+    pub label: Option<String>,
 
     /// Accept defaults without prompting
     #[arg(short, long)]

@@ -760,6 +760,8 @@ mod tests {
                 last_sync: None,
                 share_sessions: false,
                 share_note_acknowledged_at: None,
+                label: None,
+                account: None,
             },
         );
         let f = |d: Option<&str>| profile_for(&p, &cfg, d.map(OsStr::new));

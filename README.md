@@ -103,7 +103,7 @@ mcc delete job              # remove it completely
 | Command | What it does | Key options |
 |---|---|---|
 | `mcc init` | Detect OS, arch, terminal, shell, rc file, the `claude` binary, and whether `~/.local/bin` is on PATH (and offer to add it) | `--force`, `--shell zsh\|bash\|fish` |
-| `mcc add [ALIAS]` | Create the default profile, or a new profile with its own command | `--clone`, `--fresh`, `--no-login`, `-y` |
+| `mcc add [ALIAS]` | Create the default profile, or a new profile with its own command; records the account and its organization, warns when another profile already uses that account, and asks for an optional label | `--clone`, `--fresh`, `--no-login`, `--label LABEL`, `-y` |
 | `mcc list` (`ls`) | Show every profile with metrics and 5-hour/weekly usage | `--json`, `-l/--long`, `--no-usage` |
 | `mcc usage [PROFILE]` | Show each profile's 5-hour and weekly usage in a table (`default` or `claude` for the default profile) | `--json`, `--show-email`, `--hide-email` |
 | `mcc sync [ALIAS]` | Copy the default's setup into a profile (default → profile only) | `--all`, `--dry-run`, `--prune`, `--only ITEMS`, `-y` |
@@ -124,8 +124,10 @@ Global flags: `-v/--verbose`, `-q/--quiet`, `--no-color` (mcc also honors `NO_CO
 ```sh
 mcc add                               # interactive: asks for the alias and clone/fresh
 mcc add lab --fresh --no-login        # empty profile; log in later by running `lab`
+mcc add side --clone --label personal # label the account instead of being asked
 mcc list --long                       # one detailed card per profile
 mcc list --json | jq '.[] | {name, account, skills, plugins_installed}'
+mcc list --json | jq '.[] | {name, organization, organization_uuid, label}'
 mcc list --json | jq '.[] | {name, five_hour: .usage.five_hour.percent, weekly: .usage.weekly.percent}'
 mcc list --json | jq '.[] | {name, project_defaults}'   # the projects each profile starts in
 mcc list --no-usage                   # offline: skip the usage lookup
@@ -313,15 +315,32 @@ profile = "work"  # an mcc profile, or "default" for ~/.claude
 allow = ["lab"]   # optional: other profiles `mcc run` may offer at the limit
 ```
 
+### Accounts, organizations and labels
+
+After `mcc add` logs a profile in, it records the account under `[profiles.<alias>.account]` in `~/.mcc/config.toml`: its email, Claude Code's account UUID, and its organization's name and UUID, each when Claude Code reports it. If another profile (the default included) is already logged in to the same account, `mcc add` warns: profiles on one account share its usage limits, so this is usually a mistake. It then asks for an optional label, such as `personal` or the account's organization; `--label LABEL` sets it without asking, and `-y` or a non-interactive run skips it.
+
+```toml
+[profiles.work]
+label = "Corp (work)"
+
+[profiles.work.account]
+email = "work@corp.com"
+organization = "Corp"
+organization_uuid = "…"
+recorded_at = "2026-10-20T09:00:00+02:00"
+```
+
+`mcc list` shows the organization in its `ORG` column; `--long` adds `Organization ID` and `Label` rows, and `--json` has `organization`, `organization_uuid` and `label` per profile. What the profile's `.claude.json` says now wins over what was recorded. Profiles added before mcc recorded accounts, or with `--no-login`, have no `account` table and show only what `.claude.json` says.
+
 ### Usage limits: `mcc list` and `mcc usage`
 
 The `5H` and `WEEK` columns of `mcc list` show how much of each account's 5-hour and weekly limit is used, and how long until it resets, for every profile including the default. `UPDATED` says how old those numbers are:
 
 ```console
-NAME       COMMAND  ACCOUNT         5H                     WEEK                   UPDATED  SKILLS  …
-default ★  claude   me@example.com  ████░░░░░░ 42% (2h)    ██░░░░░░░░ 18% (3d)    12m ago       2  …
-work       work     work@corp.com   █████████░ 85%! (35m)  ██████████ 96%!! (3d)  just now      2  …
-lab        lab      —               —                      —                      —             0  …
+NAME       COMMAND  ACCOUNT         ORG   5H                     WEEK                   UPDATED  SKILLS  …
+default ★  claude   me@example.com  —     ████░░░░░░ 42% (2h)    ██░░░░░░░░ 18% (3d)    12m ago       2  …
+work       work     work@corp.com   Corp  █████████░ 85%! (35m)  ██████████ 96%!! (3d)  just now      2  …
+lab        lab      —               —     —                      —                      —             0  …
 ```
 
 `mcc list --long` spells it out (`5h usage: ████████░░░░░░░░░░░░ 42% (resets in 2h 14m)`, `Usage updated: 12m ago (statusline cache)`), or says why there is none (`Usage: — (no recent usage cached; run /usage in Claude Code)`).

@@ -7,7 +7,7 @@ use serde::Serialize;
 use serde_json::Value;
 use walkdir::WalkDir;
 
-use crate::config::Profile;
+use crate::config::{Account, Profile};
 use crate::fsutil;
 use crate::paths::Paths;
 use crate::shell;
@@ -22,7 +22,12 @@ pub struct ProfileMetrics {
     pub exists: bool,
     pub mode: Option<String>,
     pub account: Option<String>,
+    /// The account's organization: from the profile's state file, else as
+    /// `mcc add` recorded it.
     pub organization: Option<String>,
+    pub organization_uuid: Option<String>,
+    /// The profile's label (`mcc add`); always null for the default profile.
+    pub label: Option<String>,
     pub model: Option<String>,
     pub skills: usize,
     pub agents: usize,
@@ -67,6 +72,26 @@ const ACCOUNT_EMAIL: &str = "/oauthAccount/emailAddress";
 pub fn account_email(state_json: &Path) -> Option<String> {
     let state: Value = serde_json::from_slice(&std::fs::read(state_json).ok()?).ok()?;
     state.pointer(ACCOUNT_EMAIL)?.as_str().map(str::to_string)
+}
+
+/// The logged-in account in a Claude Code state file (its `oauthAccount`);
+/// `None` when logged out or unreadable. `recorded_at` is left unset.
+pub fn account_info(state_json: &Path) -> Option<Account> {
+    let state: Value = serde_json::from_slice(&std::fs::read(state_json).ok()?).ok()?;
+    account_from_state(&state)
+}
+
+fn account_from_state(state: &Value) -> Option<Account> {
+    let o = state.get("oauthAccount")?;
+    let s = |k: &str| o.get(k).and_then(Value::as_str).map(str::to_string);
+    let a = Account {
+        email: s("emailAddress"),
+        uuid: s("accountUuid"),
+        organization: s("organizationName"),
+        organization_uuid: s("organizationUuid"),
+        recorded_at: None,
+    };
+    (a != Account::default()).then_some(a)
 }
 
 pub fn default_profile(paths: &Paths) -> ProfileMetrics {
@@ -134,6 +159,13 @@ fn collect(
             .map_or(0, |o| o.len())
     };
 
+    // What the state file says now, else what `mcc add` recorded.
+    let account = state
+        .as_ref()
+        .and_then(account_from_state)
+        .unwrap_or_default()
+        .or(reg.and_then(|r| r.account.clone()).unwrap_or_default());
+
     let last_used_time = [dir.join("history.jsonl"), state_json.to_path_buf()]
         .iter()
         .filter_map(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
@@ -146,8 +178,10 @@ fn collect(
         dir: paths.display(dir),
         exists,
         mode: reg.map(|r| r.mode.clone()),
-        account: s(&state, ACCOUNT_EMAIL),
-        organization: s(&state, "/oauthAccount/organizationName"),
+        account: account.email,
+        organization: account.organization,
+        organization_uuid: account.organization_uuid,
+        label: reg.and_then(|r| r.label.clone()),
         model: s(&settings, "/model"),
         skills: count_skills(&dir.join("skills")),
         agents: count_md(&dir.join("agents")),
@@ -270,6 +304,23 @@ pub fn ago_str(rfc3339: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn account_from_the_state_file() {
+        let state = serde_json::json!({"oauthAccount": {
+            "emailAddress": "a@x.com", "accountUuid": "u1",
+            "organizationName": "Acme", "organizationUuid": "org-1",
+            "organizationRole": "admin"
+        }});
+        let a = account_from_state(&state).unwrap();
+        assert_eq!(a.email.as_deref(), Some("a@x.com"));
+        assert_eq!(a.uuid.as_deref(), Some("u1"));
+        assert_eq!(a.organization.as_deref(), Some("Acme"));
+        assert_eq!(a.organization_uuid.as_deref(), Some("org-1"));
+        assert_eq!(a.recorded_at, None);
+        assert!(account_from_state(&serde_json::json!({"oauthAccount": {}})).is_none());
+        assert!(account_from_state(&serde_json::json!({"theme": "dark"})).is_none());
+    }
 
     #[test]
     fn counts_fixture() {

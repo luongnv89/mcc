@@ -68,7 +68,7 @@ fn list_table_and_long() {
         .assert()
         .success()
         .stdout(
-            predicate::str::is_match(r"(?m)^NAME\s+COMMAND\s+ACCOUNT\s+5H\s+WEEK\s+SKILLS")
+            predicate::str::is_match(r"(?m)^NAME\s+COMMAND\s+ACCOUNT\s+ORG\s+5H\s+WEEK\s+SKILLS")
                 .unwrap(),
         )
         .stdout(predicate::str::is_match(r"(?m)^default ★\s+claude\s+me@example.com").unwrap())
@@ -149,12 +149,14 @@ fn list_shows_usage_for_every_profile() {
             "{re}\n{table}"
         )
     };
-    has(r"(?m)^NAME\s+COMMAND\s+ACCOUNT\s+5H\s+WEEK\s+SKILLS");
+    has(r"(?m)^NAME\s+COMMAND\s+ACCOUNT\s+ORG\s+5H\s+WEEK\s+SKILLS");
     has(
-        r"(?m)^default ★\s+claude\s+me@example\.com\s+████░░░░░░ 42% \(2h\)\s+██░░░░░░░░ 18% \(3d\)\s+2\s",
+        r"(?m)^default ★\s+claude\s+me@example\.com\s+Acme\s+████░░░░░░ 42% \(2h\)\s+██░░░░░░░░ 18% \(3d\)\s+2\s",
     );
-    has(r"(?m)^work\s+work\s+—\s+█░░░░░░░░░ 7% \(2h\)\s+██████░░░░ 64% \(3d\)\s");
-    has(r"(?m)^lab\s+lab\s+—\s+unavailable\s+unavailable\s");
+    has(
+        r"(?m)^work\s+work\s+fake@example\.com\s+—\s+█░░░░░░░░░ 7% \(2h\)\s+██████░░░░ 64% \(3d\)\s",
+    );
+    has(r"(?m)^lab\s+lab\s+fake@example\.com\s+—\s+unavailable\s+unavailable\s");
 
     let long = stdout_of(
         sb.mcc()
@@ -197,7 +199,7 @@ fn list_usage_unavailable_offline_still_succeeds() {
         .success()
         .stdout(
             predicate::str::is_match(
-                r"(?m)^default ★\s+claude\s+me@example\.com\s+unavailable\s+unavailable\s",
+                r"(?m)^default ★\s+claude\s+me@example\.com\s+Acme\s+unavailable\s+unavailable\s",
             )
             .unwrap(),
         )
@@ -309,8 +311,10 @@ fn list_no_usage_skips_the_fetch() {
         .assert()
         .success()
         .stdout(
-            predicate::str::is_match(r"(?m)^default ★\s+claude\s+me@example\.com\s+—\s+—\s+2\s")
-                .unwrap(),
+            predicate::str::is_match(
+                r"(?m)^default ★\s+claude\s+me@example\.com\s+Acme\s+—\s+—\s+2\s",
+            )
+            .unwrap(),
         )
         .stdout(predicate::str::contains("unavailable").not());
     sb.mcc()
@@ -470,7 +474,7 @@ fn list_marks_near_limit_usage() {
     let (sb, stub) = near_limit();
     let table = stdout_of(sb.mcc().env("MCC_USAGE_URL", &stub.url).arg("list"));
     assert!(
-        regex::Regex::new(r"(?m)^default ★\s+claude\s+me@example\.com\s+█████████░ 85%! \(2h\)\s+██████████ 96%!! \(3d\)\s")
+        regex::Regex::new(r"(?m)^default ★\s+claude\s+me@example\.com\s+Acme\s+█████████░ 85%! \(2h\)\s+██████████ 96%!! \(3d\)\s")
             .unwrap()
             .is_match(&table),
         "{table}"
@@ -505,7 +509,7 @@ fn list_drops_bars_in_narrow_terminals() {
     let narrow = list("40", &["list"]);
     assert!(
         regex::Regex::new(
-            r"(?m)^default ★\s+claude\s+me@example\.com\s+42% \(2h\)\s+18% \(3d\)\s+2\s"
+            r"(?m)^default ★\s+claude\s+me@example\.com\s+Acme\s+42% \(2h\)\s+18% \(3d\)\s+2\s"
         )
         .unwrap()
         .is_match(&narrow),
@@ -523,7 +527,7 @@ fn list_drops_bars_in_narrow_terminals() {
     let medium = list("120", &["list"]);
     assert!(
         regex::Regex::new(
-            r"(?m)^default ★\s+claude\s+me@example\.com\s+██░░░ 42% \(2h\)\s+█░░░░ 18% \(3d\)\s"
+            r"(?m)^default ★\s+claude\s+me@example\.com\s+Acme\s+██░░░ 42% \(2h\)\s+█░░░░ 18% \(3d\)\s"
         )
         .unwrap()
         .is_match(&medium),

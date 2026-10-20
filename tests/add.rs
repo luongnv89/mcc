@@ -305,3 +305,226 @@ fn login_spawn_failure_rolls_back() {
     assert_eq!(sb.read(".zshrc"), rc_before);
     assert!(!sb.read(".mcc/config.toml").contains("[profiles.work]"));
 }
+
+// ---- account identity and labels (#39) --------------------------------------
+
+/// The `[profiles.<alias>.account]` table of the config, or "" when absent.
+fn account_section(sb: &Sandbox, alias: &str) -> String {
+    let cfg = sb.read(".mcc/config.toml");
+    let Some(start) = cfg.find(&format!("[profiles.{alias}.account]")) else {
+        return String::new();
+    };
+    let rest = &cfg[start + 1..];
+    let end = rest.find("\n[").map_or(cfg.len(), |i| start + 1 + i);
+    cfg[start..end].to_string()
+}
+
+#[test]
+fn records_account_organization_and_label() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    sb.mcc()
+        .args(["add", "work", "--clone", "--label", "Acme (work)"])
+        .env("FAKE_EMAIL", "dev@acme.test")
+        .env("FAKE_ORG_NAME", "Acme")
+        .env("FAKE_ORG_ID", "org-uuid-1")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("dev@acme.test (Acme)"))
+        .stderr(predicate::str::contains("already logged in").not());
+
+    let cfg = sb.read(".mcc/config.toml");
+    assert!(cfg.contains("label = \"Acme (work)\""), "{cfg}");
+    let acct = account_section(&sb, "work");
+    assert!(acct.contains("email = \"dev@acme.test\""), "{cfg}");
+    assert!(acct.contains("organization = \"Acme\""), "{cfg}");
+    assert!(acct.contains("organization_uuid = \"org-uuid-1\""), "{cfg}");
+    assert!(acct.contains("recorded_at = "), "{cfg}");
+
+    // `mcc list` shows the recorded organization (the fake login writes no
+    // oauthAccount into the profile's state file).
+    let out = sb
+        .mcc()
+        .args(["list", "--json", "--no-usage"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v = json(&out);
+    let w = &v.as_array().unwrap()[1];
+    assert_eq!(w["name"], "work");
+    assert_eq!(w["account"], "dev@acme.test");
+    assert_eq!(w["organization"], "Acme");
+    assert_eq!(w["organization_uuid"], "org-uuid-1");
+    assert_eq!(w["label"], "Acme (work)");
+    let d = &v.as_array().unwrap()[0];
+    assert_eq!(d["organization"], "Acme");
+    assert!(d["organization_uuid"].is_null());
+    assert!(d["label"].is_null());
+
+    sb.mcc()
+        .args(["list", "--no-usage"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ORG"))
+        .stdout(predicate::str::is_match(r"work\s+work\s+dev@acme\.test\s+Acme").unwrap());
+    sb.mcc()
+        .args(["list", "--long", "--no-usage"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Organization ID: org-uuid-1"))
+        .stdout(predicate::str::contains("Label:           Acme (work)"));
+}
+
+#[test]
+fn state_file_account_wins_over_the_recorded_one() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    sb.mcc()
+        .args(["add", "work", "--fresh"])
+        .env("FAKE_ORG_NAME", "Old Org")
+        .assert()
+        .success();
+    // Claude Code later writes the account it is logged in to.
+    sb.write(
+        ".mcc/profiles/work/.claude.json",
+        r#"{"oauthAccount":{"emailAddress":"fake@example.com","accountUuid":"acc-1","organizationName":"New Org","organizationUuid":"org-2"}}"#,
+    );
+    let out = sb
+        .mcc()
+        .args(["list", "--json", "--no-usage"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let w = &json(&out)[1];
+    assert_eq!(w["organization"], "New Org");
+    assert_eq!(w["organization_uuid"], "org-2");
+}
+
+#[test]
+fn warns_when_the_account_is_already_used() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    sb.mcc()
+        .args(["add", "work", "--fresh"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("already logged in").not());
+    // Same account as `work` (recorded in the config).
+    sb.mcc()
+        .args(["add", "lab", "--fresh"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "fake@example.com is already logged in to profile \"work\"",
+        ))
+        .stderr(predicate::str::contains("mcc delete lab"));
+    // Same account as the default profile (its ~/.claude.json), any case.
+    sb.mcc()
+        .args(["add", "side", "--fresh"])
+        .env("FAKE_EMAIL", "Me@Example.com")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "Me@Example.com is already logged in to profile \"default\"",
+        ));
+    // Another account: no warning.
+    sb.mcc()
+        .args(["add", "other", "--fresh"])
+        .env("FAKE_EMAIL", "other@example.com")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("already logged in").not());
+    // Not logged in: nothing recorded, nothing to compare.
+    sb.mcc()
+        .args(["add", "later", "--fresh", "--no-login"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("already logged in").not());
+    assert!(account_section(&sb, "later").is_empty());
+}
+
+#[test]
+fn warns_on_two_profiles_with_the_same_account() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    sb.mcc().args(["add", "work", "--fresh"]).assert().success();
+    sb.mcc().args(["add", "lab", "--fresh"]).assert().success();
+    sb.mcc()
+        .args(["add", "third", "--fresh"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "already logged in to profiles \"lab\", \"work\"",
+        ));
+}
+
+#[test]
+fn default_profile_warns_about_a_profile_on_the_same_account() {
+    let sb = Sandbox::new();
+    sb.write(
+        ".mcc/config.toml",
+        &format!(
+            "[profiles.work]\ndir = \"{}\"\nmode = \"fresh\"\ncreated_at = \"2026-10-10T00:00:00+02:00\"\n\n\
+             [profiles.work.account]\nemail = \"fake@example.com\"\n",
+            sb.path(".mcc/profiles/work").display()
+        ),
+    );
+    sb.mcc()
+        .args(["add", "--yes", "--label", "personal"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "--label is not used for the default profile",
+        ))
+        .stderr(predicate::str::contains(
+            "fake@example.com is already logged in to profile \"work\"",
+        ))
+        .stderr(predicate::str::contains("claude auth login"));
+}
+
+#[test]
+fn rejects_an_invalid_label() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    for bad in ["", "   ", "a\tb", &"x".repeat(65)] {
+        sb.mcc()
+            .args(["add", "work", "--fresh", "--label", bad])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("label"));
+    }
+    assert!(!sb.exists(".mcc/profiles/work"));
+}
+
+#[test]
+fn no_label_without_flag_and_no_account_without_login() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    sb.mcc()
+        .args([
+            "add",
+            "work",
+            "--fresh",
+            "--no-login",
+            "--label",
+            "  personal  ",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Label:"));
+    let cfg = sb.read(".mcc/config.toml");
+    assert!(cfg.contains("label = \"personal\""), "{cfg}");
+    assert!(!cfg.contains(".account]"), "{cfg}");
+
+    sb.mcc()
+        .args(["add", "lab", "--fresh", "--yes"])
+        .assert()
+        .success();
+    let cfg = sb.read(".mcc/config.toml");
+    assert_eq!(cfg.matches("label = ").count(), 1, "{cfg}");
+    assert!(account_section(&sb, "lab").contains("email = \"fake@example.com\""));
+}

@@ -471,14 +471,17 @@ fn list_reads_the_statusline_cache_and_shows_its_age() {
     let out = String::from_utf8(o.get_output().stdout.clone()).unwrap();
     let err = String::from_utf8(o.get_output().stderr.clone()).unwrap();
     assert_match(
-        r"(?m)^NAME\s+COMMAND\s+ACCOUNT\s+5H\s+WEEK\s+UPDATED\s+SKILLS",
+        r"(?m)^NAME\s+COMMAND\s+ACCOUNT\s+ORG\s+5H\s+WEEK\s+UPDATED\s+SKILLS",
         &out,
     );
     assert_match(
-        r"(?m)^default ★\s+claude\s+me@example\.com\s+████░░░░░░ 42% \(2h\)\s+██░░░░░░░░ 18% \(3d\)\s+12m ago\s+2\s",
+        r"(?m)^default ★\s+claude\s+me@example\.com\s+Acme\s+████░░░░░░ 42% \(2h\)\s+██░░░░░░░░ 18% \(3d\)\s+12m ago\s+2\s",
         &out,
     );
-    assert_match(r"(?m)^lab\s+lab\s+—\s+—\s+—\s+—\s+0\s", &out);
+    assert_match(
+        r"(?m)^lab\s+lab\s+fake@example\.com\s+—\s+—\s+—\s+—\s+0\s",
+        &out,
+    );
     assert!(err.contains("no recent usage cached for `lab`"), "{err}");
 
     let long = stdout_of(sb.mcc().args(["list", "--long"]));
