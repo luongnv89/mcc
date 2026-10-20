@@ -115,7 +115,10 @@ pub struct Profile {
     /// a symlink to the default's copy instead of a copy of its own, and
     /// `mcc sync` leaves it alone. Off for every item by default, and left
     /// out of the file while empty. Editing the key by hand does nothing
-    /// alone: `mcc link` creates (or removes) the symlink.
+    /// alone: `mcc link` creates (or removes) the symlink. `"plugins"` is
+    /// the exception: no symlink, the profile's launcher sets
+    /// `CLAUDE_CODE_PLUGIN_CACHE_DIR` instead (see `crate::plugins`); a clone
+    /// gets it unless `mcc add --copy-plugins`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub link: Vec<String>,
 }

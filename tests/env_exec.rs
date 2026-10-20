@@ -240,3 +240,72 @@ fn exec_all_stops_at_ctrl_c_even_when_the_command_handles_it() {
     assert_eq!(child.wait().unwrap().code(), Some(130));
     assert_eq!(sb.read("ran"), "ran unset\n", "went on to the next profile");
 }
+
+/// Issue #47: a profile sharing the default's plugins gets
+/// CLAUDE_CODE_PLUGIN_CACHE_DIR from `mcc env`, `mcc exec` and `mcc run`; a
+/// profile with its own plugins clears mcc's value and keeps the user's.
+#[test]
+fn env_exec_and_run_give_a_sharing_profile_the_defaults_plugins() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    with_profile(&sb, "shared", "--clone");
+    sb.mcc()
+        .args(["add", "own", "--clone", "--no-login", "--copy-plugins"])
+        .assert()
+        .success();
+    let root = sb.path(".claude/plugins").display().to_string();
+
+    assert_eq!(
+        stdout_of(sb.mcc().args(["env", "shared"])),
+        format!(
+            "export CLAUDE_CONFIG_DIR='{}'\nexport CLAUDE_CODE_PLUGIN_CACHE_DIR='{root}'\n",
+            dir(&sb, "shared")
+        )
+    );
+    assert_eq!(
+        stdout_of(sb.mcc().args(["env", "shared", "--shell", "fish"])),
+        format!(
+            "set -gx CLAUDE_CONFIG_DIR '{}'\nset -gx CLAUDE_CODE_PLUGIN_CACHE_DIR '{root}'\n",
+            dir(&sb, "shared")
+        )
+    );
+    // Switching to a profile with its own plugins clears mcc's value…
+    assert_eq!(
+        stdout_of(
+            sb.mcc()
+                .env("CLAUDE_CODE_PLUGIN_CACHE_DIR", &root)
+                .args(["env", "own"])
+        ),
+        format!(
+            "export CLAUDE_CONFIG_DIR='{}'\nunset CLAUDE_CODE_PLUGIN_CACHE_DIR\n",
+            dir(&sb, "own")
+        )
+    );
+    // …and never a value of the user's.
+    assert_eq!(
+        stdout_of(
+            sb.mcc()
+                .env("CLAUDE_CODE_PLUGIN_CACHE_DIR", "/opt/seed")
+                .args(["env", "default"])
+        ),
+        "unset CLAUDE_CONFIG_DIR\n"
+    );
+
+    let exec = |alias: &str, inherited: Option<&str>| {
+        let mut cmd = sb.mcc();
+        if let Some(v) = inherited {
+            cmd.env("CLAUDE_CODE_PLUGIN_CACHE_DIR", v);
+        }
+        stdout_of(cmd.args(["exec", alias, "--", "claude", "plugin-root"]))
+    };
+    assert_eq!(exec("shared", None), format!("plugin root: {root}\n"));
+    assert_eq!(exec("own", Some(&root)), "plugin root: unset\n");
+    assert_eq!(exec("own", Some("/opt/seed")), "plugin root: /opt/seed\n");
+    assert_eq!(exec("default", None), "plugin root: unset\n");
+
+    sb.mcc()
+        .args(["run", "--profile", "shared", "--", "plugin-root"])
+        .assert()
+        .success()
+        .stdout(format!("plugin root: {root}\n"));
+}

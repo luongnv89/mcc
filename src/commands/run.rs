@@ -33,6 +33,8 @@ pub(crate) struct Profile {
     /// `CLAUDE_CONFIG_DIR` exactly as registered (the keychain login is keyed
     /// on that string); `None` for ~/.claude, which runs with it unset.
     pub(crate) config_dir: Option<PathBuf>,
+    /// Whether it uses the default's plugins (`mcc link <alias> plugins`).
+    pub(crate) shares_plugins: bool,
 }
 
 impl Profile {
@@ -50,10 +52,12 @@ pub(crate) fn profiles(cfg: &Config) -> Vec<Profile> {
     std::iter::once(Profile {
         name: "default".into(),
         config_dir: None,
+        shares_plugins: false,
     })
     .chain(cfg.profiles.iter().map(|(name, p)| Profile {
         name: name.clone(),
         config_dir: Some(p.dir.clone()),
+        shares_plugins: crate::plugins::shared(p),
     }))
     .collect()
 }
@@ -245,14 +249,22 @@ pub(crate) fn note_if_not_the_projects(cfg: &Config, chosen: &str) {
 }
 
 /// Give `cmd` the profile's environment: its `CLAUDE_CONFIG_DIR` exactly as
-/// registered (unset for the default profile), and mcc's view of HOME (so
-/// MCC_HOME sandboxes stay consistent).
+/// registered (unset for the default profile), mcc's view of HOME (so
+/// MCC_HOME sandboxes stay consistent), and `CLAUDE_CODE_PLUGIN_CACHE_DIR`
+/// set to the default's plugins when the profile shares them. For a profile
+/// with its own plugins the variable is cleared when it holds the default's
+/// plugins root (mcc's value), else left as it is (the user's own).
 pub(crate) fn profile_env(cmd: &mut std::process::Command, paths: &Paths, p: &Profile) {
     cmd.env("HOME", &paths.home);
     match &p.config_dir {
         Some(dir) => cmd.env("CLAUDE_CONFIG_DIR", dir),
         None => cmd.env_remove("CLAUDE_CONFIG_DIR"),
     };
+    if p.shares_plugins {
+        cmd.env(crate::plugins::ENV, crate::plugins::shared_root(paths));
+    } else if crate::plugins::is_mccs(paths, std::env::var_os(crate::plugins::ENV).as_deref()) {
+        cmd.env_remove(crate::plugins::ENV);
+    }
 }
 
 /// Print the profile's name (`--dry-run`), or replace this process with

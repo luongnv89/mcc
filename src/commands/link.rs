@@ -11,6 +11,13 @@
 //! to `.mcc-backup/` first. Turning it off removes only the symlink, never
 //! what it points at, and copies the default's item in its place. Both are
 //! undone as a whole when a step fails.
+//!
+//! `plugins` is linked differently: Claude Code keeps every plugin file under
+//! one plugins root, which `CLAUDE_CODE_PLUGIN_CACHE_DIR` can point anywhere
+//! (see `crate::plugins`). Linking it moves the profile's own `plugins/` into
+//! `.mcc-backup/` (a rename: nothing is deleted, and removing that backup is
+//! what frees the space) and makes the profile's launcher export the
+//! variable, set to the default's `~/.claude/plugins`. No symlink is made.
 
 use std::path::{Path, PathBuf};
 
@@ -23,7 +30,7 @@ use crate::error::CliError;
 use crate::manifest::{self, Manifest};
 use crate::paths::Paths;
 use crate::txn::{self, Transaction};
-use crate::{fsutil, ui};
+use crate::{fsutil, plugins, shell, ui};
 
 /// Printed on stderr whenever link mode is turned on (by `mcc link` or
 /// `mcc add --clone --link`).
@@ -64,7 +71,7 @@ pub fn check_items(items: &[String]) -> Result<Vec<String>> {
             ))
             .into());
         }
-        if !copy::LINKABLE.contains(&item) {
+        if !copy::LINKABLE.contains(&item) && item != plugins::ITEM {
             let why = if copy::group_names().contains(&item) {
                 format!("\"{item}\" can't be linked")
             } else {
@@ -72,8 +79,9 @@ pub fn check_items(items: &[String]) -> Result<Vec<String>> {
             };
             return Err(CliError::usage(why)
                 .hint(format!(
-                    "items that can be linked: {}",
-                    copy::LINKABLE.join(", ")
+                    "items that can be linked: {}, {}",
+                    copy::LINKABLE.join(", "),
+                    plugins::ITEM
                 ))
                 .into());
         }
@@ -132,6 +140,8 @@ enum Undo {
     Created(PathBuf),
     /// The profile's sync manifest before the change (`None`: there was none).
     Manifest(PathBuf, Option<Manifest>),
+    /// The launcher before mcc rewrote it; written back.
+    Launcher(PathBuf, Vec<u8>),
 }
 
 /// Rollback: quiet unless a step fails.
@@ -157,6 +167,10 @@ fn rollback(paths: &Paths, undo: &mut Transaction<Undo>) {
                 Some(m) => m.save(&dir),
                 None => fsutil::remove_any(&dir.join(manifest::FILE)),
             },
+        ),
+        Undo::Launcher(path, bytes) => (
+            format!("restore {}", paths.display(&path)),
+            fsutil::write_atomic(&path, &bytes).and_then(|()| fsutil::set_executable(&path)),
         ),
     });
 }
@@ -284,10 +298,21 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &LinkArgs) -> Result<()> {
         }
         return show(paths, cfg, alias, &dir);
     }
-    if args.off {
-        disable(paths, cfg, alias, &dir, &items)
+    let (with_plugins, items): (Vec<String>, Vec<String>) =
+        items.into_iter().partition(|i| i == plugins::ITEM);
+    if !items.is_empty() {
+        if args.off {
+            disable(paths, cfg, alias, &dir, &items)?;
+        } else {
+            enable(paths, cfg, alias, &dir, &items)?;
+        }
+    }
+    if with_plugins.is_empty() {
+        Ok(())
+    } else if args.off {
+        disable_plugins(paths, cfg, alias, &dir)
     } else {
-        enable(paths, cfg, alias, &dir, &items)
+        enable_plugins(paths, cfg, alias, &dir)
     }
 }
 
@@ -312,6 +337,17 @@ fn show(paths: &Paths, cfg: &Config, alias: &str, dir: &Path) -> Result<()> {
         };
         ui::kv(item, &text);
     }
+    let root = plugins::shared_root(paths);
+    let text = if plugins::in_link(linked) {
+        format!(
+            "shared → {} ({} in the launcher, `mcc run`, `mcc exec`)",
+            paths.display(&root),
+            plugins::ENV
+        )
+    } else {
+        "copied (synced by `mcc sync`)".into()
+    };
+    ui::kv(plugins::ITEM, &text);
     ui::hint(&format!(
         "link an item with `mcc link {alias} ITEM` (off by default); see `mcc help link`"
     ));
@@ -341,7 +377,7 @@ fn targets(paths: &Paths, items: &[String]) -> Result<Vec<(String, PathBuf, Path
 /// --link`), where clone copied everything else. The links are inside
 /// `dir`, so removing `dir` undoes them; nothing outside it is touched.
 pub fn link_new_profile(paths: &Paths, dir: &Path, items: &[String]) -> Result<()> {
-    for (_, rel, target) in targets(paths, items)? {
+    for (_, rel, target) in targets(paths, &symlinked(items))? {
         let dst = dir.join(&rel);
         std::os::unix::fs::symlink(&target, &dst)
             .with_context(|| format!("linking {} → {}", dst.display(), target.display()))?;
@@ -353,8 +389,18 @@ pub fn link_new_profile(paths: &Paths, dir: &Path, items: &[String]) -> Result<(
 /// can be linked and the default has each of them.
 pub fn check_new_links(paths: &Paths, items: &[String]) -> Result<Vec<String>> {
     let items = check_items(items)?;
-    targets(paths, &items)?;
+    targets(paths, &symlinked(&items))?;
     Ok(items)
+}
+
+/// The items linked with a symlink: all but `plugins`, which is shared
+/// through the launcher's environment instead.
+fn symlinked(items: &[String]) -> Vec<String> {
+    items
+        .iter()
+        .filter(|i| *i != plugins::ITEM)
+        .cloned()
+        .collect()
 }
 
 fn enable(
@@ -576,6 +622,231 @@ fn disable(
     Ok(())
 }
 
+/// Rewrite the profile's launcher for `plugin_root`, recording how to put
+/// the old one back. Returns a warning when there is no launcher of mcc's to
+/// rewrite (the profile then has to get the variable some other way).
+fn rewrite_launcher(
+    paths: &Paths,
+    cfg: &Config,
+    alias: &str,
+    plugin_root: Option<&Path>,
+    undo: &mut Transaction<Undo>,
+) -> Result<Option<String>> {
+    let p = &cfg.profiles[alias];
+    let Some(wrapper) = &p.wrapper else {
+        return Ok(Some(format!(
+            "\"{alias}\" has no launcher; start it with `mcc run --profile {alias}` or `mcc exec {alias} -- claude`"
+        )));
+    };
+    if !wrapper.exists() || !shell::is_mcc_wrapper(wrapper) {
+        return Ok(Some(format!(
+            "{} is missing or was not written by mcc, so it was left alone; run `mcc refresh-launchers {alias}`",
+            paths.display(wrapper)
+        )));
+    }
+    let old = std::fs::read(wrapper).with_context(|| format!("reading {}", wrapper.display()))?;
+    let env = cfg.env.as_ref();
+    let claude_bin = crate::claude::find_binary(env.and_then(|e| e.claude_bin.as_deref()));
+    let script = shell::launcher_script(paths, alias, &p.dir, claude_bin.as_deref(), plugin_root);
+    if old != script.as_bytes() {
+        undo.record(Undo::Launcher(wrapper.clone(), old));
+        shell::install_launcher(wrapper, &script)?;
+    }
+    Ok(None)
+}
+
+/// Move the profile's own `plugins/` (if any) into a new backup folder,
+/// recording how to move it back. Returns the backup folder.
+fn move_plugins_to_backup(dir: &Path, undo: &mut Transaction<Undo>) -> Result<Option<PathBuf>> {
+    let own = dir.join(plugins::DIR);
+    if !exists(&own) {
+        return Ok(None);
+    }
+    let dest = super::sync::new_backup_dir(dir)?;
+    // Recorded first, so a rollback moves plugins/ back before removing it.
+    undo.record(Undo::Created(dest.clone()));
+    let to = dest.join(plugins::DIR);
+    std::fs::rename(&own, &to)
+        .with_context(|| format!("moving {} to {}", own.display(), to.display()))?;
+    undo.record(Undo::Moved { from: own, to });
+    Ok(Some(dest))
+}
+
+/// `mcc link <alias> plugins`: use the default's plugins root instead of a
+/// copy (see `crate::plugins`).
+fn enable_plugins(paths: &Paths, cfg: &mut Config, alias: &str, dir: &Path) -> Result<()> {
+    if !paths.default_dir.is_dir() {
+        return Err(CliError::runtime(format!(
+            "the default profile {} does not exist, so there are no plugins to share",
+            paths.display(&paths.default_dir)
+        ))
+        .hint("run `mcc add` to create it first")
+        .into());
+    }
+    let root = plugins::shared_root(paths);
+    ui::header(&format!("Share the default's plugins with \"{alias}\""));
+    let before = cfg.profiles[alias].link.clone();
+    let was_current = cfg.profiles[alias]
+        .wrapper
+        .as_deref()
+        .is_some_and(shell::launcher_is_current);
+    let mut steps = ui::Steps::new(3);
+    let mut undo: Transaction<Undo> = Transaction::new();
+    let mut backup = None;
+    let mut size = 0;
+    let mut launcher_warning = None;
+    let result = (|| -> Result<()> {
+        // The profile's own plugin files, which may hold plugins or plugin
+        // data the default lacks: moved aside, never deleted.
+        let step = steps.start("Move the profile's plugins to a backup");
+        size = fsutil::dir_size(&dir.join(plugins::DIR));
+        backup = move_plugins_to_backup(dir, &mut undo)?;
+        match &backup {
+            Some(b) => step.ok(&format!("{} ({})", paths.display(b), ui::human_size(size))),
+            None => step.skip("the profile has no plugins/"),
+        }
+
+        let step = steps.start("Point the launcher at the default's plugins");
+        launcher_warning = rewrite_launcher(paths, cfg, alias, Some(&root), &mut undo)?;
+        match &launcher_warning {
+            Some(_) => step.skip("no launcher of mcc's"),
+            None => step.ok(&format!("{}={}", plugins::ENV, paths.display(&root))),
+        }
+
+        let step = steps.start("Register");
+        // What sync wrote under plugins/ is gone with it: forget it, so a
+        // later `--off` starts from a fresh copy.
+        if let (true, Some(previous)) = load_manifest(paths, dir) {
+            let mut next = previous.clone();
+            forget(&mut next, &[PathBuf::from(plugins::DIR)]);
+            if next != previous {
+                next.save(dir)?;
+                undo.record(Undo::Manifest(dir.to_path_buf(), Some(previous)));
+            }
+        }
+        let p = cfg.profiles.get_mut(alias).expect("checked above");
+        if !plugins::in_link(&p.link) {
+            p.link.push(plugins::ITEM.into());
+        }
+        cfg.save(&paths.config_file)?;
+        step.ok(&paths.display(&paths.config_file));
+        Ok(())
+    })();
+    if let Err(e) = result {
+        rollback(paths, &mut undo);
+        if let Some(p) = cfg.profiles.get_mut(alias) {
+            p.link = before;
+        }
+        return Err(e);
+    }
+    undo.commit();
+    ui::warn(&plugins::shared_note(alias));
+    if let Some(w) = launcher_warning {
+        ui::warn(&w);
+    } else if !was_current {
+        ui::hint(&format!(
+            "run `mcc refresh-launchers {alias}` so the shell alias `{alias}` runs the launcher"
+        ));
+    }
+    if let Some(b) = &backup {
+        ui::hint(&format!(
+            "the profile's old plugins ({}) are in {}; remove that folder to free the space",
+            ui::human_size(size),
+            paths.display(b)
+        ));
+    }
+    ui::result(
+        true,
+        &format!(
+            "\"{alias}\" uses the default's plugins ({}); restart its running sessions",
+            paths.display(&root)
+        ),
+    );
+    Ok(())
+}
+
+/// `mcc link <alias> plugins --off`: give the profile its own copy of the
+/// default's plugins again.
+fn disable_plugins(paths: &Paths, cfg: &mut Config, alias: &str, dir: &Path) -> Result<()> {
+    ui::header(&format!(
+        "Stop sharing the default's plugins with \"{alias}\""
+    ));
+    let before = cfg.profiles[alias].link.clone();
+    if !plugins::in_link(&before) {
+        ui::result(true, &format!("\"{alias}\" already has its own plugins"));
+        return Ok(());
+    }
+    let mut steps = ui::Steps::new(3);
+    let mut undo: Transaction<Undo> = Transaction::new();
+    let mut copied = 0;
+    let mut launcher_warning = None;
+    let result = (|| -> Result<()> {
+        // A plugins/ made while the profile ran without the variable.
+        let step = steps.start("Move the profile's plugins to a backup");
+        match move_plugins_to_backup(dir, &mut undo)? {
+            Some(b) => step.ok(&paths.display(&b)),
+            None => step.skip("the profile has no plugins/"),
+        }
+
+        let step = steps.start("Copy the default's plugins");
+        cfg.profiles
+            .get_mut(alias)
+            .expect("checked above")
+            .link
+            .retain(|l| l != plugins::ITEM);
+        undo.record(Undo::Created(dir.join(plugins::DIR)));
+        let spec = copy::spec(Some(&[plugins::ITEM.to_string()]), &cfg.sync)?;
+        let rw = Rewriter::for_profile(paths, cfg, dir)?;
+        let plan = copy::plan(
+            &paths.default_dir,
+            &paths.default_json,
+            dir,
+            &spec,
+            &rw,
+            false,
+        )?;
+        copy::apply(
+            &plan,
+            &paths.default_dir,
+            dir,
+            &rw,
+            ui::is_interactive() && !ui::settings().quiet,
+        )?;
+        copied = plan.count(copy::Action::Add);
+        if let (true, previous) = load_manifest(paths, dir) {
+            let mut base = previous.clone().unwrap_or_default();
+            forget(&mut base, &[PathBuf::from(plugins::DIR)]);
+            plan.manifest(Some(&base)).save(dir)?;
+            undo.record(Undo::Manifest(dir.to_path_buf(), previous));
+        }
+        step.ok(&format!("{copied} item(s) copied"));
+
+        let step = steps.start("Point the launcher at the profile's own plugins");
+        launcher_warning = rewrite_launcher(paths, cfg, alias, None, &mut undo)?;
+        match &launcher_warning {
+            Some(_) => step.skip("no launcher of mcc's"),
+            None => step.ok(""),
+        }
+        cfg.save(&paths.config_file)
+    })();
+    if let Err(e) = result {
+        rollback(paths, &mut undo);
+        if let Some(p) = cfg.profiles.get_mut(alias) {
+            p.link = before;
+        }
+        return Err(e);
+    }
+    undo.commit();
+    if let Some(w) = launcher_warning {
+        ui::warn(&w);
+    }
+    ui::result(
+        true,
+        &format!("\"{alias}\" has its own copy of the plugins; `mcc sync` keeps it up to date"),
+    );
+    Ok(())
+}
+
 /// Before a sync of `alias` with `spec`: name its linked items (sync leaves
 /// them alone), and warn about one that is no longer a link.
 pub fn report_in_sync(paths: &Paths, cfg: &Config, alias: &str, spec: &Spec) {
@@ -632,7 +903,8 @@ mod tests {
         );
         let err = check_items(&s(&["settings"])).unwrap_err().to_string();
         assert!(err.contains("settings can't be linked"), "{err}");
-        let err = check_items(&s(&["plugins"])).unwrap_err().to_string();
+        assert_eq!(check_items(&s(&["plugins"])).unwrap(), s(&["plugins"]));
+        let err = check_items(&s(&["hooks"])).unwrap_err().to_string();
         assert!(err.contains("can't be linked"), "{err}");
         let err = check_items(&s(&["nope"])).unwrap_err().to_string();
         assert!(err.contains("unknown item"), "{err}");
