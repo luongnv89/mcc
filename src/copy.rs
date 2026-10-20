@@ -336,6 +336,8 @@ pub struct Plan {
     /// Hash of every default file or symlink in the sync set, as the profile
     /// receives it (what a sync writes, or finds already there).
     hashes: BTreeMap<PathBuf, String>,
+    /// The manifest items this plan covers (see [`Manifest::items`]).
+    items: Vec<String>,
 }
 
 impl Plan {
@@ -402,6 +404,7 @@ impl Plan {
     /// their previous entry, so the next sync classifies them the same way.
     pub fn manifest(&self, previous: Option<&Manifest>) -> Manifest {
         let mut m = previous.cloned().unwrap_or_default();
+        m.items.extend(self.items.iter().cloned());
         for c in &self.changes {
             if c.action == Action::Remove {
                 m.files.retain(|k, _| !Path::new(k).starts_with(&c.rel));
@@ -659,9 +662,17 @@ pub fn plan_with(
     let extra_action = if prune { Action::Remove } else { Action::Extra };
     // Symlinked parent dirs in the profile already planned for replacement.
     let mut relinked: BTreeSet<PathBuf> = BTreeSet::new();
+    // Only items the manifest records are compared three-way.
+    let tracked = |key: &str| Base {
+        manifest: base.manifest.filter(|m| m.items.contains(key)),
+        force: base.force,
+    };
     for item in &spec.items {
         let src = src_dir.join(&item.rel);
         let dst = dst_dir.join(&item.rel);
+        let item_key = manifest::key(&item.rel);
+        let base = &tracked(&item_key);
+        plan.items.push(item_key);
         let hashes = &mut plan.hashes;
         let changes = &mut plan.changes;
         let mut push = |action, rel: PathBuf, forced: bool| {
@@ -825,6 +836,8 @@ pub fn plan_with(
     }
     drop_unneeded_dir_adds(&mut plan);
     if spec.mcp {
+        plan.items.push(manifest::MCP_ITEM.into());
+        let base = &tracked(manifest::MCP_ITEM);
         plan.mcp = plan_mcp(src_json, &dst_dir.join(".claude.json"), rw, prune, base)?;
     }
     Ok(plan)
@@ -1601,6 +1614,7 @@ mod tests {
             ],
             unchanged: 0,
             hashes: BTreeMap::new(),
+            items: Vec::new(),
             mcp: Some(McpChange {
                 added: vec!["fs".into()],
                 ..McpChange::default()
@@ -1709,6 +1723,7 @@ mod tests {
         assert!(m.files.contains_key("agents/a.md"), "{m:?}");
         assert!(m.files.contains_key("settings.json"));
         assert!(m.mcp.contains_key("fs"));
+        assert!(m.items.contains("agents") && m.items.contains(manifest::MCP_ITEM));
         assert!(!m.files.keys().any(|k| k.contains("temp_git_")));
 
         std::fs::write(src.join("agents/a.md"), "agent v2").unwrap(); // upstream

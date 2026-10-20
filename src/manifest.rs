@@ -6,7 +6,7 @@
 //! The manifest belongs to its profile: it is never part of the sync set, so
 //! it is never copied from the default or between profiles.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
@@ -32,7 +32,15 @@ pub struct Manifest {
     /// MCP server name → hash of the server entry mcc wrote to `.claude.json`.
     #[serde(default)]
     pub mcp: BTreeMap<String, String>,
+    /// The sync items (their paths, and [`MCP_ITEM`]) whose state is
+    /// recorded: a sync with `--only` records only some. Paths of other
+    /// items are compared two-way.
+    #[serde(default)]
+    pub items: BTreeSet<String>,
 }
+
+/// The [`Manifest::items`] entry for MCP servers.
+pub const MCP_ITEM: &str = ":mcp";
 
 impl Default for Manifest {
     fn default() -> Self {
@@ -40,6 +48,7 @@ impl Default for Manifest {
             version: VERSION,
             files: BTreeMap::new(),
             mcp: BTreeMap::new(),
+            items: BTreeSet::new(),
         }
     }
 }

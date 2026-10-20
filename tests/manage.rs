@@ -1570,3 +1570,30 @@ fn diff_shows_the_differences() {
         .code(2)
         .stderr(predicate::str::contains("pick another profile"));
 }
+
+/// A manifest from `sync --only` covers only those items: the others are
+/// still compared two-way, not reported as conflicts.
+#[test]
+fn partial_manifest_covers_only_its_items() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    with_profile(&sb, "work", "--fresh");
+    sb.mcc()
+        .args(["sync", "work", "--only", "skills"])
+        .assert()
+        .success();
+    sb.write(".mcc/profiles/work/CLAUDE.md", "# old copy\n");
+    sb.mcc()
+        .args(["sync", "work"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("conflict").not());
+    assert_eq!(sb.read(".mcc/profiles/work/CLAUDE.md"), "# my rules\n");
+    // Now recorded: a later profile edit is a local edit.
+    sb.write(".mcc/profiles/work/CLAUDE.md", "# mine\n");
+    sb.mcc()
+        .args(["sync", "work", "--dry-run"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("= CLAUDE.md (local edit, kept)"));
+}
