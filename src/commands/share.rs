@@ -1,10 +1,19 @@
 //! `mcc share` — opt a profile in to (or out of) session sharing.
 //!
 //! Sharing replaces the profile's `projects/` (where Claude Code keeps the
-//! sessions `--resume` lists) with a symlink to one store,
-//! `~/.mcc/shared/projects`, used by every sharing profile. Nothing else is
-//! linked: credentials, the account (`.claude.json`), prompt history, live
-//! session state and shell snapshots stay per profile.
+//! sessions `--resume` lists) with a symlink to the store of its sharing
+//! group: `~/.mcc/shared/groups/<name>/projects` for a named group
+//! (`--group`), `~/.mcc/shared/projects` for the default group (the one
+//! store every sharing profile used before groups existed, so profiles that
+//! already shared keep their sessions as they are). Nothing else is linked:
+//! credentials, the account (`.claude.json`), prompt history, live session
+//! state and shell snapshots stay per profile.
+//!
+//! Joining a group whose profiles are logged in to another organization is
+//! refused unless `--allow-cross-org` is passed, and organization ↔ personal
+//! (or an account mcc can't identify) also needs a confirmation in a
+//! terminal: work transcripts resumed under a personal account fall under
+//! consumer terms.
 
 use std::path::{Path, PathBuf};
 
@@ -12,10 +21,10 @@ use anyhow::{Context, Result};
 use walkdir::WalkDir;
 
 use crate::cli::ShareArgs;
-use crate::config::{Config, Profile};
+use crate::config::{Account, Config, OrgMatch, Profile};
 use crate::error::CliError;
 use crate::paths::Paths;
-use crate::{fsutil, shell, ui};
+use crate::{fsutil, metrics, shell, ui};
 
 /// Printed verbatim on stderr the first time sharing is turned on for a
 /// profile (when `share_note_acknowledged_at` is not set yet).
@@ -105,7 +114,265 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &ShareArgs) -> Result<()> {
     if args.off {
         disable(paths, cfg, alias, &profile)
     } else {
-        enable(paths, cfg, alias, &profile, args.from_launch)
+        let group = match &args.group {
+            Some(name) => check_group(name)?,
+            None => profile.share_group.clone(),
+        };
+        enable(paths, cfg, alias, &profile, &group, args)
+    }
+}
+
+/// Longest group name accepted, in characters.
+const GROUP_MAX: usize = 64;
+
+/// A group name is 1–64 ASCII letters, digits, `-`, `_` or `.`, starting
+/// with a letter or digit, so it is a plain directory name. `default` is the
+/// default group (`None`).
+fn check_group(name: &str) -> Result<Option<String>> {
+    if name == "default" {
+        return Ok(None);
+    }
+    let ok = name.len() <= GROUP_MAX
+        && name
+            .bytes()
+            .next()
+            .is_some_and(|b| b.is_ascii_alphanumeric())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'));
+    if ok {
+        Ok(Some(name.to_string()))
+    } else {
+        Err(CliError::usage(format!("invalid group name \"{name}\""))
+            .hint(format!(
+                "use 1–{GROUP_MAX} letters, digits, `-`, `_` or `.`, starting with a letter or digit"
+            ))
+            .into())
+    }
+}
+
+/// A group as people read it.
+fn group_name(group: &Option<String>) -> &str {
+    group.as_deref().unwrap_or("default")
+}
+
+/// What a profile is, for the cross-organization guard.
+#[derive(Debug, Clone)]
+enum OrgId {
+    /// Logged in to an organization (its name or UUID is known).
+    Org(Account),
+    /// Logged in without an organization: a personal account.
+    Personal,
+    /// No account known (never logged in, or `--no-login`).
+    Unknown,
+}
+
+impl OrgId {
+    fn of(account: &Account) -> Self {
+        if account.has_org() {
+            OrgId::Org(account.clone())
+        } else if !account.is_anonymous() {
+            OrgId::Personal
+        } else {
+            OrgId::Unknown
+        }
+    }
+
+    fn describe(&self) -> String {
+        match self {
+            OrgId::Org(a) => format!(
+                "organization {}",
+                a.organization
+                    .as_deref()
+                    .or(a.organization_uuid.as_deref())
+                    .unwrap_or("?")
+            ),
+            OrgId::Personal => "a personal account".into(),
+            OrgId::Unknown => "an unknown account".into(),
+        }
+    }
+}
+
+/// How much sharing sessions between two profiles risks, least to most.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Risk {
+    None,
+    /// Neither profile is in an organization, but at least one account is
+    /// unknown, so they can't be told to be the same kind.
+    Unknown,
+    /// Two different organizations (or ones that can't be compared).
+    CrossOrg,
+    /// An organization and a personal (or unknown) account: work sessions
+    /// would become resumable under consumer terms. The strictest case.
+    OrgToPersonal,
+}
+
+fn pair_risk(a: &OrgId, b: &OrgId) -> Risk {
+    match (a, b) {
+        (OrgId::Personal, OrgId::Personal) => Risk::None,
+        (OrgId::Org(x), OrgId::Org(y)) => {
+            if x.org_match(y) == OrgMatch::Same {
+                Risk::None
+            } else {
+                Risk::CrossOrg
+            }
+        }
+        (OrgId::Org(_), _) | (_, OrgId::Org(_)) => Risk::OrgToPersonal,
+        _ => Risk::Unknown,
+    }
+}
+
+/// The other sharing profiles of `group` that `alias` would share with at
+/// some risk, each with what it is; and `alias`'s own [`OrgId`].
+fn group_risks(
+    cfg: &Config,
+    alias: &str,
+    profile: &Profile,
+    group: &Option<String>,
+) -> (OrgId, Vec<(String, OrgId, Risk)>) {
+    let me = OrgId::of(&metrics::profile_account(profile));
+    let others = cfg
+        .profiles
+        .iter()
+        .filter(|(name, p)| name.as_str() != alias && p.share_sessions && &p.share_group == group)
+        .map(|(name, p)| {
+            let id = OrgId::of(&metrics::profile_account(p));
+            let risk = pair_risk(&me, &id);
+            (name.clone(), id, risk)
+        })
+        .filter(|(_, _, r)| *r > Risk::None)
+        .collect();
+    (me, others)
+}
+
+/// What to do about a risk, from `--allow-cross-org` and whether a terminal
+/// can confirm.
+#[derive(Debug, PartialEq, Eq)]
+enum Verdict {
+    Proceed,
+    /// Allowed by `--allow-cross-org`: proceed and record it.
+    Allowed,
+    /// Allowed by `--allow-cross-org` once confirmed in the terminal.
+    Confirm,
+    Refuse,
+}
+
+fn verdict(risk: Risk, allow: bool, interactive: bool) -> Verdict {
+    match risk {
+        Risk::None => Verdict::Proceed,
+        _ if !allow => Verdict::Refuse,
+        Risk::OrgToPersonal if interactive => Verdict::Confirm,
+        Risk::OrgToPersonal => Verdict::Refuse,
+        Risk::Unknown | Risk::CrossOrg => Verdict::Allowed,
+    }
+}
+
+/// The profiles at risk, as `"lab" (organization Acme), …`.
+fn risk_list(others: &[(String, OrgId, Risk)]) -> String {
+    others
+        .iter()
+        .map(|(n, id, _)| format!("\"{n}\" ({})", id.describe()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Why sharing `alias` (which is `me`) with `others` is refused.
+fn refusal(
+    alias: &str,
+    me: &OrgId,
+    group: &Option<String>,
+    others: &[(String, OrgId, Risk)],
+    risk: Risk,
+    allow: bool,
+) -> anyhow::Error {
+    let list = risk_list(others);
+    let who = format!("profile \"{alias}\" ({})", me.describe());
+    let why = match risk {
+        Risk::OrgToPersonal => {
+            "sessions would flow between an organization account and a personal (or unidentified) \
+             one, and work transcripts resumed under a personal account fall under consumer terms"
+        }
+        Risk::CrossOrg => "they belong to different organizations",
+        _ => "mcc can't tell which organization every account belongs to",
+    };
+    let msg = format!(
+        "refusing to share the sessions of {who} with {list} in group \"{}\": {why}",
+        group_name(group)
+    );
+    let separate = format!("keep them apart with `mcc share {alias} --group <name>`");
+    let hint = match risk {
+        Risk::OrgToPersonal if allow => format!(
+            "organization ↔ personal sharing needs a confirmation in a terminal: run `mcc share {alias} --allow-cross-org` there; or {separate}"
+        ),
+        Risk::OrgToPersonal => format!(
+            "{separate}; to share anyway, run `mcc share {alias} --allow-cross-org` in a terminal and confirm"
+        ),
+        Risk::Unknown => format!(
+            "log the profiles in (`claude auth login`) so mcc can see their accounts, {separate}, or pass --allow-cross-org"
+        ),
+        _ => format!("{separate}, or share anyway with --allow-cross-org"),
+    };
+    CliError::input(msg).hint(hint).into()
+}
+
+/// Apply the cross-organization guard to `alias` joining (or, `already`,
+/// staying in) `group`. Returns whether the allowance is to be recorded.
+/// An already-sharing profile that never confirmed (it shared before the
+/// guard existed) is only warned, so nothing it shares is cut off.
+fn guard(
+    alias: &str,
+    profile: &Profile,
+    cfg: &Config,
+    group: &Option<String>,
+    already: bool,
+    allow: bool,
+) -> Result<bool> {
+    let (me, others) = group_risks(cfg, alias, profile, group);
+    let Some(risk) = others.iter().map(|(_, _, r)| *r).max() else {
+        return Ok(false);
+    };
+    if already && !allow {
+        if profile.share_cross_org_allowed_at.is_none() {
+            ui::warn(&format!(
+                "profile \"{alias}\" ({}) shares its sessions with {} in group \"{}\", across organizations",
+                me.describe(),
+                risk_list(&others),
+                group_name(group)
+            ));
+            ui::hint(&format!(
+                "stop with `mcc share {alias} --off` and share within a group of its own (`--group <name>`), or keep it with `mcc share {alias} --allow-cross-org`"
+            ));
+        }
+        return Ok(false);
+    }
+    match verdict(risk, allow, ui::is_interactive()) {
+        Verdict::Proceed => Ok(false),
+        Verdict::Allowed => {
+            ui::warn(&format!(
+                "sharing across organizations with {} (--allow-cross-org)",
+                risk_list(&others)
+            ));
+            Ok(true)
+        }
+        Verdict::Confirm => {
+            ui::warn(&format!(
+                "profile \"{alias}\" ({}) and {} would share sessions: work transcripts \
+                 resumed under a personal account fall under consumer terms, where they may be used for training",
+                me.describe(),
+                risk_list(&others)
+            ));
+            let hint = format!("run `mcc share {alias} --allow-cross-org` in a terminal");
+            if ui::confirm(
+                "Share sessions between an organization and a personal account?",
+                false,
+                &hint,
+            )? {
+                Ok(true)
+            } else {
+                Err(refusal(alias, &me, group, &others, risk, false))
+            }
+        }
+        Verdict::Refuse => Err(refusal(alias, &me, group, &others, risk, allow)),
     }
 }
 
@@ -150,9 +417,23 @@ fn enable(
     cfg: &mut Config,
     alias: &str,
     profile: &Profile,
-    from_launch: bool,
+    group: &Option<String>,
+    args: &ShareArgs,
 ) -> Result<()> {
-    let store = paths.shared_projects_dir();
+    let from_launch = args.from_launch;
+    if profile.share_sessions && &profile.share_group != group {
+        return Err(CliError::input(format!(
+            "profile \"{alias}\" already shares its sessions in group \"{}\", not \"{}\"",
+            group_name(&profile.share_group),
+            group_name(group)
+        ))
+        .hint(format!(
+            "stop sharing first with `mcc share {alias} --off`, then run `mcc share {alias} --group {}`",
+            group_name(group)
+        ))
+        .into());
+    }
+    let store = paths.share_store(group.as_deref());
     let projects = profile.dir.join("projects");
     let state = projects_state(&projects, &store)?;
     let retry = format!("move it out of the way, then run `mcc share {alias}` again");
@@ -178,6 +459,8 @@ fn enable(
         _ => {}
     }
     let already = matches!(state, Projects::Shared);
+    // Before anything moves: a refusal changes nothing.
+    let allowed = guard(alias, profile, cfg, group, already, args.allow_cross_org)?;
     // The full note until it was shown once for this profile.
     let full_note = profile.share_note_acknowledged_at.is_none();
     if !from_launch {
@@ -200,7 +483,7 @@ fn enable(
         };
         // Created even when already shared: the link dangles if the store
         // was deleted by hand.
-        create_store(paths)?;
+        create_store(paths, &store)?;
         // Before staging, so this run's own staging directory isn't listed.
         for dir in leftover_stagings(&profile.dir)? {
             let mut rec = Merge::default();
@@ -226,7 +509,16 @@ fn enable(
                 merge_into(&staged, &store, &backup, &mut undo, &mut merge)?;
             }
         }
-        set_flag(paths, cfg, alias, true)?;
+        update_profile(paths, cfg, alias, |p| {
+            p.share_sessions = true;
+            p.share_group = group.clone();
+            if p.share_note_acknowledged_at.is_none() {
+                p.share_note_acknowledged_at = Some(now());
+            }
+            if allowed {
+                p.share_cross_org_allowed_at = Some(now());
+            }
+        })?;
         Ok(merge)
     })();
     let merge = match result {
@@ -299,8 +591,12 @@ fn enable(
     }
     ui::result(
         true,
-        &format!("profile \"{alias}\" shares its sessions with every other sharing profile"),
+        &format!(
+            "profile \"{alias}\" shares its sessions with the other sharing profiles of group \"{}\"",
+            group_name(group)
+        ),
     );
+    ui::kv("Group", group_name(group));
     ui::kv("Shared store", &paths.display(&store));
     ui::kv(
         "Not shared",
@@ -321,13 +617,11 @@ fn enable(
 }
 
 fn disable(paths: &Paths, cfg: &mut Config, alias: &str, profile: &Profile) -> Result<()> {
-    let store = paths.shared_projects_dir();
+    let store = paths.share_store(profile.share_group.as_deref());
     let projects = profile.dir.join("projects");
     ui::header(&format!("Stop sharing the sessions of profile \"{alias}\""));
     if !matches!(projects_state(&projects, &store)?, Projects::Shared) {
-        if profile.share_sessions {
-            set_flag(paths, cfg, alias, false)?;
-        }
+        update_profile(paths, cfg, alias, stop_sharing)?;
         ui::result(
             true,
             &format!("profile \"{alias}\" does not share its sessions — nothing to change"),
@@ -357,7 +651,7 @@ fn disable(paths: &Paths, cfg: &mut Config, alias: &str, profile: &Profile) -> R
         let _ = fsutil::remove_any(&copy);
         return Err(e);
     }
-    if let Err(e) = set_flag(paths, cfg, alias, false) {
+    if let Err(e) = update_profile(paths, cfg, alias, stop_sharing) {
         let _ = fsutil::remove_any(&projects);
         relink();
         return Err(e);
@@ -371,25 +665,38 @@ fn disable(paths: &Paths, cfg: &mut Config, alias: &str, profile: &Profile) -> R
         &format!("profile \"{alias}\" no longer shares its sessions"),
     );
     ui::hint(&format!(
-        "the shared store {} is kept for the other sharing profiles; delete it by hand once none is left",
+        "the store of group \"{}\" ({}) is kept for its other sharing profiles; delete it by hand once none is left",
+        group_name(&profile.share_group),
         paths.display(&store)
     ));
     Ok(())
 }
 
-/// Record whether `alias` shares, and, when it does, that the full note was
-/// shown (the first time). Saves only when that changes something.
-fn set_flag(paths: &Paths, cfg: &mut Config, alias: &str, on: bool) -> Result<()> {
+/// Not sharing: the flag and the cross-organization allowance go, the group
+/// stays so the next `mcc share` (or `--mcc-share`) joins it again.
+fn stop_sharing(p: &mut Profile) {
+    p.share_sessions = false;
+    p.share_cross_org_allowed_at = None;
+}
+
+fn now() -> String {
+    chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
+}
+
+/// Change `alias`'s registry entry with `change` and save the config, only
+/// when that changes something. On a failed save the entry is put back.
+fn update_profile(
+    paths: &Paths,
+    cfg: &mut Config,
+    alias: &str,
+    change: impl FnOnce(&mut Profile),
+) -> Result<()> {
     let p = cfg
         .profiles
         .get_mut(alias)
         .expect("checked by sharing_profile");
     let was = p.clone();
-    p.share_sessions = on;
-    if on && p.share_note_acknowledged_at.is_none() {
-        p.share_note_acknowledged_at =
-            Some(chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false));
-    }
+    change(p);
     if *p == was {
         return Ok(());
     }
@@ -400,12 +707,19 @@ fn set_flag(paths: &Paths, cfg: &mut Config, alias: &str, on: bool) -> Result<()
     Ok(())
 }
 
-/// `~/.mcc/shared/projects`, private to the user like the profiles.
-fn create_store(paths: &Paths) -> Result<()> {
-    let store = paths.shared_projects_dir();
-    std::fs::create_dir_all(&store).with_context(|| format!("creating {}", store.display()))?;
-    fsutil::set_private_dir(&paths.shared_dir)?;
-    fsutil::set_private_dir(&store)
+/// The group's store, private to the user like the profiles, as is every
+/// directory between it and `~/.mcc/shared`.
+fn create_store(paths: &Paths, store: &Path) -> Result<()> {
+    std::fs::create_dir_all(store).with_context(|| format!("creating {}", store.display()))?;
+    let mut dir = Some(store);
+    while let Some(d) = dir {
+        fsutil::set_private_dir(d)?;
+        if d == paths.shared_dir {
+            break;
+        }
+        dir = d.parent().filter(|p| p.starts_with(&paths.shared_dir));
+    }
+    Ok(())
 }
 
 /// `.projects.mcc-share-<pid>` directories directly inside `profile_dir`:
@@ -533,6 +847,71 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn org(name: &str, id: Option<&str>) -> OrgId {
+        OrgId::of(&Account {
+            email: Some("me@x.com".into()),
+            organization: Some(name.into()),
+            organization_uuid: id.map(Into::into),
+            ..Account::default()
+        })
+    }
+
+    fn personal() -> OrgId {
+        OrgId::of(&Account {
+            email: Some("me@x.com".into()),
+            ..Account::default()
+        })
+    }
+
+    #[test]
+    fn pair_risk_ranks_org_to_personal_highest() {
+        let unknown = OrgId::of(&Account::default());
+        assert!(matches!(unknown, OrgId::Unknown));
+        let acme = org("Acme", Some("o1"));
+        assert_eq!(pair_risk(&acme, &org("Acme Inc", Some("o1"))), Risk::None);
+        assert_eq!(pair_risk(&personal(), &personal()), Risk::None);
+        assert_eq!(pair_risk(&acme, &org("Acme", Some("o2"))), Risk::CrossOrg);
+        assert_eq!(pair_risk(&acme, &org("Beta", None)), Risk::CrossOrg);
+        assert_eq!(
+            pair_risk(&org("Acme", None), &org("acme", None)),
+            Risk::None
+        );
+        // Either direction, and an unknown account counts as personal.
+        assert_eq!(pair_risk(&acme, &personal()), Risk::OrgToPersonal);
+        assert_eq!(pair_risk(&personal(), &acme), Risk::OrgToPersonal);
+        assert_eq!(pair_risk(&unknown, &acme), Risk::OrgToPersonal);
+        assert_eq!(pair_risk(&unknown, &personal()), Risk::Unknown);
+        assert_eq!(pair_risk(&unknown, &unknown), Risk::Unknown);
+        assert!(Risk::OrgToPersonal > Risk::CrossOrg && Risk::CrossOrg > Risk::Unknown);
+    }
+
+    #[test]
+    fn verdict_is_strictest_for_org_to_personal() {
+        use Verdict::*;
+        for interactive in [false, true] {
+            assert_eq!(verdict(Risk::None, false, interactive), Proceed);
+            for risk in [Risk::Unknown, Risk::CrossOrg, Risk::OrgToPersonal] {
+                assert_eq!(verdict(risk, false, interactive), Refuse, "{risk:?}");
+            }
+            assert_eq!(verdict(Risk::CrossOrg, true, interactive), Allowed);
+            assert_eq!(verdict(Risk::Unknown, true, interactive), Allowed);
+        }
+        // --allow-cross-org alone is not enough: a terminal must confirm.
+        assert_eq!(verdict(Risk::OrgToPersonal, true, false), Refuse);
+        assert_eq!(verdict(Risk::OrgToPersonal, true, true), Confirm);
+    }
+
+    #[test]
+    fn group_names() {
+        assert_eq!(check_group("default").unwrap(), None);
+        for ok in ["work", "Acme-1", "a.b_c", "9"] {
+            assert_eq!(check_group(ok).unwrap().as_deref(), Some(ok));
+        }
+        for bad in ["", ".", "..", "-x", "a/b", "a b", "é", &"x".repeat(65)] {
+            assert!(check_group(bad).is_err(), "{bad:?}");
+        }
+    }
 
     #[test]
     fn merge_keeps_the_store_and_backs_up_conflicts() {

@@ -187,9 +187,7 @@ fn other_accounts(paths: &Paths, cfg: &Config, alias: Option<&str>) -> Vec<(Stri
         if Some(name.as_str()) == alias {
             continue;
         }
-        let a = metrics::account_info(&p.dir.join(".claude.json"))
-            .unwrap_or_default()
-            .or_recorded(p.account.clone());
+        let a = metrics::profile_account(p);
         if !a.is_anonymous() {
             out.push((name.clone(), a));
         }
@@ -197,20 +195,37 @@ fn other_accounts(paths: &Paths, cfg: &Config, alias: Option<&str>) -> Vec<(Stri
     out
 }
 
-/// Warn when another profile is already logged in to `account`: two
-/// profiles on one account share its usage limits, so it is usually a
-/// mistake. Never fails.
+/// Warn when another profile is already logged in to `account` in the same
+/// organization: two such profiles share its usage limits, so it is usually
+/// a mistake. The same login in another organization (a personal plan and a
+/// work seat) has limits of its own: that only gets a note. Never fails.
 fn warn_if_duplicate(paths: &Paths, cfg: &Config, alias: Option<&str>, account: &Account) {
-    let names = duplicate_profiles(&other_accounts(paths, cfg, alias), account);
+    let others = other_accounts(paths, cfg, alias);
+    let who = account.email.as_deref().unwrap_or("this account");
+    let quote = |names: &[String]| -> String {
+        names
+            .iter()
+            .map(|n| format!("\"{n}\""))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let plural = |names: &[String]| if names.len() == 1 { "" } else { "s" };
+    let elsewhere = other_org_profiles(&others, account);
+    if !elsewhere.is_empty() {
+        ui::info(&format!(
+            "{who} is also logged in to profile{} {} under another organization — each organization has its own usage limits",
+            plural(&elsewhere),
+            quote(&elsewhere)
+        ));
+    }
+    let names = duplicate_profiles(&others, account);
     if names.is_empty() {
         return;
     }
-    let who = account.email.as_deref().unwrap_or("this account");
-    let quoted: Vec<String> = names.iter().map(|n| format!("\"{n}\"")).collect();
     ui::warn(&format!(
         "{who} is already logged in to profile{} {} — profiles on the same account share its usage limits",
-        if names.len() == 1 { "" } else { "s" },
-        quoted.join(", ")
+        plural(&names),
+        quote(&names)
     ));
     match alias {
         Some(alias) => ui::hint(&format!(
@@ -222,11 +237,22 @@ fn warn_if_duplicate(paths: &Paths, cfg: &Config, alias: Option<&str>, account: 
     }
 }
 
-/// The names of the profiles in `others` logged in to `account`.
+/// The names of the profiles in `others` logged in to `account` in the same
+/// organization (or where that can't be told apart).
 fn duplicate_profiles(others: &[(String, Account)], account: &Account) -> Vec<String> {
     others
         .iter()
-        .filter(|(_, a)| a.same_login(account))
+        .filter(|(_, a)| a.same_seat(account))
+        .map(|(n, _)| n.clone())
+        .collect()
+}
+
+/// The names of the profiles in `others` logged in to `account` in another
+/// organization.
+fn other_org_profiles(others: &[(String, Account)], account: &Account) -> Vec<String> {
+    others
+        .iter()
+        .filter(|(_, a)| a.same_login(account) && !a.same_seat(account))
         .map(|(n, _)| n.clone())
         .collect()
 }
@@ -400,6 +426,8 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
                 last_sync: clone.then(now),
                 share_sessions: false,
                 share_note_acknowledged_at: None,
+                share_group: None,
+                share_cross_org_allowed_at: None,
                 label: None,
                 account: None,
             },

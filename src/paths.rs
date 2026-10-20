@@ -63,9 +63,19 @@ impl Paths {
         self.profiles_dir.join(alias)
     }
 
-    /// The shared session store: every sharing profile's `projects/` links here.
+    /// The default group's session store: the profiles sharing without a
+    /// group name link their `projects/` here. It is the one store every
+    /// sharing profile used before groups existed.
     pub fn shared_projects_dir(&self) -> PathBuf {
         self.shared_dir.join("projects")
+    }
+
+    /// The session store of sharing group `group` (`None`: the default group).
+    pub fn share_store(&self, group: Option<&str>) -> PathBuf {
+        match group {
+            None => self.shared_projects_dir(),
+            Some(g) => self.shared_dir.join("groups").join(g).join("projects"),
+        }
     }
 
     /// `~/.mcc/state/<profile>`; the default profile is `default`.
@@ -119,6 +129,11 @@ mod tests {
         assert_eq!(
             p.shared_projects_dir(),
             PathBuf::from("/h/.mcc/shared/projects")
+        );
+        assert_eq!(p.share_store(None), p.shared_projects_dir());
+        assert_eq!(
+            p.share_store(Some("work")),
+            PathBuf::from("/h/.mcc/shared/groups/work/projects")
         );
     }
 

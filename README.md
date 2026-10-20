@@ -109,7 +109,7 @@ mcc delete job              # remove it completely
 | `mcc sync [ALIAS]` | Copy the default's setup into a profile (default → profile only), keeping edits made in the profile | `--all`, `--dry-run`, `--prune`, `--force`, `--only ITEMS`, `-y` |
 | `mcc diff ALIAS` | Show how a profile differs from the default's setup, path by path, as `sync` classifies it | `--only ITEMS` |
 | `mcc rename ALIAS NEW` (`mv`) | Rename a profile and its command; directory and login are kept | |
-| `mcc share ALIAS` | Share the profile's sessions with your other sharing profiles (off by default; see [Sharing sessions](#sharing-sessions-between-profiles)) | `--off` |
+| `mcc share ALIAS` | Share the profile's sessions with the other sharing profiles of its group (off by default; see [Sharing sessions](#sharing-sessions-between-profiles)) | `--off`, `--group NAME`, `--allow-cross-org` |
 | `mcc project set PROFILE` | Make PROFILE the one `mcc run` starts in this project (see [Per-project profiles](#per-project-profiles-mcc-project-and-mcc-run)); also `unset` and `list` | `--path DIR`, `--allow PROFILE`, `list --json` |
 | `mcc run [-- CLAUDE_ARGS]` | Start Claude Code with the current project's profile; at its limit, ask whether to wait (the default) or start it anyway | `--profile NAME`, `--dry-run` |
 | `mcc statusline install` | Opt-in: show the active profile in Claude Code's status line and cache each profile's rate limits (see [Status line](#status-line-mcc-statusline)); it edits the default profile's `settings.json`; also `uninstall` | `--prefix`, `-y/--yes` |
@@ -174,7 +174,7 @@ mcc completions fish > ~/.config/fish/completions/mcc.fish
 | mcc profiles | `~/.mcc/profiles/<alias>/` (named after the alias the profile was created with; `mcc rename` keeps the directory), used as `CLAUDE_CONFIG_DIR` |
 | Launcher | `~/.local/bin/<alias>` (works in any shell as soon as it's written; sets `CLAUDE_CONFIG_DIR` and starts `claude`, and handles `--mcc-share`) |
 | Shell alias | a managed block in your rc file, between `# >>> mcc:<alias> >>>` and `# <<< mcc:<alias> <<<`, that runs the launcher |
-| Shared sessions | `~/.mcc/shared/projects`, only for profiles that opted in with `mcc share` (their `projects/` links there) |
+| Shared sessions | `~/.mcc/shared/projects` (the `default` group) and `~/.mcc/shared/groups/<name>/projects` (`--group <name>`), only for profiles that opted in with `mcc share` (their `projects/` links there) |
 | Project defaults | `[projects."<dir>"]` tables in `~/.mcc/config.toml`, written by `mcc project set` |
 | Statusline state | `~/.mcc/state/<profile>/usage.json` (rate limits cached by `mcc statusline`) and `statusline.json` (the `statusLine` it replaced), only after `mcc statusline install` |
 | mcc state | `~/.mcc/config.toml` (environment + registry; safe to edit by hand, mcc keeps your comments and formatting), `~/.mcc/.lock` (held while a command writes the config), `~/.mcc/logs/mcc.log`, `~/.mcc/backups/` (rc file backups, session-merge conflicts) |
@@ -239,10 +239,11 @@ The first command that looks usage up live prints a one-time disclosure on stder
 
 ### Sharing sessions between profiles
 
-Each profile keeps its sessions to itself unless you turn sharing on. Sharing is a per-profile setting and is **off by default**. Once two or more profiles share, `claude --resume` and `/resume` in any of them list the sessions of all of them.
+Each profile keeps its sessions to itself unless you turn sharing on. Sharing is a per-profile setting and is **off by default**. Sharing profiles are put in groups: once two or more profiles of a group share, `claude --resume` and `/resume` in any of them list the sessions of all of them, and of no profile outside the group.
 
 ```sh
-mcc share work               # turn sharing on for `work`
+mcc share work               # turn sharing on for `work`, in the `default` group
+mcc share work --group acme  # …or in group `acme`, with a store of its own
 work --mcc-share             # the same, while starting `work` (the flag must come first)
 mcc share work --off         # turn it off again
 ```
@@ -252,11 +253,12 @@ The setting is stored per profile in `~/.mcc/config.toml`:
 ```toml
 [profiles.work]
 share_sessions = true  # default: false; set it with `mcc share`
+share_group = "acme"   # left out for the `default` group
 ```
 
 Editing the key by hand does nothing on its own. `mcc share <alias>` does the actual work, and it is the only supported way to change the setting:
 
-- **What is shared:** the profile's `projects/` directory, where Claude Code keeps the session transcripts `--resume` lists. It is replaced with a link to `~/.mcc/shared/projects`. The sessions the profile already had are moved into that store without overwriting anything. If a file of the same name with different contents is already there, the store's copy is kept and the profile's copy goes to `~/.mcc/backups/shared-projects-<alias>-<time>/`, with a warning.
+- **What is shared:** the profile's `projects/` directory, where Claude Code keeps the session transcripts `--resume` lists. It is replaced with a link to its group's store: `~/.mcc/shared/groups/<name>/projects` for `--group <name>`, else `~/.mcc/shared/projects` (the `default` group). The sessions the profile already had are moved into that store without overwriting anything. If a file of the same name with different contents is already there, the store's copy is kept and the profile's copy goes to `~/.mcc/backups/shared-projects-<alias>-<time>/`, with a warning.
 - **What is never shared:** credentials (`.credentials.json`, the keychain login), the account (`.claude.json`), `policy-limits.json`, `remote-settings.json`, prompt history (`history.jsonl`), live session state (`sessions/`), `shell-snapshots/`, `file-history/` and `todos/`. Each profile keeps its own login and `CLAUDE_CONFIG_DIR`.
 - **The first time sharing is turned on for a profile**, by `mcc share` or by `--mcc-share`, mcc prints this note on stderr and records when as `share_note_acknowledged_at` under `[profiles.<alias>]`:
 
@@ -266,13 +268,19 @@ Editing the key by hand does nothing on its own. `mcc share <alias>` does the ac
 
   > ⚠ Session sharing is on: use it only between accounts you own, never to get around usage limits or to let other people use your account (Anthropic's Consumer Terms and Usage Policy; full note: `mcc share --help`).
 
-- **`--off`** replaces the link with a directory of the profile's own, holding a copy of the shared sessions. The store stays for the other sharing profiles; mcc never deletes it, so remove `~/.mcc/shared` by hand once no profile shares.
+- **Groups.** A profile shares in one group at a time. `mcc share <alias>` and `--mcc-share` reuse the group recorded as `share_group` (the `default` group when there is none). To move a profile to another group, run `mcc share <alias> --off`, then `mcc share <alias> --group <name>`. A group name is 1–64 letters, digits, `-`, `_` or `.`, starting with a letter or digit; `--group default` is the default group.
+- **Organizations.** A work transcript (commercial terms, a customer's confidential information) resumed under a personal account goes to Anthropic under consumer terms. So `mcc share` compares the profile's account (as `mcc add` recorded it under `[profiles.<alias>.account]`, or as its `.claude.json` says now) with every other sharing profile of the group, by organization UUID, else by organization name; a profile without an organization is personal.
+  - Another organization (or two that can't be compared): refused, unless you pass `--allow-cross-org`.
+  - An account mcc can't identify (`--no-login`, never logged in): refused the same way, so unknown never counts as "the same".
+  - An organization and a personal or unidentified account, whichever joins: the strictest case. `--allow-cross-org` must also be confirmed at a prompt in a terminal (the default answer is no); without a terminal, and from `<alias> --mcc-share`, it is always refused.
+  - A refusal changes nothing, and `<alias> --mcc-share` then exits without starting Claude Code. When `--allow-cross-org` is accepted, mcc records when as `share_cross_org_allowed_at`; `--off` clears it. Keeping work and personal profiles in separate groups (`--group`) needs no override.
+- **`--off`** replaces the link with a directory of the profile's own, holding a copy of the shared sessions. The group's store stays for its other sharing profiles; mcc never deletes it, so remove it (or `~/.mcc/shared`) by hand once no profile uses it. The group stays recorded, so the next `mcc share` joins it again.
 - **`mcc delete`** of a sharing profile removes only its link. The sessions stay in the store.
 - **`mcc rename`** keeps sharing as it is.
 - **The default profile** (`~/.claude`) can't share.
-- **Caveats.** In `mcc list`, sharing profiles are marked `(shared)` (`"share_sessions": true` in `mcc list --json`), and their session counts include every sharing profile's sessions. Claude Code removes old transcripts after `cleanupPeriodDays` (30 days unless set in `settings.json`): with sharing, the shortest setting among the sharing profiles applies to all of them.
+- **Caveats.** In `mcc list`, sharing profiles are marked `(shared)`, or `(shared: <group>)` in a named group (`"share_sessions": true` and `"share_group"` in `mcc list --json`), and their session counts include every sharing profile's sessions in the group. Claude Code removes old transcripts after `cleanupPeriodDays` (30 days unless set in `settings.json`): with sharing, the shortest setting among the sharing profiles applies to all of them.
 
-**Upgrading from an older mcc:** existing launchers and shell aliases are left exactly as they were. `<alias> --mcc-share` needs the current launcher, and an alias that runs it. To get both, run `mcc refresh-launchers` once (or `mcc refresh-launchers work` for a single profile). `CLAUDE_CONFIG_DIR` stays the same, so logins are kept. `mcc share <alias>` works without it, and `mcc list` reminds you while a launcher is out of date (`"launcher_current": false` in `mcc list --json`).
+**Upgrading from an older mcc:** profiles that already share keep using `~/.mcc/shared/projects`, which is now the `default` group's store: nothing is moved, and the config is not rewritten. If they mix organizations (or a work and a personal account), `mcc share` and `--mcc-share` warn on every run but never cut them off; to separate them, run `mcc share <alias> --off` (the profile keeps a copy of every shared session) and then `mcc share <alias> --group <name>`, or keep them together with `mcc share <alias> --allow-cross-org`. Existing launchers and shell aliases are left exactly as they were. `<alias> --mcc-share` needs the current launcher, and an alias that runs it. To get both, run `mcc refresh-launchers` once (or `mcc refresh-launchers work` for a single profile). `CLAUDE_CONFIG_DIR` stays the same, so logins are kept. `mcc share <alias>` works without it, and `mcc list` reminds you while a launcher is out of date (`"launcher_current": false` in `mcc list --json`).
 
 ### Per-project profiles: `mcc project` and `mcc run`
 
@@ -328,7 +336,7 @@ allow = ["lab"]   # optional: other profiles `mcc run` may offer at the limit
 
 ### Accounts, organizations and labels
 
-After `mcc add` logs a profile in, it records the account under `[profiles.<alias>.account]` in `~/.mcc/config.toml`: its email, Claude Code's account UUID, and its organization's name and UUID, each when Claude Code reports it. If another profile (the default included) is already logged in to the same account, `mcc add` warns: profiles on one account share its usage limits, so this is usually a mistake. It then asks for an optional label, such as `personal` or the account's organization; `--label LABEL` sets it without asking, and `-y` or a non-interactive run skips it.
+After `mcc add` logs a profile in, it records the account under `[profiles.<alias>.account]` in `~/.mcc/config.toml`: its email, Claude Code's account UUID, and its organization's name and UUID, each when Claude Code reports it. If another profile (the default included) is already logged in to the same account in the same organization, `mcc add` warns: profiles on one account share its usage limits, so this is usually a mistake. The same login in another organization, such as a personal plan and a work seat, has limits of its own, so it only gets a note. It then asks for an optional label, such as `personal` or the account's organization; `--label LABEL` sets it without asking, and `-y` or a non-interactive run skips it.
 
 ```toml
 [profiles.work]

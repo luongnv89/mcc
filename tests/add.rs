@@ -440,10 +440,12 @@ fn warns_when_the_account_is_already_used() {
             "fake@example.com is already logged in to profile \"work\"",
         ))
         .stderr(predicate::str::contains("mcc delete lab"));
-    // Same account as the default profile (its ~/.claude.json), any case.
+    // Same account and organization as the default profile (its
+    // ~/.claude.json), any case.
     sb.mcc()
         .args(["add", "side", "--fresh"])
         .env("FAKE_EMAIL", "Me@Example.com")
+        .env("FAKE_ORG_NAME", "ACME")
         .assert()
         .success()
         .stderr(predicate::str::contains(
@@ -463,6 +465,50 @@ fn warns_when_the_account_is_already_used() {
         .success()
         .stderr(predicate::str::contains("already logged in").not());
     assert!(account_section(&sb, "later").is_empty());
+}
+
+#[test]
+fn the_same_login_in_another_organization_is_not_a_duplicate() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    // A work seat: the same email as `personal` below, in an organization.
+    sb.mcc()
+        .args(["add", "work", "--fresh"])
+        .env("FAKE_ORG_NAME", "Acme")
+        .env("FAKE_ORG_ID", "org-acme")
+        .assert()
+        .success();
+    // The same login without an organization (a personal plan): a note,
+    // not the duplicate warning or the `mcc delete` hint.
+    sb.mcc()
+        .args(["add", "personal", "--fresh"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "fake@example.com is also logged in to profile \"work\" under another organization",
+        ))
+        .stderr(predicate::str::contains("already logged in").not())
+        .stderr(predicate::str::contains("mcc delete").not());
+    // The same login in another organization (by UUID): also a note only.
+    sb.mcc()
+        .args(["add", "contract", "--fresh"])
+        .env("FAKE_ORG_NAME", "Acme")
+        .env("FAKE_ORG_ID", "org-other")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("under another organization"))
+        .stderr(predicate::str::contains("already logged in").not());
+    // The same login in the same organization (same UUID): a duplicate.
+    sb.mcc()
+        .args(["add", "again", "--fresh"])
+        .env("FAKE_ORG_NAME", "Acme Inc")
+        .env("FAKE_ORG_ID", "org-acme")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "fake@example.com is already logged in to profile \"work\"",
+        ))
+        .stderr(predicate::str::contains("mcc delete again"));
 }
 
 #[test]

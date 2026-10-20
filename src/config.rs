@@ -84,6 +84,17 @@ pub struct Profile {
     /// reminder instead. Left out of the file until then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub share_note_acknowledged_at: Option<String>,
+    /// The sharing group whose store this profile's `projects/` links to
+    /// (`mcc share <alias> --group <name>`). Unset means the default group,
+    /// whose store is the one every sharing profile used before groups
+    /// existed (`~/.mcc/shared/projects`). Left out of the file while unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub share_group: Option<String>,
+    /// When sharing across organizations was confirmed for this profile
+    /// (`mcc share <alias> --allow-cross-org`, RFC 3339). Cleared when the
+    /// profile stops sharing. Left out of the file while unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub share_cross_org_allowed_at: Option<String>,
     /// A short label for the account, such as "personal" or the work
     /// organization, asked by `mcc add` (or `--label`). Left out of the file
     /// while unset.
@@ -123,8 +134,49 @@ impl Account {
         self.email.is_none() && self.uuid.is_none()
     }
 
+    /// True when an organization (name or UUID) is known.
+    pub fn has_org(&self) -> bool {
+        self.organization.is_some() || self.organization_uuid.is_some()
+    }
+
+    /// How this account's organization compares with `other`'s: equal
+    /// organization UUIDs when both are known, else equal names (ignoring
+    /// case). Two accounts without any organization are both personal, so
+    /// the same; one with and one without are different. Anything that
+    /// can't be compared (a UUID on one side, only a name on the other) is
+    /// [`OrgMatch::Unknown`].
+    pub fn org_match(&self, other: &Account) -> OrgMatch {
+        if let (Some(a), Some(b)) = (&self.organization_uuid, &other.organization_uuid) {
+            return if a == b {
+                OrgMatch::Same
+            } else {
+                OrgMatch::Different
+            };
+        }
+        if let (Some(a), Some(b)) = (&self.organization, &other.organization) {
+            return if a.eq_ignore_ascii_case(b) {
+                OrgMatch::Same
+            } else {
+                OrgMatch::Different
+            };
+        }
+        match (self.has_org(), other.has_org()) {
+            (false, false) => OrgMatch::Same,
+            (true, false) | (false, true) => OrgMatch::Different,
+            (true, true) => OrgMatch::Unknown,
+        }
+    }
+
+    /// The same login in the same organization: what makes two profiles
+    /// share one set of usage limits. The same login in another
+    /// organization (a personal plan and a work seat) is not a duplicate.
+    pub fn same_seat(&self, other: &Account) -> bool {
+        self.same_login(other) && self.org_match(other) != OrgMatch::Different
+    }
+
     /// The same login: equal account UUIDs when both are known, else equal
-    /// emails (ignoring case). Unknown never matches.
+    /// emails (ignoring case). Unknown never matches. The organization is
+    /// not compared; see [`Account::same_seat`].
     pub fn same_login(&self, other: &Account) -> bool {
         match (&self.uuid, &other.uuid) {
             (Some(a), Some(b)) => a == b,
@@ -154,6 +206,15 @@ impl Account {
             recorded_at: self.recorded_at.or(other.recorded_at),
         }
     }
+}
+
+/// How two accounts' organizations compare ([`Account::org_match`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrgMatch {
+    Same,
+    Different,
+    /// Not enough is known to tell.
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -442,6 +503,8 @@ mod tests {
                 last_sync: None,
                 share_sessions: true,
                 share_note_acknowledged_at: None,
+                share_group: None,
+                share_cross_org_allowed_at: None,
                 label: None,
                 account: None,
             },
@@ -576,6 +639,8 @@ mod tests {
             last_sync: None,
             share_sessions: false,
             share_note_acknowledged_at: None,
+            share_group: None,
+            share_cross_org_allowed_at: None,
             label: None,
             account: None,
         }
@@ -747,6 +812,57 @@ mod tests {
         assert_eq!(merged.uuid.as_deref(), Some("u1"));
         assert_eq!(merged.organization.as_deref(), Some("Acme"));
         assert_eq!(merged.organization_uuid.as_deref(), Some("org-1"));
+    }
+
+    #[test]
+    fn org_match_prefers_uuids_then_names() {
+        let a = |name: Option<&str>, id: Option<&str>| Account {
+            email: Some("me@x.com".into()),
+            organization: name.map(Into::into),
+            organization_uuid: id.map(Into::into),
+            ..Account::default()
+        };
+        use OrgMatch::*;
+        assert_eq!(a(None, None).org_match(&a(None, None)), Same);
+        assert_eq!(a(Some("Acme"), None).org_match(&a(None, None)), Different);
+        assert_eq!(a(None, None).org_match(&a(None, Some("o1"))), Different);
+        assert_eq!(
+            a(Some("Acme"), None).org_match(&a(Some("ACME"), None)),
+            Same
+        );
+        assert_eq!(
+            a(Some("Acme"), None).org_match(&a(Some("Beta"), None)),
+            Different
+        );
+        // UUIDs win over names.
+        assert_eq!(
+            a(Some("Acme"), Some("o1")).org_match(&a(Some("Acme"), Some("o2"))),
+            Different
+        );
+        assert_eq!(
+            a(Some("Old"), Some("o1")).org_match(&a(Some("New"), Some("o1"))),
+            Same
+        );
+        // A UUID on one side and only a name on the other can't be compared.
+        assert_eq!(
+            a(None, Some("o1")).org_match(&a(Some("Acme"), None)),
+            Unknown
+        );
+    }
+
+    #[test]
+    fn same_seat_needs_the_same_login_and_organization() {
+        let a = |email: &str, org: Option<&str>| Account {
+            email: Some(email.into()),
+            organization_uuid: org.map(Into::into),
+            ..Account::default()
+        };
+        assert!(a("me@x.com", Some("o1")).same_seat(&a("ME@x.com", Some("o1"))));
+        assert!(a("me@x.com", None).same_seat(&a("me@x.com", None)));
+        // Personal plan and work seat on one login: not the same seat.
+        assert!(!a("me@x.com", None).same_seat(&a("me@x.com", Some("o1"))));
+        assert!(!a("me@x.com", Some("o1")).same_seat(&a("me@x.com", Some("o2"))));
+        assert!(!a("me@x.com", Some("o1")).same_seat(&a("you@x.com", Some("o1"))));
     }
 
     #[test]

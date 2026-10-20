@@ -152,13 +152,25 @@ pub enum Command {
     /// Share a profile's sessions with your other sharing profiles (off by default)
     #[command(after_help = concat!(
         "Examples:\n",
-        "  mcc share work                Share `work`'s sessions with every other sharing profile\n",
+        "  mcc share work                Share `work`'s sessions with the other sharing profiles\n",
+        "  mcc share work --group acme   …only with the profiles of group `acme`\n",
         "  mcc share work --off          Stop sharing; `work` keeps a copy of the shared sessions\n",
         "  work --mcc-share              Start `work`, turning sharing on first (like `mcc share work`)\n",
         "  work --mcc-share --resume     …then pick a session from any sharing profile\n",
         "\n",
         "Sharing links the profile's projects/ directory (the sessions `claude --resume`\n",
-        "and /resume list) to ~/.mcc/shared/projects, which every sharing profile uses.\n",
+        "and /resume list) to the store of its group: ~/.mcc/shared/groups/<name>/projects\n",
+        "with `--group <name>`, else ~/.mcc/shared/projects (the `default` group, the one\n",
+        "store older mcc versions used). A profile shares in one group at a time; the\n",
+        "group is kept as `share_group` and reused by the next `mcc share` and\n",
+        "`--mcc-share`. To change it, run `mcc share <alias> --off` first.\n",
+        "\n",
+        "Joining a group with profiles of another organization (by the account `mcc add`\n",
+        "recorded) is refused unless `--allow-cross-org` is passed, and so is joining with\n",
+        "an account mcc can't identify. Organization ↔ personal (no organization, or an\n",
+        "unknown account) is the strictest: `--allow-cross-org` must also be confirmed in\n",
+        "a terminal, since work sessions resumed under a personal account fall under\n",
+        "consumer terms. Profiles that already share are warned, never cut off.\n",
         "Nothing else is shared: credentials, the account (.claude.json), prompt history,\n",
         "live sessions and shell snapshots stay per profile. The default profile\n",
         "(~/.claude) can't share. `--mcc-share` must be the first argument; launchers\n",
@@ -335,6 +347,16 @@ pub struct ShareArgs {
     /// Stop sharing: give the profile its own copy of the shared sessions
     #[arg(long)]
     pub off: bool,
+
+    /// Share only with the profiles of this group, through a store of its
+    /// own (default: the profile's current group, else `default`)
+    #[arg(long, value_name = "NAME", conflicts_with = "off")]
+    pub group: Option<String>,
+
+    /// Allow sharing with profiles of another organization (or whose
+    /// organization is unknown); organization ↔ personal also asks to confirm
+    #[arg(long, conflicts_with_all = ["off", "from_launch"])]
+    pub allow_cross_org: bool,
 
     /// Called by the launcher for `<alias> --mcc-share`: only the note and errors, on stderr
     #[arg(long, hide = true, conflicts_with = "off")]

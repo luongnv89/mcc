@@ -46,6 +46,9 @@ pub struct ProfileMetrics {
     /// Sessions are shared with the other sharing profiles (`mcc share`);
     /// always false for the default profile.
     pub share_sessions: bool,
+    /// The sharing group (`mcc share --group`): `default` for the default
+    /// group, null while the profile doesn't share.
+    pub share_group: Option<String>,
     /// False only for an mcc launcher written before session sharing (run
     /// `mcc refresh-launchers`); true when there is nothing to refresh, as
     /// for the default profile or a profile without a launcher.
@@ -82,6 +85,14 @@ pub fn account_email(state_json: &Path) -> Option<String> {
 pub fn account_info(state_json: &Path) -> Option<Account> {
     let state: Value = serde_json::from_slice(&std::fs::read(state_json).ok()?).ok()?;
     account_from_state(&state)
+}
+
+/// A profile's account: what its state file says now, completed from (or,
+/// when the state file has none, replaced by) what `mcc add` recorded.
+pub fn profile_account(p: &Profile) -> Account {
+    account_info(&p.dir.join(".claude.json"))
+        .unwrap_or_default()
+        .or_recorded(p.account.clone())
 }
 
 fn account_from_state(state: &Value) -> Option<Account> {
@@ -215,6 +226,9 @@ fn collect(
         created_at: reg.map(|r| r.created_at.clone()),
         last_sync: reg.and_then(|r| r.last_sync.clone()),
         share_sessions: reg.is_some_and(|r| r.share_sessions),
+        share_group: reg
+            .filter(|r| r.share_sessions)
+            .map(|r| r.share_group.clone().unwrap_or_else(|| "default".into())),
         launcher_current: reg
             .and_then(|r| r.wrapper.as_deref())
             .is_none_or(|w| !shell::is_mcc_wrapper(w) || shell::launcher_is_current(w)),
