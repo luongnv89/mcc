@@ -506,14 +506,24 @@ fn log_outcomes(kind: &str, targets: &[Target], all: &[Usage]) {
     }
 }
 
-fn fetch_parallel(targets: &[Target]) -> Vec<Usage> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(2))
-        .timeout(Duration::from_secs(4))
-        // Never follow a redirect with the bearer token attached.
-        .redirects(0)
+/// The HTTP client for the usage request, which carries the profile's OAuth
+/// bearer token: 2 s to connect, 4 s for the whole request, no redirects (the
+/// token is never sent anywhere else), no proxy taken from the environment
+/// (ureq 3 reads `HTTPS_PROXY` & co. by default; ureq 2 as mcc used it did
+/// not), and an honest `mcc/<version>` User-Agent.
+fn usage_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(2)))
+        .timeout_global(Some(Duration::from_secs(4)))
+        .max_redirects(0)
+        .proxy(None)
         .user_agent(concat!("mcc/", env!("CARGO_PKG_VERSION")))
-        .build();
+        .build()
+        .into()
+}
+
+fn fetch_parallel(targets: &[Target]) -> Vec<Usage> {
+    let agent = usage_agent();
     let url = endpoint();
     let now = Utc::now();
     std::thread::scope(|s| {
@@ -543,21 +553,28 @@ fn fetch_one(agent: &ureq::Agent, url: Option<&str>, t: &Target, now: DateTime<U
     let Some(url) = url else {
         return Usage::unavailable(Reason::Network);
     };
+    request_usage(agent, url, &token.0)
+}
+
+/// GET the usage endpoint with `token` and map the outcome. HTTP 4xx/5xx
+/// arrive as `Error::StatusCode` (ureq's default); a 3xx is returned as is,
+/// since redirects are off, and counts as an HTTP error.
+fn request_usage(agent: &ureq::Agent, url: &str, token: &str) -> Usage {
     let res = agent
         .get(url)
-        .set("Authorization", &format!("Bearer {}", token.0))
-        .set("anthropic-beta", BETA)
-        .set("Accept", "application/json")
+        .header("Authorization", &format!("Bearer {token}"))
+        .header("anthropic-beta", BETA)
+        .header("Accept", "application/json")
         .call();
-    drop(token);
     match res {
-        Ok(resp) if resp.status() == 200 => match resp.into_string() {
+        Ok(mut resp) if resp.status() == 200 => match resp.body_mut().read_to_string() {
             Ok(body) => parse_response(&body).unwrap_or(Usage::unavailable(Reason::ParseError)),
             Err(_) => Usage::unavailable(Reason::Network),
         },
         Ok(_) => Usage::unavailable(Reason::HttpError),
-        Err(ureq::Error::Status(code, _)) => Usage::unavailable(status_reason(code)),
-        Err(ureq::Error::Transport(_)) => Usage::unavailable(Reason::Network),
+        Err(ureq::Error::StatusCode(code)) => Usage::unavailable(status_reason(code)),
+        // Connection failures, timeouts, TLS and protocol errors.
+        Err(_) => Usage::unavailable(Reason::Network),
     }
 }
 
@@ -921,6 +938,165 @@ mod tests {
         assert_eq!(status_reason(403), Reason::Unauthorized);
         assert_eq!(status_reason(429), Reason::RateLimited);
         assert_eq!(status_reason(500), Reason::HttpError);
+    }
+
+    /// A loopback server that answers every connection with `response` (or,
+    /// for `None`, reads the request and never answers). Returns its URL and
+    /// the raw requests received so far.
+    fn serve(response: Option<String>) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/api/oauth/usage", listener.local_addr().unwrap());
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = std::sync::Arc::clone(&seen);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut req = String::new();
+                loop {
+                    let mut line = String::new();
+                    match reader.read_line(&mut line) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) if line == "\r\n" => break,
+                        Ok(_) => req.push_str(&line),
+                    }
+                }
+                log.lock().unwrap().push(req);
+                match &response {
+                    Some(r) => {
+                        let _ = stream.write_all(r.as_bytes());
+                        let _ = stream.flush();
+                    }
+                    // Hold the connection open, silent, well past the timeout.
+                    None => std::thread::sleep(Duration::from_secs(10)),
+                }
+            }
+        });
+        (url, seen)
+    }
+
+    fn reply(status: &str, extra: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status}\r\n{extra}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    fn header<'a>(req: &'a str, name: &str) -> Option<&'a str> {
+        req.lines().skip(1).find_map(|l| {
+            let (k, v) = l.split_once(':')?;
+            k.eq_ignore_ascii_case(name).then(|| v.trim())
+        })
+    }
+
+    #[test]
+    fn usage_agent_keeps_the_request_guarantees() {
+        let agent = usage_agent();
+        let config = agent.config();
+        let timeouts = config.timeouts();
+        assert_eq!(timeouts.connect, Some(Duration::from_secs(2)));
+        assert_eq!(timeouts.global, Some(Duration::from_secs(4)));
+        assert_eq!(config.max_redirects(), 0);
+        assert!(config.proxy().is_none(), "no proxy from the environment");
+        assert!(config.http_status_as_error());
+        let ua = format!("mcc/{}", env!("CARGO_PKG_VERSION"));
+        assert!(
+            matches!(config.user_agent(), ureq::config::AutoHeaderValue::Provided(v) if **v == ua),
+            "{:?}",
+            config.user_agent()
+        );
+    }
+
+    #[test]
+    fn usage_request_sends_the_token_and_user_agent() {
+        let body = r#"{"five_hour":{"utilization":42,"resets_at":null}}"#;
+        let (url, seen) = serve(Some(reply("200 OK", "", body)));
+        let u = request_usage(&usage_agent(), &url, "tok-123");
+        assert_eq!(u.reason, None);
+        assert_eq!(u.five_hour.unwrap().percent, 42.0);
+        let reqs = seen.lock().unwrap().clone();
+        assert_eq!(reqs.len(), 1);
+        let req = &reqs[0];
+        assert!(
+            req.starts_with("GET /api/oauth/usage HTTP/1.1\r\n"),
+            "{req}"
+        );
+        assert_eq!(header(req, "authorization"), Some("Bearer tok-123"));
+        assert_eq!(header(req, "anthropic-beta"), Some(BETA));
+        assert_eq!(header(req, "accept"), Some("application/json"));
+        let ua = format!("mcc/{}", env!("CARGO_PKG_VERSION"));
+        assert_eq!(header(req, "user-agent"), Some(ua.as_str()));
+    }
+
+    #[test]
+    fn usage_request_maps_http_statuses() {
+        for (status, reason) in [
+            ("401 Unauthorized", Reason::TokenExpired),
+            ("403 Forbidden", Reason::Unauthorized),
+            ("429 Too Many Requests", Reason::RateLimited),
+            ("404 Not Found", Reason::HttpError),
+            ("500 Internal Server Error", Reason::HttpError),
+            ("204 No Content", Reason::HttpError),
+        ] {
+            let (url, _) = serve(Some(reply(status, "", r#"{"error":"x"}"#)));
+            let u = request_usage(&usage_agent(), &url, "tok");
+            assert_eq!(u.reason, Some(reason), "{status}");
+        }
+        let (url, _) = serve(Some(reply("200 OK", "", "not json")));
+        let u = request_usage(&usage_agent(), &url, "tok");
+        assert_eq!(u.reason, Some(Reason::ParseError));
+    }
+
+    #[test]
+    fn usage_request_never_follows_a_redirect() {
+        // The redirect target records any request that reaches it.
+        let (elsewhere, elsewhere_seen) = serve(Some(reply("200 OK", "", "{}")));
+        for status in [
+            "301 Moved Permanently",
+            "302 Found",
+            "307 Temporary Redirect",
+        ] {
+            let location = format!("Location: {elsewhere}\r\n");
+            let (url, seen) = serve(Some(reply(status, &location, "")));
+            let u = request_usage(&usage_agent(), &url, "secret-token");
+            assert_eq!(u.reason, Some(Reason::HttpError), "{status}");
+            assert_eq!(seen.lock().unwrap().len(), 1, "{status}");
+        }
+        // Give a (wrongly) followed redirect time to land before checking.
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            elsewhere_seen.lock().unwrap().is_empty(),
+            "a redirect was followed: {:?}",
+            elsewhere_seen.lock().unwrap()
+        );
+    }
+
+    #[test]
+    fn usage_request_times_out_after_four_seconds() {
+        let (url, seen) = serve(None);
+        let start = std::time::Instant::now();
+        let u = request_usage(&usage_agent(), &url, "tok");
+        let took = start.elapsed();
+        assert_eq!(u.reason, Some(Reason::Network));
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        assert!(
+            took >= Duration::from_millis(3500) && took < Duration::from_secs(8),
+            "{took:?}"
+        );
+    }
+
+    #[test]
+    fn usage_request_connection_refused_is_network() {
+        // Bind then drop: nothing listens on the port any more.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let url = format!("http://127.0.0.1:{port}/api/oauth/usage");
+        let u = request_usage(&usage_agent(), &url, "tok");
+        assert_eq!(u.reason, Some(Reason::Network));
     }
 
     #[test]

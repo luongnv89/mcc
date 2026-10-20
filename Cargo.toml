@@ -30,7 +30,7 @@ serde_json = { version = "1.0.151", features = ["preserve_order"] }
 sha2 = "0.10.9"
 toml = "1.1.8"
 toml_edit = "0.25.17"
-ureq = { version = "2.12.1", default-features = false, features = ["tls"] }
+ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
 walkdir = "2.5.0"
 
 [dev-dependencies]
