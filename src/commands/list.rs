@@ -110,13 +110,17 @@ fn sharing_notes(all: &[ProfileMetrics]) {
     }
 }
 
-/// Leave the account email out (null in JSON), and the organization too when
-/// its name contains an email, as personal plans' do ("me@x.com's
-/// Organization").
+/// Leave the account email out (null in JSON), and the organization and
+/// label too when they contain an email, as personal plans' organizations
+/// do ("me@x.com's Organization"; `mcc add` offers it as the label).
 fn hide_email(m: &mut ProfileMetrics) {
     m.account = None;
-    if m.organization.as_deref().is_some_and(|o| o.contains('@')) {
+    let has_email = |v: &Option<String>| v.as_deref().is_some_and(|s| s.contains('@'));
+    if has_email(&m.organization) {
         m.organization = None;
+    }
+    if has_email(&m.label) {
+        m.label = None;
     }
 }
 

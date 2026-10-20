@@ -105,6 +105,16 @@ fn list_hides_emails_unless_asked() {
         ".mcc/profiles/solo/.claude.json",
         r#"{"oauthAccount":{"emailAddress":"solo@example.com","organizationName":"solo@example.com's Organization"}}"#,
     );
+    // `mcc add` offers the organization as the label.
+    sb.mcc()
+        .args([
+            "config",
+            "set",
+            "profiles.solo.label",
+            "solo@example.com's Organization",
+        ])
+        .assert()
+        .success();
     let list = |args: &[&str]| stdout_of(sb.mcc().arg("list").arg("--no-usage").args(args));
 
     let table = list(&[]);
@@ -143,6 +153,7 @@ fn list_hides_emails_unless_asked() {
         let s = by_name(arr, "solo");
         assert!(s.get("account").is_some_and(|a| a.is_null()), "{s}");
         assert!(s.get("organization").is_some_and(|o| o.is_null()), "{s}");
+        assert!(s.get("label").is_some_and(|l| l.is_null()), "{s}");
     }
 
     let shown = list(&["--show-email"]);

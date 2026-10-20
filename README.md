@@ -529,7 +529,7 @@ work       █████████░ 85%!  35m (Sat Oct 10 14:21)     █�
 - **Tokens stay private.** With the live lookup, the access token is only sent to that endpoint, for its own profile. It is never printed, logged, or written anywhere. mcc never refreshes tokens: if a login has expired, start the profile in Claude Code once (`work`, `claude`, …) and it refreshes itself.
 - **Turn it off** with `mcc list --no-usage` or `MCC_NO_USAGE=1` (which also applies to `mcc usage` and `mcc run`); usage then shows `—` and nothing reads the cache, the network or the keychain.
 
-In `mcc list --json`, every profile has a `usage` object. `mcc usage --json` prints one object per profile with `name`, `command`, `is_default`, `account` (`null` when logged out, or when emails are hidden, as they are by default since v0.2.0; scripts that read `account` need `--show-email` or `[privacy] show_email = true`) and the same `usage` object. `mcc list --json` and `--json-v2` keep `account` the same way: `null` while emails are hidden, as is an `organization` whose name contains the email (personal plans are named after it); the fields are never left out:
+In `mcc list --json`, every profile has a `usage` object. `mcc usage --json` prints one object per profile with `name`, `command`, `is_default`, `account` (`null` when logged out, or when emails are hidden, as they are by default since v0.2.0; scripts that read `account` need `--show-email` or `[privacy] show_email = true`) and the same `usage` object. `mcc list --json` and `--json-v2` keep `account` the same way: `null` while emails are hidden, as are an `organization` and a `label` that contain an email (personal plans' organizations are named after it); the fields are never left out:
 
 ```json
 "usage": {
