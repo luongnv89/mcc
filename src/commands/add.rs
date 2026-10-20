@@ -48,6 +48,10 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &AddArgs) -> Result<()> {
             CliError::usage(m).hint("example: mcc add work --label \"Acme (work)\"")
         })?;
     }
+    if let Some(color) = &args.color {
+        ui::check_color(color)
+            .map_err(|m| CliError::usage(m).hint("example: mcc add work --color blue"))?;
+    }
     if !paths.default_dir.exists() {
         return add_default(paths, cfg, &env, args);
     }
@@ -68,6 +72,9 @@ fn add_default(paths: &Paths, cfg: &Config, env: &EnvInfo, args: &AddArgs) -> Re
     }
     if args.label.is_some() {
         ui::warn("--label is not used for the default profile; it applies to profiles mcc adds");
+    }
+    if args.color.is_some() {
+        ui::warn("--color is not used for the default profile; it applies to profiles mcc adds");
     }
     if ui::is_interactive()
         && !args.yes
@@ -261,7 +268,7 @@ pub(crate) fn check_label(label: &str) -> std::result::Result<(), String> {
     if t.chars().count() > LABEL_MAX {
         return Err(format!("the label is longer than {LABEL_MAX} characters"));
     }
-    if t.chars().any(char::is_control) {
+    if super::has_control(t) {
         return Err("the label contains control characters".into());
     }
     Ok(())
@@ -464,6 +471,8 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
                 share_group: None,
                 share_cross_org_allowed_at: None,
                 label: None,
+                // Checked in `run`.
+                color: args.color.as_deref().and_then(|c| ui::check_color(c).ok()),
                 account: None,
                 settings: None,
                 link: link.clone(),
@@ -702,6 +711,9 @@ fn summary(paths: &Paths, cfg: &Config, alias: &str, clone: bool, logged_in: boo
     }
     if let Some(l) = &p.label {
         ui::kv("Label", l);
+    }
+    if let Some(c) = &p.color {
+        ui::kv("Color", &ui::paint_stderr(c, Some(c)));
     }
     ui::kv("Directory", &paths.display(&p.dir));
     ui::kv(

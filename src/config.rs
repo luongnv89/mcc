@@ -120,6 +120,12 @@ pub struct Profile {
     /// while unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// The profile's color, one of `ui::PROFILE_COLORS` (`mcc add --color`,
+    /// `mcc config set profiles.ALIAS.color`): `mcc list`, `mcc run` and the
+    /// `mcc statusline --prefix` segment show the profile's name in it. Left
+    /// out of the file while unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
     /// The account `mcc add` saw after logging in, as `[profiles.ALIAS.account]`.
     /// Left out of the file until then (`--no-login`, or a profile added
     /// before mcc recorded it).
@@ -617,6 +623,7 @@ mod tests {
                 share_group: None,
                 share_cross_org_allowed_at: None,
                 label: None,
+                color: None,
                 account: None,
                 settings: None,
                 link: Vec::new(),
@@ -755,6 +762,7 @@ mod tests {
             share_group: None,
             share_cross_org_allowed_at: None,
             label: None,
+            color: None,
             account: None,
             link: Vec::new(),
             settings: None,

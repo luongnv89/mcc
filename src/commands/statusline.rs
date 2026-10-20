@@ -86,7 +86,14 @@ pub fn render(paths: &Paths, prefix: bool) -> Result<()> {
     };
     let text = String::from_utf8_lossy(&output);
     let shown = match profile.as_deref().filter(|_| prefix) {
-        Some(name) => with_prefix(name, &text),
+        Some(name) => with_prefix(
+            &segment(
+                name,
+                super::shown_label(&cfg, name),
+                super::profile_color(&cfg, name),
+            ),
+            &text,
+        ),
         None => text.into_owned(),
     };
     let mut out = std::io::stdout().lock();
@@ -231,12 +238,24 @@ fn run_wrapped(cmd: &str, input: &[u8]) -> Vec<u8> {
     out
 }
 
-/// `[name] ` before the first line (just `[name]` when there is no output).
-pub fn with_prefix(name: &str, text: &str) -> String {
+/// The `--prefix` segment: `[work]`, `[work · Acme]` with a label, in the
+/// profile's color unless `--no-color` or `NO_COLOR` is set (Claude Code
+/// renders the escapes; stdout is never a terminal here).
+pub fn segment(name: &str, label: Option<&str>, color: Option<&str>) -> String {
+    let text = match label {
+        Some(l) => format!("[{name} · {l}]"),
+        None => format!("[{name}]"),
+    };
+    ui::paint_forced(&text, color)
+}
+
+/// `segment` and a space before the first line (just `segment` when there
+/// is no output).
+pub fn with_prefix(segment: &str, text: &str) -> String {
     if text.trim().is_empty() {
-        format!("[{name}]")
+        segment.to_string()
     } else {
-        format!("[{name}] {text}")
+        format!("{segment} {text}")
     }
 }
 
@@ -772,6 +791,7 @@ mod tests {
                 share_group: None,
                 share_cross_org_allowed_at: None,
                 label: None,
+                color: None,
                 account: None,
                 settings: None,
                 link: Vec::new(),
@@ -839,12 +859,18 @@ mod tests {
 
     #[test]
     fn prefix() {
+        let work = segment("work", None, None);
+        assert_eq!(work, "[work]");
         assert_eq!(
-            with_prefix("work", "Opus 5 | 12%\n"),
+            with_prefix(&work, "Opus 5 | 12%\n"),
             "[work] Opus 5 | 12%\n"
         );
-        assert_eq!(with_prefix("work", "a\nb"), "[work] a\nb");
-        assert_eq!(with_prefix("work", ""), "[work]");
-        assert_eq!(with_prefix("work", " \n"), "[work]");
+        assert_eq!(with_prefix(&work, "a\nb"), "[work] a\nb");
+        assert_eq!(with_prefix(&work, ""), "[work]");
+        assert_eq!(with_prefix(&work, " \n"), "[work]");
+        assert_eq!(
+            segment("work", Some("Acme (work)"), None),
+            "[work · Acme (work)]"
+        );
     }
 }
