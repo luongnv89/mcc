@@ -367,7 +367,7 @@ An alias must be 1–32 characters: lowercase letters, digits, `-` or `_`, start
 |---|---|
 | `MCC_HOME` | Use this directory instead of `$HOME` for everything mcc reads and writes (great for testing) |
 | `MCC_CLAUDE_BIN` | Path to the `claude` binary |
-| `MCC_NON_INTERACTIVE` | Set to any value (even empty) to never prompt, as when stdin or stderr isn't a terminal: a command that needs an answer stops and names the flag to pass instead (useful in scripts and CI) |
+| `MCC_NON_INTERACTIVE` | Set to any value (even empty) to never prompt, as when stdin or stderr isn't a terminal: required prompts stop and name the flag to pass instead, and optional ones take their default (useful in scripts and CI) |
 | `MCC_NO_USAGE` | Any value except empty or `0`: same as `mcc list --no-usage`; `mcc usage` shows usage as not fetched, and `mcc run` starts the project's profile without checking its usage |
 | `COLUMNS` | Terminal width used to size the usage bars in `mcc list` and `mcc usage` (default: the detected width; unlimited when piped) |
 | `MCC_USAGE_URL` | Test/debug override for the usage endpoint. It receives bearer tokens, so only `https://` URLs and `http://` on loopback (`127.0.0.1`, `localhost`, `[::1]`) are accepted; any other value is refused and usage is not fetched at all |

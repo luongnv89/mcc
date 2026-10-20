@@ -508,7 +508,7 @@ work       <span class="y">█████████</span><span class="d">░
           <tbody>
             <tr><td><code>MCC_HOME</code></td><td>Use this directory instead of <code>$HOME</code> for everything mcc reads and writes (useful for testing)</td></tr>
             <tr><td><code>MCC_CLAUDE_BIN</code></td><td>Path to the <code>claude</code> binary</td></tr>
-            <tr><td><code>MCC_NON_INTERACTIVE</code></td><td>Set to any value (even empty) to never prompt, as when stdin or stderr isn't a terminal: a command that needs an answer stops and names the flag to pass instead (useful in scripts and CI)</td></tr>
+            <tr><td><code>MCC_NON_INTERACTIVE</code></td><td>Set to any value (even empty) to never prompt, as when stdin or stderr isn't a terminal: required prompts stop and name the flag to pass instead, and optional ones take their default (useful in scripts and CI)</td></tr>
             <tr><td><code>MCC_NO_USAGE</code></td><td>Any value except empty or <code>0</code>: same as <code>mcc list --no-usage</code>; <code>mcc usage</code> shows usage as not fetched</td></tr>
             <tr><td><code>COLUMNS</code></td><td>Terminal width used to size usage bars (default: detected width; unlimited when piped)</td></tr>
             <tr><td><code>MCC_USAGE_URL</code></td><td>Test/debug override for the usage endpoint. It receives bearer tokens, so only <code>https://</code> URLs and <code>http://</code> on loopback (<code>127.0.0.1</code>, <code>localhost</code>, <code>[::1]</code>) are accepted; any other value is refused and usage is not fetched at all</td></tr>
