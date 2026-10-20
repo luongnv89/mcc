@@ -1790,6 +1790,20 @@ fn settings_overlay_errors_and_excluded_settings() {
         .stderr(predicate::str::contains("must hold a JSON object"));
     assert_eq!(sb.read(".mcc/profiles/work/settings.json"), before);
 
+    // Without a default settings.json there is nothing to merge onto.
+    sb.write(".mcc/profiles/work/settings.mcc.json", r#"{"model": "x"}"#);
+    let default_settings = sb.read(".claude/settings.json");
+    std::fs::remove_file(sb.path(".claude/settings.json")).unwrap();
+    sb.mcc()
+        .args(["sync", "work"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "no settings.json to merge it onto",
+        ));
+    assert_eq!(sb.read(".mcc/profiles/work/settings.json"), before);
+    sb.write(".claude/settings.json", &default_settings);
+
     // With settings excluded the profile owns its settings.json: the
     // overlay is not applied, and sync says so.
     sb.write(".mcc/profiles/work/settings.mcc.json", r#"{"model": "x"}"#);

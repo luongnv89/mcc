@@ -218,6 +218,17 @@ fn sync_one(
             "\"{alias}\" has a settings overlay, but [sync] exclude has \"settings\", so sync leaves its settings.json alone and the overlay is not applied"
         ));
     }
+    if rw.has_overlay()
+        && spec
+            .items
+            .iter()
+            .any(|i| i.rel == Path::new(copy::SETTINGS_FILE))
+        && !paths.default_dir.join(copy::SETTINGS_FILE).is_file()
+    {
+        ui::warn(&format!(
+            "\"{alias}\" has a settings overlay, but the default profile has no settings.json to merge it onto, so it is not applied"
+        ));
+    }
     let mut steps = ui::Steps::new(if args.dry_run { 1 } else { 3 });
 
     let step = steps.start("Compare with the default profile");
