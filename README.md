@@ -213,6 +213,17 @@ Also in `~/.mcc/config.toml` (emails are hidden by default):
 show_email = true
 ```
 
+### Live usage lookup (opt-in)
+
+By default `mcc list`, `mcc usage` and `mcc run` read usage only from what `mcc statusline` cached, and never read a login. To have them look usage up live with each profile's login instead, opt in:
+
+```toml
+[usage]
+live = true   # read each profile's OAuth token and ask Anthropic's usage endpoint
+```
+
+The first command that looks usage up live prints a one-time disclosure on stderr and records when as `live_disclosed_at` under `[usage]` (it takes `~/.mcc/.lock` for that one write, like every command that saves the config). See [Usage limits](#usage-limits-mcc-list-and-mcc-usage) for what it sends where.
+
 ### Sharing sessions between profiles
 
 Each profile keeps its sessions to itself unless you turn sharing on. Sharing is a per-profile setting and is **off by default**. Once two or more profiles share, `claude --resume` and `/resume` in any of them list the sessions of all of them.
@@ -292,7 +303,7 @@ $ mcc run
 - **`mcc list`** shows your projects under the profile table, with the profile and account each one starts with (and `← here` for the current directory). `mcc list --long` adds a `Default for` row to each profile's card, and `mcc list --json` has a `project_defaults` array per profile.
 - `mcc project list` (`--json`) shows every project with its profile and allowed profiles (an `allow` array in the JSON), and `mcc project unset` removes the one that applies here (or the one given with `--path`).
 - `mcc rename` updates the project defaults and allow lists that name the profile. `mcc delete` removes the project defaults naming it, and takes it off the allow lists.
-- The usage lookup is the same as for `mcc usage`, described below.
+- The usage it checks is the same as for `mcc usage`, described below: the statusline cache by default, so a profile at its limit is only recognized once its rate limits have been cached (or with `[usage] live = true`).
 
 Project defaults live in `~/.mcc/config.toml`:
 
@@ -304,33 +315,35 @@ allow = ["lab"]   # optional: other profiles `mcc run` may offer at the limit
 
 ### Usage limits: `mcc list` and `mcc usage`
 
-The `5H` and `WEEK` columns of `mcc list` show how much of each account's 5-hour and weekly limit is used, and how long until it resets, for every profile including the default:
+The `5H` and `WEEK` columns of `mcc list` show how much of each account's 5-hour and weekly limit is used, and how long until it resets, for every profile including the default. `UPDATED` says how old those numbers are:
 
 ```console
-NAME       COMMAND  ACCOUNT         5H                     WEEK                   SKILLS  …
-default ★  claude   me@example.com  ████░░░░░░ 42% (2h)    ██░░░░░░░░ 18% (3d)         2  …
-work       work     work@corp.com   █████████░ 85%! (35m)  ██████████ 96%!! (3d)       2  …
-lab        lab      —               unavailable            unavailable                 0  …
+NAME       COMMAND  ACCOUNT         5H                     WEEK                   UPDATED  SKILLS  …
+default ★  claude   me@example.com  ████░░░░░░ 42% (2h)    ██░░░░░░░░ 18% (3d)    12m ago       2  …
+work       work     work@corp.com   █████████░ 85%! (35m)  ██████████ 96%!! (3d)  just now      2  …
+lab        lab      —               —                      —                      —             0  …
 ```
 
-`mcc list --long` spells it out (`5h usage: ████████░░░░░░░░░░░░ 42% (resets in 2h 14m)`), or says why it is unavailable (`Usage: unavailable (not logged in)`).
+`mcc list --long` spells it out (`5h usage: ████████░░░░░░░░░░░░ 42% (resets in 2h 14m)`, `Usage updated: 12m ago (statusline cache)`), or says why there is none (`Usage: — (no recent usage cached; run /usage in Claude Code)`).
 
 `mcc usage` shows only usage, as a compact table with one row per profile: for each window a bar with the percent used, the time until it resets, and the reset time in your local time zone. `mcc usage work` shows one profile (`mcc usage default` for `~/.claude`); an unknown name is a usage error (exit 2). Account emails are hidden by default, so the output is safe to share on screen; `--show-email` adds an `ACCOUNT` column for one run, and `show_email = true` under `[usage]` in `~/.mcc/config.toml` shows it every time (`--hide-email` then hides it again).
 
 ```console
 $ mcc usage
-PROFILE    5-HOUR           RESETS IN                  WEEKLY            RESETS IN
-default ★  ████░░░░░░ 42%   2h 14m (Sat Oct 10 16:00)  ██░░░░░░░░ 18%    3d 4h (Wed Oct 14 00:00)
-lab        unavailable (not logged in)
-work       █████████░ 85%!  35m (Sat Oct 10 14:21)     ██████████ 96%!!  3d 4h (Wed Oct 14 00:00)
+PROFILE    5-HOUR           RESETS IN                  WEEKLY            RESETS IN                 UPDATED
+default ★  ████░░░░░░ 42%   2h 14m (Sat Oct 10 16:00)  ██░░░░░░░░ 18%    3d 4h (Wed Oct 14 00:00)  12m ago
+lab        — (no recent usage cached; run /usage in Claude Code)
+work       █████████░ 85%!  35m (Sat Oct 10 14:21)     ██████████ 96%!!  3d 4h (Wed Oct 14 00:00)  just now
 ```
+
+- **Where it comes from (default).** The rate limits [`mcc statusline`](#status-line-mcc-statusline) caches in `~/.mcc/state/<profile>/usage.json` while you use Claude Code. No login is read and nothing touches the network. `UPDATED` (and `· 12m ago` in `mcc run`) is how old the cached numbers are. A window whose reset time has passed is obsolete and shown as `—`. A profile with nothing current cached (an idle profile, a Team or Enterprise seat that reports no rate limits, or no `mcc statusline install` yet) shows `—` and a hint to run `/usage` inside Claude Code.
 
 - **Reading the bars.** Each bar is the share of the limit used. `!` after the percent marks 80% or more and `!!` 95% or more. In a colour terminal the bar is also green, yellow (80%+) or red (95%+), but the markers carry the same meaning, so nothing depends on colour alone (`--no-color`, `NO_COLOR`, or piped output).
 - **Narrow terminals.** When the output would not fit the terminal's width, bars shrink (`mcc usage` first drops the absolute reset time, keeping the time until the reset, then shrinks its bar in the same 10/5/0 steps as the `mcc list` table). From 80 columns up a compact bar always stays, even if the `mcc list` table has to wrap; below 80 columns bars disappear (leaving just the percent, such as `42%`) when nothing fits. Set `COLUMNS` to override the detected width. Piped output gets full-size bars unless `COLUMNS` is set, and `--json` never has bars or colour.
-- **Where it comes from.** mcc reads each profile's own Claude Code login (`<config dir>/.credentials.json`, or on macOS the login Keychain item Claude Code created for that config dir) and asks Anthropic's usage endpoint (`https://api.anthropic.com/api/oauth/usage`, the one behind Claude Code's `/usage` screen). The endpoint is **undocumented** and may change; when it does, mcc shows "unavailable" rather than failing.
-- **Never fatal.** If usage can't be determined (logged out, expired login, offline, API error), the profile shows `unavailable` with the reason (in `mcc usage` and `mcc list --long`), the command still exits 0, and no warning is printed. Requests run in parallel with short timeouts (2 s to connect, 4 s total).
-- **Tokens stay private.** The access token is only sent to that endpoint, for its own profile. It is never printed, logged, or written anywhere. mcc never refreshes tokens: if a login has expired, start the profile in Claude Code once (`work`, `claude`, …) and it refreshes itself.
-- **Turn it off** with `mcc list --no-usage` or `MCC_NO_USAGE=1` (which also applies to `mcc usage`); usage then shows `—` and nothing touches the network or the keychain.
+- **Live lookup (opt-in, `[usage] live = true`).** mcc reads each profile's own Claude Code login (`<config dir>/.credentials.json`, or on macOS the login Keychain item Claude Code created for that config dir, under your login name: `$USER`, or the system's name for your user when `USER` is unset, as under launchd or cron) and asks Anthropic's usage endpoint (`https://api.anthropic.com/api/oauth/usage`, the one behind Claude Code's `/usage` screen). It is off by default: Claude Code's [legal and compliance page](https://code.claude.com/docs/en/legal-and-compliance) says developers may not collect or intermediate Claude.ai credentials, and the endpoint is **undocumented**, rate-limited and may change; when it does, mcc shows "unavailable" rather than failing. The first live lookup prints a one-time disclosure.
+- **Never fatal.** If usage can't be determined (nothing cached; or, live: logged out, expired login, offline, API error), the profile shows `—` or `unavailable` with the reason (in `mcc usage` and `mcc list --long`), and the command still exits 0. Live requests run in parallel with short timeouts (2 s to connect, 4 s total).
+- **Tokens stay private.** With the live lookup, the access token is only sent to that endpoint, for its own profile. It is never printed, logged, or written anywhere. mcc never refreshes tokens: if a login has expired, start the profile in Claude Code once (`work`, `claude`, …) and it refreshes itself.
+- **Turn it off** with `mcc list --no-usage` or `MCC_NO_USAGE=1` (which also applies to `mcc usage` and `mcc run`); usage then shows `—` and nothing reads the cache, the network or the keychain.
 
 In `mcc list --json`, every profile has a `usage` object. `mcc usage --json` prints one object per profile with `name`, `command`, `is_default`, `account` (`null` when logged out, or when emails are hidden, as they are by default since v0.2.0; scripts that read `account` need `--show-email` or `[usage] show_email = true`) and the same `usage` object:
 
@@ -339,11 +352,13 @@ In `mcc list --json`, every profile has a `usage` object. `mcc usage --json` pri
   "status": "ok",
   "reason": null,
   "five_hour": { "percent": 42.0, "resets_at": "2026-10-10T16:00:00Z" },
-  "weekly":    { "percent": 18.0, "resets_at": "2026-10-14T00:00:00Z" }
+  "weekly":    { "percent": 18.0, "resets_at": "2026-10-14T00:00:00Z" },
+  "source": "cache",
+  "updated_at": "2026-10-10T11:48:00Z"
 }
 ```
 
-`status` is `ok` or `unavailable`. `five_hour` and `weekly` are `null` when there is no data (`resets_at` can be `null` too). When `status` is `unavailable`, `reason` is one of:
+`status` is `ok` or `unavailable`. `five_hour` and `weekly` are `null` when there is no data (`resets_at` can be `null` too). `source` is `cache` (the statusline cache), `live` (`[usage] live = true`) or `null` (not looked up); `updated_at` is when the statusline cached the numbers (`null` for live lookups). When `status` is `unavailable`, `reason` is one of:
 
 | `reason` | Meaning |
 |---|---|
@@ -355,6 +370,9 @@ In `mcc list --json`, every profile has a `usage` object. `mcc usage --json` pri
 | `http_error` | any other HTTP status |
 | `parse_error` | the response wasn't the expected JSON |
 | `disabled` | not fetched (`--no-usage` / `MCC_NO_USAGE`) |
+| `no_data` | nothing current in the statusline cache: never cached, or every cached window has reset since; run `/usage` in Claude Code |
+
+The other reasons only come from the live lookup.
 
 ### Status line: `mcc statusline`
 
@@ -403,8 +421,8 @@ An alias must be 1–32 characters: lowercase letters, digits, `-` or `_`, start
 | `MCC_NON_INTERACTIVE` | Set to any value (even empty) to never prompt, as when stdin or stderr isn't a terminal: required prompts stop and name the flag to pass instead, and optional ones take their default (useful in scripts and CI) |
 | `MCC_NO_USAGE` | Any value except empty or `0`: same as `mcc list --no-usage`; `mcc usage` shows usage as not fetched, and `mcc run` starts the project's profile without checking its usage |
 | `COLUMNS` | Terminal width used to size the usage bars in `mcc list` and `mcc usage` (default: the detected width; unlimited when piped) |
-| `MCC_USAGE_URL` | Test/debug override for the usage endpoint. It receives bearer tokens, so only `https://` URLs and `http://` on loopback (`127.0.0.1`, `localhost`, `[::1]`) are accepted; any other value is refused and usage is not fetched at all |
-| `MCC_SECURITY_BIN` | Test/debug override for the macOS `security` binary used to read Keychain logins (default `/usr/bin/security`, macOS only) |
+| `MCC_USAGE_URL` | Test/debug override for the live usage endpoint (`[usage] live = true`). It receives bearer tokens, so only `https://` URLs and `http://` on loopback (`127.0.0.1`, `localhost`, `[::1]`) are accepted; any other value is refused and usage is not fetched at all |
+| `MCC_SECURITY_BIN` | Test/debug override for the macOS `security` binary used to read Keychain logins with `[usage] live = true` (default `/usr/bin/security`, macOS only) |
 | `NO_COLOR` | Disable colors |
 
 ## Exit codes

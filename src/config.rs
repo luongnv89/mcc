@@ -49,6 +49,16 @@ pub struct UsageConfig {
     /// `--show-email` / `--hide-email` override it for one run).
     #[serde(default)]
     pub show_email: bool,
+    /// Look usage up live: read each profile's OAuth token and ask
+    /// Anthropic's usage endpoint. Off by default, which reads only the
+    /// rate limits `mcc statusline` caches. Left out of the file while off,
+    /// so existing files stay as they are.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub live: bool,
+    /// When the live-lookup disclosure was shown (RFC 3339); it is shown
+    /// once. Left out of the file until then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_disclosed_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -213,10 +223,14 @@ impl Config {
 
 /// Make `old` hold what `new` holds, changing only what differs: kept keys
 /// keep their comments, formatting and order, removed keys go, new keys are
-/// appended.
+/// appended. A hand-written `key = false` that serde leaves out (a
+/// `skip_serializing_if = "Not::not"` bool) is kept: it loads the same as
+/// the key being absent, and the user may have written it on purpose.
 fn merge_table(old: &mut toml_edit::Table, new: &toml_edit::Table) {
     use toml_edit::Item;
-    old.retain(|k, _| new.contains_key(k));
+    old.retain(|k, v| {
+        new.contains_key(k) || v.as_value().and_then(toml_edit::Value::as_bool) == Some(false)
+    });
     for (key, new_item) in new.iter() {
         match (old.get_mut(key), new_item) {
             (Some(Item::Table(o)), Item::Table(n)) => merge_table(o, n),
@@ -553,6 +567,37 @@ mod tests {
             "{after}"
         );
         assert!(Config::load(&path).unwrap().usage.show_email);
+    }
+
+    /// Issue #34: a hand-written `live = false` and its comment survive a
+    /// save, while a `live = true` turned off is removed.
+    #[test]
+    fn save_keeps_hand_written_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[usage]\nshow_email = false\n# off for privacy\nlive = false\n",
+        )
+        .unwrap();
+        let mut cfg = Config::load(&path).unwrap();
+        cfg.usage.show_email = true;
+        cfg.save(&path).unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.contains("show_email = true\n"), "{after}");
+        assert!(
+            after.contains("# off for privacy\nlive = false\n"),
+            "{after}"
+        );
+        assert!(!Config::load(&path).unwrap().usage.live);
+
+        std::fs::write(&path, "[usage]\nshow_email = false\nlive = true\n").unwrap();
+        let mut cfg = Config::load(&path).unwrap();
+        assert!(cfg.usage.live);
+        cfg.usage.live = false;
+        cfg.save(&path).unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(!after.contains("live"), "{after}");
     }
 
     /// Issue #35: a save that changes nothing does not rewrite the file.

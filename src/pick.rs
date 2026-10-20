@@ -18,13 +18,18 @@ pub fn at_limit(u: &Usage) -> bool {
             .any(|w| w.percent >= LIMIT)
 }
 
-/// "5h 42%, week 18% used", or why usage is unknown.
-pub fn summary(u: &Usage) -> String {
+/// "5h 42%, week 18% used · 12m ago" (the age of cached usage), or why
+/// usage is unknown.
+pub fn summary(u: &Usage, now: DateTime<Utc>) -> String {
     match (u.status, u.reason) {
         (Status::Ok, _) => {
             let pct =
                 |w: &Option<Window>| w.as_ref().map_or("—".into(), |w| usage::percent(w.percent));
-            format!("5h {}, week {} used", pct(&u.five_hour), pct(&u.weekly))
+            let used = format!("5h {}, week {} used", pct(&u.five_hour), pct(&u.weekly));
+            match u.age(now) {
+                Some(age) => format!("{used} · {age}"),
+                None => used,
+            }
         }
         (_, reason) => format!(
             "usage unknown: {}",
@@ -104,6 +109,8 @@ mod tests {
             reason: None,
             five_hour: w(five),
             weekly: w(week),
+            source: None,
+            updated_at: None,
         }
     }
 
@@ -120,6 +127,7 @@ mod tests {
             Reason::TokenExpired,
             Reason::Network,
             Reason::Disabled,
+            Reason::NoData,
         ] {
             assert!(!at_limit(&Usage::unavailable(r)));
         }
@@ -127,19 +135,23 @@ mod tests {
 
     #[test]
     fn summaries_and_limit_notes() {
-        assert_eq!(
-            summary(&ok(Some(42.4), Some(18.0))),
-            "5h 42%, week 18% used"
-        );
-        assert_eq!(summary(&ok(None, Some(18.0))), "5h —, week 18% used");
-        assert_eq!(
-            summary(&Usage::unavailable(Reason::NotLoggedIn)),
-            "usage unknown: not logged in"
-        );
-
         let now = DateTime::parse_from_rfc3339("2026-10-10T12:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
+        assert_eq!(
+            summary(&ok(Some(42.4), Some(18.0)), now),
+            "5h 42%, week 18% used"
+        );
+        assert_eq!(summary(&ok(None, Some(18.0)), now), "5h —, week 18% used");
+        assert_eq!(
+            summary(&Usage::unavailable(Reason::NotLoggedIn), now),
+            "usage unknown: not logged in"
+        );
+        // Cached usage says how old it is.
+        let mut cached = ok(Some(42.4), Some(18.0));
+        cached.updated_at = Some(now - chrono::Duration::minutes(12));
+        assert_eq!(summary(&cached, now), "5h 42%, week 18% used · 12m ago");
+
         let at = |secs| Some(now + chrono::Duration::seconds(secs));
         let mut u = ok(Some(100.0), Some(40.0));
         u.five_hour.as_mut().unwrap().resets_at = at(35 * 60);

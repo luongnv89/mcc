@@ -5,8 +5,8 @@ mod common;
 use std::time::Duration;
 
 use common::{
-    HOUR_MS, REFUSED_URL, Sandbox, UsageStub, by_name, json, now_ms, rfc3339_in, stdout_of,
-    usage_sandbox, usage_stub, with_profile,
+    HOUR_MS, REFUSED_URL, Sandbox, UsageStub, by_name, enable_live_usage, json, now_ms, rfc3339_in,
+    stdout_of, usage_sandbox, usage_stub, with_profile,
 };
 use predicates::prelude::*;
 
@@ -260,6 +260,7 @@ fn list_maps_usage_api_errors_to_reasons() {
             now_ms() + HOUR_MS,
         );
     }
+    enable_live_usage(&sb);
     let stub = UsageStub::start(|req| {
         let auth = req.authorization.clone().unwrap_or_default();
         // Error bodies echo the token: none of it may reach the output.
@@ -448,6 +449,7 @@ fn near_limit() -> (Sandbox, UsageStub) {
     let sb = Sandbox::new();
     sb.seed_default();
     sb.seed_oauth(".claude", "test-token-default", now_ms() + HOUR_MS);
+    enable_live_usage(&sb);
     let (five, week) = (
         rfc3339_in(2 * 3600 + 14 * 60),
         rfc3339_in(3 * 86400 + 4 * 3600),
@@ -565,7 +567,19 @@ fn list_json_is_unchanged_by_meters() {
     let v = json(out.as_bytes());
     let u = &v[0]["usage"];
     let keys: Vec<&str> = u.as_object().unwrap().keys().map(String::as_str).collect();
-    assert_eq!(keys, ["status", "reason", "five_hour", "weekly"]);
+    assert_eq!(
+        keys,
+        [
+            "status",
+            "reason",
+            "five_hour",
+            "weekly",
+            "source",
+            "updated_at"
+        ]
+    );
+    assert_eq!(u["source"], "live");
+    assert_eq!(u["updated_at"], serde_json::Value::Null);
     assert_eq!(u["five_hour"]["percent"], 85.0);
     assert_eq!(u["weekly"]["percent"], 96.0);
 }

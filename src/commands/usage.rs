@@ -111,7 +111,10 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
                 is_default: e.is_default,
             })
             .collect();
-        for (e, u) in entries.iter_mut().zip(usage::fetch_all(&targets)) {
+        for (e, u) in entries
+            .iter_mut()
+            .zip(usage::lookup(paths, &targets, cfg.usage.live))
+        {
             e.usage = u;
         }
     }
@@ -136,6 +139,12 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
         for line in render(&entries, layout, show_email, now) {
             writeln!(out, "{line}")?;
         }
+        drop(out);
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        let usages: Vec<&Usage> = entries.iter().map(|e| &e.usage).collect();
+        if let Some(hint) = usage::no_data_hint(&names, &usages) {
+            ui::hint(&hint);
+        }
     }
     Ok(())
 }
@@ -143,19 +152,25 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
 /// One row per profile under a header, laid out as `layout`:
 ///
 /// ```text
-/// PROFILE    5-HOUR          RESETS IN                  WEEKLY          RESETS IN
-/// default ★  ████░░░░░░ 42%  2h 14m (Sat Oct 10 16:00)  ██░░░░░░░░ 18%  3d 4h (Wed Oct 14 00:00)
-/// lab        unavailable (not logged in)
+/// PROFILE    5-HOUR          RESETS IN                  WEEKLY          RESETS IN                 UPDATED
+/// default ★  ████░░░░░░ 42%  2h 14m (Sat Oct 10 16:00)  ██░░░░░░░░ 18%  3d 4h (Wed Oct 14 00:00)  12m ago
+/// lab        — (no recent usage cached; run /usage in Claude Code)
 /// ```
 ///
-/// An ACCOUNT column follows PROFILE when `show_email` is set. A profile
-/// without usage has its reason in place of the usage columns.
+/// An ACCOUNT column follows PROFILE when `show_email` is set. UPDATED, the
+/// age of usage read from the statusline cache, is there only for cached
+/// usage. A profile without usage has its reason in place of the usage
+/// columns.
 fn render(entries: &[Entry], layout: Layout, show_email: bool, now: DateTime<Utc>) -> Vec<String> {
     let mut headers = vec!["PROFILE"];
     if show_email {
         headers.push("ACCOUNT");
     }
     headers.extend(["5-HOUR", "RESETS IN", "WEEKLY", "RESETS IN"]);
+    let cached = entries.iter().any(|e| e.usage.updated_at.is_some());
+    if cached {
+        headers.push("UPDATED");
+    }
     // Each row: the leading cells, then either all four usage cells or one
     // reason that spans them.
     let rows: Vec<Vec<String>> = entries
@@ -176,9 +191,12 @@ fn render(entries: &[Entry], layout: Layout, show_email: bool, now: DateTime<Utc
                         let (used, resets) = window(w, layout, now);
                         cells.extend([used, resets]);
                     }
+                    if cached {
+                        cells.push(u.age(now).unwrap_or_default());
+                    }
                 }
-                (_, Some(Reason::Disabled)) => {
-                    cells.push(format!("— ({})", Reason::Disabled.describe()));
+                (_, Some(r @ (Reason::Disabled | Reason::NoData))) => {
+                    cells.push(format!("— ({})", r.describe()));
                 }
                 (_, reason) => cells.push(format!(
                     "unavailable ({})",
@@ -307,6 +325,8 @@ mod tests {
                 percent: 18.0,
                 resets_at: None,
             }),
+            source: Some(usage::Source::Cache),
+            updated_at: Some(at("2026-10-10T11:48:00Z")),
         };
         let entries = [
             entry("default", Some("me@example.com"), ok),
@@ -321,16 +341,16 @@ mod tests {
         assert_eq!(
             lines(false),
             [
-                "PROFILE    5-HOUR          RESETS IN  WEEKLY          RESETS IN",
-                "default ★  ████░░░░░░ 42%  2h 14m     ██░░░░░░░░ 18%",
+                "PROFILE    5-HOUR          RESETS IN  WEEKLY          RESETS IN  UPDATED",
+                "default ★  ████░░░░░░ 42%  2h 14m     ██░░░░░░░░ 18%             12m ago",
                 "lab        unavailable (not logged in)",
             ]
         );
         assert_eq!(
             lines(true),
             [
-                "PROFILE    ACCOUNT         5-HOUR          RESETS IN  WEEKLY          RESETS IN",
-                "default ★  me@example.com  ████░░░░░░ 42%  2h 14m     ██░░░░░░░░ 18%",
+                "PROFILE    ACCOUNT         5-HOUR          RESETS IN  WEEKLY          RESETS IN  UPDATED",
+                "default ★  me@example.com  ████░░░░░░ 42%  2h 14m     ██░░░░░░░░ 18%             12m ago",
                 "lab        —               unavailable (not logged in)",
             ]
         );
@@ -359,6 +379,20 @@ mod tests {
                 "default ★  — (not fetched: --no-usage or MCC_NO_USAGE)",
                 "lab        unavailable (not logged in)",
             ]
+        );
+        // No cached usage: a dash and how to get some, in place of the usage.
+        let none = [entry(
+            "idle",
+            None,
+            Usage::unavailable(Reason::NoData).with_source(usage::Source::Cache),
+        )];
+        let lines: Vec<String> = render(&none, LAYOUTS[0], false, now)
+            .iter()
+            .map(|l| plain(l))
+            .collect();
+        assert_eq!(
+            lines[1],
+            "idle     — (no recent usage cached; run /usage in Claude Code)"
         );
     }
 }

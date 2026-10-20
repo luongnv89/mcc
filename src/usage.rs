@@ -1,10 +1,17 @@
-//! 5-hour and weekly usage for `mcc list` and `mcc usage`.
+//! 5-hour and weekly usage for `mcc list`, `mcc usage` and `mcc run`.
 //!
-//! Each profile's own OAuth access token — from `<config dir>/.credentials.json`,
-//! or the macOS login Keychain — is sent to Anthropic's OAuth usage endpoint,
-//! the one Claude Code's `/usage` screen reads. That endpoint is undocumented,
-//! so every response field is optional and any failure degrades to an
-//! "unavailable" status with a [`Reason`]; it never fails the command.
+//! By default usage comes from the rate limits `mcc statusline` caches in
+//! `~/.mcc/state/<profile>/usage.json` ([`read_all`]): no token is read and
+//! nothing touches the network. A window whose `resets_at` has passed is
+//! obsolete and dropped; a profile with nothing left shows [`Reason::NoData`].
+//!
+//! The live lookup ([`fetch_all`]) runs only with `[usage] live = true`, after
+//! a one-time [`LIVE_DISCLOSURE`]. It sends each profile's own OAuth access
+//! token — from `<config dir>/.credentials.json`, or the macOS login Keychain —
+//! to Anthropic's OAuth usage endpoint, the one Claude Code's `/usage` screen
+//! reads. That endpoint is undocumented, so every response field is optional
+//! and any failure degrades to an "unavailable" status with a [`Reason`]; it
+//! never fails the command.
 //!
 //! Token hygiene: a token lives only in memory. [`AccessToken`] has a redacted
 //! `Debug` and no `Display`; it is never logged, written to disk, or put into
@@ -22,10 +29,27 @@ use serde::{Serialize, Serializer};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::commands::statusline::USAGE_FILE;
+use crate::paths::Paths;
+
 pub const DEFAULT_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const BETA: &str = "oauth-2025-04-20";
 /// Keychain service of the default profile; other config dirs get a hash suffix.
 const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
+
+/// Printed on stderr the first time a command looks usage up live
+/// (`[usage] live = true`); `[usage] live_disclosed_at` records that it was.
+pub const LIVE_DISCLOSURE: &str = "⚠ Live usage lookup is on ([usage] live = true in ~/.mcc/config.toml): mcc reads each profile's Claude Code login (its OAuth access token, from .credentials.json or the macOS Keychain) and sends it to Anthropic's undocumented, rate-limited usage endpoint (https://api.anthropic.com/api/oauth/usage). Anthropic says third-party tools may not collect or intermediate Claude.ai credentials (https://code.claude.com/docs/en/legal-and-compliance), so use this at your own discretion. Set live = false to read usage only from the `mcc statusline` cache. This note is shown once.";
+
+/// Where a [`Usage`] came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Source {
+    /// The rate limits `mcc statusline` cached.
+    Cache,
+    /// The OAuth usage endpoint (`[usage] live = true`).
+    Live,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -54,6 +78,10 @@ pub enum Reason {
     ParseError,
     /// Not fetched (`--no-usage` / `MCC_NO_USAGE`).
     Disabled,
+    /// Nothing current in the statusline cache: never cached (Team or
+    /// Enterprise seats, idle profiles, no `mcc statusline`), or every cached
+    /// window has reset since.
+    NoData,
 }
 
 impl Reason {
@@ -68,6 +96,7 @@ impl Reason {
             Reason::HttpError => "http_error",
             Reason::ParseError => "parse_error",
             Reason::Disabled => "disabled",
+            Reason::NoData => "no_data",
         }
     }
 
@@ -82,6 +111,7 @@ impl Reason {
             Reason::HttpError => "unexpected response from the usage API",
             Reason::ParseError => "unrecognized response from the usage API",
             Reason::Disabled => "not fetched: --no-usage or MCC_NO_USAGE",
+            Reason::NoData => "no recent usage cached; run /usage in Claude Code",
         }
     }
 }
@@ -100,6 +130,11 @@ pub struct Usage {
     pub reason: Option<Reason>,
     pub five_hour: Option<Window>,
     pub weekly: Option<Window>,
+    /// `None` when nothing was looked up (`disabled`).
+    pub source: Option<Source>,
+    /// When the statusline cached these numbers (`None` for live lookups).
+    #[serde(serialize_with = "ser_time")]
+    pub updated_at: Option<DateTime<Utc>>,
 }
 
 impl Usage {
@@ -109,6 +144,8 @@ impl Usage {
             reason: Some(reason),
             five_hour: None,
             weekly: None,
+            source: None,
+            updated_at: None,
         }
     }
 
@@ -118,7 +155,19 @@ impl Usage {
             reason: None,
             five_hour,
             weekly,
+            source: None,
+            updated_at: None,
         }
+    }
+
+    pub fn with_source(mut self, source: Source) -> Self {
+        self.source = Some(source);
+        self
+    }
+
+    /// "12m ago" for cached usage, `None` otherwise.
+    pub fn age(&self, now: DateTime<Utc>) -> Option<String> {
+        self.updated_at.map(|t| age(t, now))
     }
 }
 
@@ -195,7 +244,7 @@ fn keychain_secret(service: &str) -> Option<Vec<u8>> {
         None if cfg!(target_os = "macos") => PathBuf::from("/usr/bin/security"),
         None => return None,
     };
-    let account = std::env::var("USER").ok().filter(|u| !u.is_empty())?;
+    let account = account_name(std::env::var("USER").ok())?;
     let out = Command::new(bin)
         .args(["find-generic-password", "-s", service, "-a", &account, "-w"])
         .stdin(Stdio::null())
@@ -204,6 +253,59 @@ fn keychain_secret(service: &str) -> Option<Vec<u8>> {
         .output()
         .ok()?;
     out.status.success().then_some(out.stdout)
+}
+
+/// The Keychain account Claude Code stores its login under: the login name.
+/// `$USER` when set (`user`), else the password database entry for this uid
+/// (`getpwuid_r`), else `id -un` — launchd jobs, cron and some IDE tasks run
+/// without `USER`.
+fn account_name(user: Option<String>) -> Option<String> {
+    user.filter(|u| !u.is_empty())
+        .or_else(passwd_name)
+        .or_else(id_un)
+}
+
+/// The current uid's login name from the password database.
+fn passwd_name() -> Option<String> {
+    let size = match unsafe { libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) } {
+        n if n > 0 => n as usize,
+        _ => 16 * 1024,
+    };
+    let mut buf: Vec<libc::c_char> = vec![0; size];
+    // SAFETY: `passwd` is plain data; getpwuid_r fills it, pointing into `buf`,
+    // which outlives every read below.
+    let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut found: *mut libc::passwd = std::ptr::null_mut();
+    let rc = unsafe {
+        libc::getpwuid_r(
+            libc::getuid(),
+            &mut pwd,
+            buf.as_mut_ptr(),
+            buf.len(),
+            &mut found,
+        )
+    };
+    if rc != 0 || found.is_null() || pwd.pw_name.is_null() {
+        return None;
+    }
+    // SAFETY: on success pw_name is a NUL-terminated string inside `buf`.
+    let name = unsafe { std::ffi::CStr::from_ptr(pwd.pw_name) };
+    name.to_str()
+        .ok()
+        .filter(|n| !n.is_empty())
+        .map(str::to_string)
+}
+
+/// `id -un`, the last resort.
+fn id_un() -> Option<String> {
+    let out = Command::new("id")
+        .arg("-un")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    let name = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    (out.status.success() && !name.is_empty()).then_some(name)
 }
 
 /// The profile's token: the credentials file first, then the keychain (looked
@@ -277,10 +379,84 @@ pub fn disabled_by_env() -> bool {
 
 /// One profile to fetch usage for.
 pub struct Target {
-    /// Profile name, for the log.
+    /// Profile name: its `~/.mcc/state/` directory, and for the log.
     pub name: String,
     pub config_dir: PathBuf,
     pub is_default: bool,
+}
+
+/// Every target's usage, in target order: looked up live with `live`
+/// (`[usage] live = true`), else read from the statusline cache.
+pub fn lookup(paths: &Paths, targets: &[Target], live: bool) -> Vec<Usage> {
+    if live {
+        fetch_all(targets)
+    } else {
+        read_all(paths, targets)
+    }
+}
+
+/// Every target's usage from the statusline cache
+/// (`~/.mcc/state/<name>/usage.json`); no token, no network.
+pub fn read_all(paths: &Paths, targets: &[Target]) -> Vec<Usage> {
+    let now = Utc::now();
+    let all: Vec<Usage> = targets
+        .iter()
+        .map(|t| {
+            let path = paths.profile_state_dir(&t.name).join(USAGE_FILE);
+            read_cached(&path, now)
+        })
+        .collect();
+    log_outcomes("cached", targets, &all);
+    all
+}
+
+/// One profile's cached usage. Windows that have reset since are obsolete
+/// and dropped; nothing left (or no readable cache) is [`Reason::NoData`].
+fn read_cached(path: &Path, now: DateTime<Utc>) -> Usage {
+    let no_data = || Usage::unavailable(Reason::NoData).with_source(Source::Cache);
+    let Some(v) = std::fs::read(path)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+    else {
+        return no_data();
+    };
+    let updated_at = v.get("updated_at").and_then(timestamp);
+    // A window without a reset time is obsolete once a whole window has
+    // passed since it was cached.
+    let current = |key: &str, length: chrono::Duration| {
+        let w = v.get(key)?;
+        let window = Window {
+            percent: w.get("used_percentage")?.as_f64()?,
+            resets_at: w.get("resets_at").and_then(timestamp),
+        };
+        let ends = window.resets_at.or(updated_at.map(|t| t + length));
+        match ends {
+            Some(t) if t <= now => None,
+            _ => Some(window),
+        }
+    };
+    let (five_hour, weekly) = (
+        current("five_hour", chrono::Duration::hours(5)),
+        current("seven_day", chrono::Duration::days(7)),
+    );
+    if five_hour.is_none() && weekly.is_none() {
+        return no_data();
+    }
+    let mut u = Usage::ok(five_hour, weekly).with_source(Source::Cache);
+    u.updated_at = updated_at;
+    u
+}
+
+/// A time as Claude Code's status line gives it (epoch seconds) or as an
+/// RFC 3339 string.
+fn timestamp(v: &Value) -> Option<DateTime<Utc>> {
+    match v {
+        Value::Number(n) => DateTime::from_timestamp(n.as_f64()? as i64, 0),
+        Value::String(s) => DateTime::parse_from_rfc3339(s)
+            .ok()
+            .map(|t| t.with_timezone(&Utc)),
+        _ => None,
+    }
 }
 
 /// Fetch usage for every target in parallel; results are in target order.
@@ -290,15 +466,22 @@ pub fn fetch_all(targets: &[Target]) -> Vec<Usage> {
         "INFO",
         &format!("fetching 5h/weekly usage for {} profiles", targets.len()),
     );
-    let all = fetch_parallel(targets);
-    for (t, u) in targets.iter().zip(&all) {
+    let all: Vec<Usage> = fetch_parallel(targets)
+        .into_iter()
+        .map(|u| u.with_source(Source::Live))
+        .collect();
+    log_outcomes("live", targets, &all);
+    all
+}
+
+fn log_outcomes(kind: &str, targets: &[Target], all: &[Usage]) {
+    for (t, u) in targets.iter().zip(all) {
         let outcome = match u.reason {
             Some(r) => format!("unavailable ({})", r.code()),
             None => "ok".into(),
         };
-        crate::log::write("INFO", &format!("usage {}: {outcome}", t.name));
+        crate::log::write("INFO", &format!("usage {} ({kind}): {outcome}", t.name));
     }
-    all
 }
 
 fn fetch_parallel(targets: &[Target]) -> Vec<Usage> {
@@ -431,6 +614,34 @@ pub fn local_time(t: DateTime<Utc>) -> String {
         .to_string()
 }
 
+/// The hint under a table where some profiles have no cached usage
+/// ([`Reason::NoData`]), naming them; `None` when every profile has some.
+pub fn no_data_hint(names: &[&str], usages: &[&Usage]) -> Option<String> {
+    let missing: Vec<String> = names
+        .iter()
+        .zip(usages)
+        .filter(|(_, u)| u.reason == Some(Reason::NoData))
+        .map(|(n, _)| format!("`{n}`"))
+        .collect();
+    if missing.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "no recent usage cached for {}: run /usage in Claude Code to see it; `mcc statusline install` caches it as you work (Team and Enterprise seats may report none)",
+        missing.join(", ")
+    ))
+}
+
+/// How long ago `t` was: "just now", "12m ago", "3h ago", "2d ago".
+pub fn age(t: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    match (now - t).num_seconds().max(0) {
+        0..60 => "just now".into(),
+        s if s < 3600 => format!("{}m ago", s / 60),
+        s if s < 86400 => format!("{}h ago", s / 3600),
+        s => format!("{}d ago", s / 86400),
+    }
+}
+
 /// The largest unit of [`until`]: "35m", "2h", "3d", "now".
 pub fn until_short(t: DateTime<Utc>, now: DateTime<Utc>) -> String {
     until(t, now)
@@ -528,13 +739,25 @@ mod tests {
                 "status": "ok",
                 "reason": null,
                 "five_hour": {"percent": 42.0, "resets_at": "2026-10-10T16:00:00Z"},
-                "weekly": null
+                "weekly": null,
+                "source": null,
+                "updated_at": null
             })
         );
         assert_eq!(
-            serde_json::to_value(Usage::unavailable(Reason::TokenExpired)).unwrap(),
-            serde_json::json!({"status": "unavailable", "reason": "token_expired", "five_hour": null, "weekly": null})
+            serde_json::to_value(
+                Usage::unavailable(Reason::TokenExpired).with_source(Source::Live)
+            )
+            .unwrap(),
+            serde_json::json!({"status": "unavailable", "reason": "token_expired", "five_hour": null, "weekly": null, "source": "live", "updated_at": null})
         );
+        let mut cached = Usage::unavailable(Reason::NoData).with_source(Source::Cache);
+        cached.updated_at = Some(at("2026-10-10T12:00:00Z"));
+        assert_eq!(
+            serde_json::to_value(&cached).unwrap()["updated_at"],
+            "2026-10-10T12:00:00Z"
+        );
+        assert_eq!(serde_json::to_value(Source::Cache).unwrap(), "cache");
         for r in [
             Reason::NotLoggedIn,
             Reason::TokenExpired,
@@ -544,6 +767,7 @@ mod tests {
             Reason::HttpError,
             Reason::ParseError,
             Reason::Disabled,
+            Reason::NoData,
         ] {
             assert_eq!(serde_json::to_value(r).unwrap(), r.code());
         }
@@ -697,6 +921,129 @@ mod tests {
             local_time(now)
         );
         assert_eq!(percent(0.0), "0%");
+    }
+
+    #[test]
+    fn reads_the_statusline_cache() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("usage.json");
+        let now = at("2026-10-10T12:00:00Z");
+        let epoch = |t: &str| at(t).timestamp();
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"profile":"work","updated_at":"2026-10-10T11:48:00Z","five_hour":{{"used_percentage":42.4,"resets_at":{}}},"seven_day":{{"used_percentage":18,"resets_at":{}}}}}"#,
+                epoch("2026-10-10T14:00:00Z"),
+                epoch("2026-10-14T00:00:00Z")
+            ),
+        )
+        .unwrap();
+        let u = read_cached(&path, now);
+        assert_eq!(u.status, Status::Ok);
+        assert_eq!(u.source, Some(Source::Cache));
+        assert_eq!(
+            u.five_hour,
+            Some(Window {
+                percent: 42.4,
+                resets_at: Some(at("2026-10-10T14:00:00Z"))
+            })
+        );
+        assert_eq!(u.weekly.as_ref().unwrap().percent, 18.0);
+        assert_eq!(u.age(now).as_deref(), Some("12m ago"));
+    }
+
+    #[test]
+    fn cached_windows_that_have_reset_are_obsolete() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("usage.json");
+        let now = at("2026-10-10T12:00:00Z");
+        // The 5-hour window reset an hour ago; the weekly one is current
+        // (RFC 3339 times are read too).
+        std::fs::write(
+            &path,
+            r#"{"updated_at":"2026-10-10T06:00:00Z","five_hour":{"used_percentage":99,"resets_at":"2026-10-10T11:00:00Z"},"seven_day":{"used_percentage":30,"resets_at":"2026-10-12T00:00:00Z"}}"#,
+        )
+        .unwrap();
+        let u = read_cached(&path, now);
+        assert_eq!(u.status, Status::Ok);
+        assert_eq!(u.five_hour, None);
+        assert_eq!(u.weekly.unwrap().percent, 30.0);
+        // Both reset: nothing current is left.
+        std::fs::write(
+            &path,
+            r#"{"updated_at":"2026-10-01T06:00:00Z","five_hour":{"used_percentage":99,"resets_at":"2026-10-01T11:00:00Z"},"seven_day":{"used_percentage":30,"resets_at":"2026-10-08T00:00:00Z"}}"#,
+        )
+        .unwrap();
+        let u = read_cached(&path, now);
+        assert_eq!(u.status, Status::Unavailable);
+        assert_eq!(u.reason, Some(Reason::NoData));
+        assert_eq!(u.source, Some(Source::Cache)); // No reset time: obsolete a full window after it was cached.
+        std::fs::write(
+            &path,
+            r#"{"updated_at":"2026-10-10T06:00:00Z","five_hour":{"used_percentage":100,"resets_at":null},"seven_day":{"used_percentage":30,"resets_at":null}}"#,
+        )
+        .unwrap();
+        let u = read_cached(&path, now);
+        assert_eq!(u.five_hour, None);
+        assert_eq!(u.weekly.unwrap().resets_at, None);
+    }
+
+    #[test]
+    fn missing_or_broken_cache_is_no_data() {
+        let d = tempfile::tempdir().unwrap();
+        let now = at("2026-10-10T12:00:00Z");
+        let path = d.path().join("usage.json");
+        assert_eq!(read_cached(&path, now).reason, Some(Reason::NoData));
+        for body in ["not json", "{}", r#"{"five_hour":{"resets_at":1}}"#] {
+            std::fs::write(&path, body).unwrap();
+            assert_eq!(
+                read_cached(&path, now).reason,
+                Some(Reason::NoData),
+                "{body}"
+            );
+        }
+    }
+
+    #[test]
+    fn ages() {
+        let now = at("2026-10-10T12:00:00Z");
+        let ago = |s: i64| age(now - chrono::Duration::seconds(s), now);
+        assert_eq!(ago(-30), "just now");
+        assert_eq!(ago(59), "just now");
+        assert_eq!(ago(12 * 60), "12m ago");
+        assert_eq!(ago(3 * 3600 + 5), "3h ago");
+        assert_eq!(ago(2 * 86400), "2d ago");
+    }
+
+    #[test]
+    fn no_data_hint_names_the_profiles_without_cached_usage() {
+        let none = Usage::unavailable(Reason::NoData);
+        let off = Usage::unavailable(Reason::Disabled);
+        assert_eq!(no_data_hint(&["a"], &[&off]), None);
+        let hint = no_data_hint(&["a", "b", "c"], &[&none, &off, &none]).unwrap();
+        assert!(
+            hint.starts_with("no recent usage cached for `a`, `c`:"),
+            "{hint}"
+        );
+        assert!(hint.contains("/usage"), "{hint}");
+    }
+
+    #[test]
+    fn account_name_falls_back_when_user_is_unset() {
+        assert_eq!(
+            account_name(Some("someone".into())).as_deref(),
+            Some("someone")
+        );
+        // A uid without a passwd entry (some containers) has no name to find.
+        let Some(expected) = id_un() else { return };
+        // Unset or empty USER: the password database (or `id -un`) names
+        // the same login.
+        assert_eq!(account_name(None).as_deref(), Some(expected.as_str()));
+        assert_eq!(
+            account_name(Some(String::new())).as_deref(),
+            Some(expected.as_str())
+        );
+        assert_eq!(passwd_name().as_deref(), Some(expected.as_str()));
     }
 
     #[test]

@@ -37,7 +37,8 @@ esac
 
 const FAKE_SECURITY: &str = r#"#!/bin/sh
 # Fake macOS `security`: serves $HOME/fake-keychain/<service> for account
-# mcc-test, else "item not found" (exit 44) like the real one.
+# $FAKE_KEYCHAIN_ACCOUNT (default mcc-test), else "item not found" (exit 44)
+# like the real one.
 echo "$*" >> "$HOME/security.log"
 svc=""; acct=""
 while [ $# -gt 0 ]; do
@@ -45,7 +46,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 f="$HOME/fake-keychain/$svc"
-if [ "$acct" = "mcc-test" ] && [ -f "$f" ]; then cat "$f"; exit 0; fi
+if [ "$acct" = "${FAKE_KEYCHAIN_ACCOUNT:-mcc-test}" ] && [ -f "$f" ]; then cat "$f"; exit 0; fi
 echo "security: The specified item could not be found in the keychain." >&2
 exit 44
 "#;
@@ -313,7 +314,52 @@ pub fn by_name<'a>(arr: &'a [serde_json::Value], name: &str) -> &'a serde_json::
         .unwrap_or_else(|| panic!("no profile {name}"))
 }
 
-/// default + `work` logged in (each with its own token), `lab` logged out.
+/// Turn on the live usage lookup (`[usage] live = true`), its one-time
+/// disclosure already acknowledged, in the sandbox config (a new one when
+/// there is none yet).
+pub fn enable_live_usage(sb: &Sandbox) {
+    const LIVE: &str = "[usage]\nlive = true\nlive_disclosed_at = \"2026-10-01T00:00:00Z\"\n";
+    if !sb.exists(".mcc/config.toml") {
+        sb.write(".mcc/config.toml", LIVE);
+        return;
+    }
+    let cfg = sb.read(".mcc/config.toml");
+    assert!(cfg.contains("[usage]\n"), "{cfg}");
+    sb.write(".mcc/config.toml", &cfg.replacen("[usage]\n", LIVE, 1));
+}
+
+/// What `mcc statusline` caches for `profile`: (percent used, seconds until
+/// the reset) per window, `updated_secs_ago` seconds ago.
+pub fn seed_usage_cache(
+    sb: &Sandbox,
+    profile: &str,
+    five_hour: Option<(f64, i64)>,
+    seven_day: Option<(f64, i64)>,
+    updated_secs_ago: i64,
+) {
+    let now = chrono::Utc::now();
+    let window = |w: Option<(f64, i64)>| match w {
+        Some((pct, secs)) => serde_json::json!({
+            "used_percentage": pct,
+            "resets_at": now.timestamp() + secs,
+        }),
+        None => serde_json::Value::Null,
+    };
+    let record = serde_json::json!({
+        "profile": profile,
+        "updated_at": (now - chrono::Duration::seconds(updated_secs_ago))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "five_hour": window(five_hour),
+        "seven_day": window(seven_day),
+    });
+    sb.write(
+        &format!(".mcc/state/{profile}/usage.json"),
+        &serde_json::to_string_pretty(&record).unwrap(),
+    );
+}
+
+/// default + `work` logged in (each with its own token), `lab` logged out,
+/// with the live usage lookup on.
 pub fn usage_sandbox() -> Sandbox {
     let sb = Sandbox::new();
     sb.seed_default();
@@ -321,6 +367,7 @@ pub fn usage_sandbox() -> Sandbox {
     with_profile(&sb, "lab", "--fresh");
     sb.seed_oauth(".claude", "test-token-default", now_ms() + HOUR_MS);
     sb.seed_oauth(".mcc/profiles/work", "test-token-work", now_ms() + HOUR_MS);
+    enable_live_usage(&sb);
     sb
 }
 

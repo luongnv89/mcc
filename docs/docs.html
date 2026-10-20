@@ -380,6 +380,7 @@ extra = ["my-tool/config.yml"] <span class="cm"># additional paths (relative to 
 
 [usage]
 show_email = true              <span class="cm"># show account emails in `mcc usage` (default: false)</span>
+<span class="cm"># live = true                  # look usage up live with each profile's login (default: off)</span>
 
 [profiles.work]
 share_sessions = true          <span class="cm"># default: false; set it with `mcc share work`</span>
@@ -430,12 +431,12 @@ allow = ["lab"]                <span class="cm"># optional: offered when `work` 
 
       <section id="usage-limits">
         <h2>Usage limits <a class="anchor" href="#usage-limits" aria-label="Link to Usage limits">#</a></h2>
-        <p><code>mcc list</code> shows 5-hour and weekly usage in its <code>5H</code> and <code>WEEK</code> columns; <code>mcc usage</code> shows it in full.</p>
+        <p><code>mcc list</code> shows 5-hour and weekly usage in its <code>5H</code> and <code>WEEK</code> columns, and how old those numbers are in <code>UPDATED</code>; <code>mcc usage</code> shows it in full.</p>
         <div class="term" style="margin:0 0 1.4em"><pre><span class="p">$ </span><span class="c">mcc usage</span>
-<span class="w">PROFILE    5-HOUR           RESETS IN                  WEEKLY            RESETS IN</span>
-default ★  <span class="g">████</span><span class="d">░░░░░░</span> 42%   2h 14m <span class="d">(Sat Oct 10 16:00)</span>  <span class="g">██</span><span class="d">░░░░░░░░</span> 18%    3d 4h <span class="d">(Wed Oct 14 00:00)</span>
-lab        <span class="d">unavailable (not logged in)</span>
-work       <span class="y">█████████</span><span class="d">░</span> <span class="y">85%!</span>  35m <span class="d">(Sat Oct 10 14:21)</span>     <span class="r">██████████</span> <span class="r">96%!!</span>  3d 4h <span class="d">(Wed Oct 14 00:00)</span></pre></div>
+<span class="w">PROFILE    5-HOUR           RESETS IN                  WEEKLY            RESETS IN                 UPDATED</span>
+default ★  <span class="g">████</span><span class="d">░░░░░░</span> 42%   2h 14m <span class="d">(Sat Oct 10 16:00)</span>  <span class="g">██</span><span class="d">░░░░░░░░</span> 18%    3d 4h <span class="d">(Wed Oct 14 00:00)</span>  12m ago
+lab        <span class="d">— (no recent usage cached; run /usage in Claude Code)</span>
+work       <span class="y">█████████</span><span class="d">░</span> <span class="y">85%!</span>  35m <span class="d">(Sat Oct 10 14:21)</span>     <span class="r">██████████</span> <span class="r">96%!!</span>  3d 4h <span class="d">(Wed Oct 14 00:00)</span>  just now</pre></div>
 
         <h3>Reading the bars</h3>
         <p>Each bar is the share of the limit used. <code>!</code> after the percent marks 80% or more and <code>!!</code> marks 95% or more. In a colour terminal the bar is also green, yellow (80%+) or red (95%+), but the markers carry the same meaning, so nothing depends on colour alone (<code>--no-color</code>, <code>NO_COLOR</code> or piped output).</p>
@@ -444,12 +445,13 @@ work       <span class="y">█████████</span><span class="d">░
         <p>When the output wouldn't fit the terminal, bars shrink. <code>mcc usage</code> first drops the absolute reset time and keeps the time until the reset, then shrinks its bar in the same 10 → 5 → 0 cell steps as the <code>mcc list</code> table. From 80 columns up a compact bar always stays; below 80 columns bars disappear (leaving just the percent, such as <code>42%</code>) when nothing fits. Set <code>COLUMNS</code> to override the detected width. Piped output gets full-size bars unless <code>COLUMNS</code> is set, and <code>--json</code> never has bars or colour.</p>
 
         <h3>Where the data comes from</h3>
-        <p>mcc reads each profile's own Claude Code login (<code>&lt;config dir&gt;/.credentials.json</code>, or on macOS the login Keychain item Claude Code created for that config dir) and asks Anthropic's usage endpoint, <code>https://api.anthropic.com/api/oauth/usage</code>, the one behind Claude Code's <code>/usage</code> screen.</p>
-        <div class="callout"><p><strong>The endpoint is undocumented</strong> and may change. When it does, mcc shows "unavailable" rather than failing.</p></div>
+        <p>By default, from the rate limits <a href="#cmd-statusline"><code>mcc statusline</code></a> caches in <code>~/.mcc/state/&lt;profile&gt;/usage.json</code> while you use Claude Code. No login is read and nothing touches the network. <code>UPDATED</code> (and <code>· 12m ago</code> in <code>mcc run</code>) is how old the cached numbers are, and a window whose reset time has passed is obsolete and shown as <code>—</code>. A profile with nothing current cached (an idle profile, a Team or Enterprise seat that reports no rate limits, or no <code>mcc statusline install</code> yet) shows <code>—</code> and a hint to run <code>/usage</code> inside Claude Code.</p>
+        <p><strong>Live lookup (opt-in).</strong> With <code>live = true</code> under <code>[usage]</code> in <code>~/.mcc/config.toml</code>, mcc instead reads each profile's own Claude Code login (<code>&lt;config dir&gt;/.credentials.json</code>, or on macOS the login Keychain item Claude Code created for that config dir, under <code>$USER</code> or, when it is unset, the system's name for your user) and asks Anthropic's usage endpoint, <code>https://api.anthropic.com/api/oauth/usage</code>, the one behind Claude Code's <code>/usage</code> screen. The first command that does so prints a one-time disclosure and records it as <code>live_disclosed_at</code>.</p>
+        <div class="callout"><p><strong>Why it is off by default:</strong> Claude Code's <a href="https://code.claude.com/docs/en/legal-and-compliance">legal and compliance page</a> says developers may not collect or intermediate Claude.ai credentials, and the endpoint is undocumented, rate-limited and may change. When it changes, mcc shows "unavailable" rather than failing.</p></div>
         <ul>
-          <li><strong>Never fatal.</strong> If usage can't be determined (logged out, expired login, offline, API error), the profile shows <code>unavailable</code> with the reason, the command still exits 0, and no warning is printed. Requests run in parallel with short timeouts: 2 s to connect, 4 s total.</li>
-          <li><strong>Tokens stay private.</strong> A profile's access token is only sent to that endpoint, for its own profile. It is never printed, logged or written anywhere. mcc never refreshes tokens: if a login has expired, start the profile in Claude Code once (<code>work</code>, <code>claude</code>, …) and it refreshes itself.</li>
-          <li><strong>Turn it off</strong> with <code>mcc list --no-usage</code> or <code>MCC_NO_USAGE=1</code> (which also applies to <code>mcc usage</code>). Usage then shows <code>—</code> and nothing touches the network or the keychain.</li>
+          <li><strong>Never fatal.</strong> If usage can't be determined (nothing cached; or, live: logged out, expired login, offline, API error), the profile shows <code>—</code> or <code>unavailable</code> with the reason, and the command still exits 0. Live requests run in parallel with short timeouts: 2 s to connect, 4 s total.</li>
+          <li><strong>Tokens stay private.</strong> With the live lookup, a profile's access token is only sent to that endpoint, for its own profile. It is never printed, logged or written anywhere. mcc never refreshes tokens: if a login has expired, start the profile in Claude Code once (<code>work</code>, <code>claude</code>, …) and it refreshes itself.</li>
+          <li><strong>Turn it off</strong> with <code>mcc list --no-usage</code> or <code>MCC_NO_USAGE=1</code> (which also applies to <code>mcc usage</code> and <code>mcc run</code>). Usage then shows <code>—</code> and nothing reads the cache, the network or the keychain.</li>
         </ul>
 
         <h3>JSON format</h3>
@@ -458,9 +460,11 @@ work       <span class="y">█████████</span><span class="d">░
   "status": "ok",
   "reason": null,
   "five_hour": { "percent": 42.0, "resets_at": "2026-10-10T16:00:00Z" },
-  "weekly":    { "percent": 18.0, "resets_at": "2026-10-14T00:00:00Z" }
+  "weekly":    { "percent": 18.0, "resets_at": "2026-10-14T00:00:00Z" },
+  "source": "cache",
+  "updated_at": "2026-10-10T11:48:00Z"
 }</pre></div>
-        <p><code>status</code> is <code>ok</code> or <code>unavailable</code>. <code>five_hour</code> and <code>weekly</code> are <code>null</code> when there is no data (<code>resets_at</code> can be <code>null</code> too). When <code>status</code> is <code>unavailable</code>, <code>reason</code> is one of:</p>
+        <p><code>status</code> is <code>ok</code> or <code>unavailable</code>. <code>five_hour</code> and <code>weekly</code> are <code>null</code> when there is no data (<code>resets_at</code> can be <code>null</code> too). <code>source</code> is <code>cache</code>, <code>live</code> or <code>null</code> (not looked up), and <code>updated_at</code> is when the statusline cached the numbers (<code>null</code> for live lookups). When <code>status</code> is <code>unavailable</code>, <code>reason</code> is one of:</p>
         <div class="table-wrap"><table>
           <thead><tr><th><code>reason</code></th><th>Meaning</th></tr></thead>
           <tbody>
@@ -472,6 +476,7 @@ work       <span class="y">█████████</span><span class="d">░
             <tr><td><code>http_error</code></td><td>Any other HTTP status</td></tr>
             <tr><td><code>parse_error</code></td><td>The response wasn't the expected JSON</td></tr>
             <tr><td><code>disabled</code></td><td>Not fetched (<code>--no-usage</code> / <code>MCC_NO_USAGE</code>)</td></tr>
+            <tr><td><code>no_data</code></td><td>Nothing current in the statusline cache: never cached, or every cached window has reset since; run <code>/usage</code> in Claude Code. The other reasons only come from the live lookup</td></tr>
           </tbody>
         </table></div>
       </section>

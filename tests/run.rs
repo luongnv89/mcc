@@ -42,6 +42,7 @@ fn run_sandbox() -> Sandbox {
     }
     sb.write("code/app/.git/HEAD", "ref: refs/heads/main\n");
     sb.write("code/app/src/main.rs", "");
+    common::enable_live_usage(&sb);
     sb
 }
 
