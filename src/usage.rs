@@ -420,23 +420,30 @@ fn read_cached(path: &Path, now: DateTime<Utc>) -> Usage {
     else {
         return no_data();
     };
-    let current = |key: &str| {
+    let updated_at = v.get("updated_at").and_then(timestamp);
+    // A window without a reset time is obsolete once a whole window has
+    // passed since it was cached.
+    let current = |key: &str, length: chrono::Duration| {
         let w = v.get(key)?;
         let window = Window {
             percent: w.get("used_percentage")?.as_f64()?,
             resets_at: w.get("resets_at").and_then(timestamp),
         };
-        match window.resets_at {
+        let ends = window.resets_at.or(updated_at.map(|t| t + length));
+        match ends {
             Some(t) if t <= now => None,
             _ => Some(window),
         }
     };
-    let (five_hour, weekly) = (current("five_hour"), current("seven_day"));
+    let (five_hour, weekly) = (
+        current("five_hour", chrono::Duration::hours(5)),
+        current("seven_day", chrono::Duration::days(7)),
+    );
     if five_hour.is_none() && weekly.is_none() {
         return no_data();
     }
     let mut u = Usage::ok(five_hour, weekly).with_source(Source::Cache);
-    u.updated_at = v.get("updated_at").and_then(timestamp);
+    u.updated_at = updated_at;
     u
 }
 
@@ -970,7 +977,15 @@ mod tests {
         let u = read_cached(&path, now);
         assert_eq!(u.status, Status::Unavailable);
         assert_eq!(u.reason, Some(Reason::NoData));
-        assert_eq!(u.source, Some(Source::Cache));
+        assert_eq!(u.source, Some(Source::Cache)); // No reset time: obsolete a full window after it was cached.
+        std::fs::write(
+            &path,
+            r#"{"updated_at":"2026-10-10T06:00:00Z","five_hour":{"used_percentage":100,"resets_at":null},"seven_day":{"used_percentage":30,"resets_at":null}}"#,
+        )
+        .unwrap();
+        let u = read_cached(&path, now);
+        assert_eq!(u.five_hour, None);
+        assert_eq!(u.weekly.unwrap().resets_at, None);
     }
 
     #[test]
@@ -1019,7 +1034,8 @@ mod tests {
             account_name(Some("someone".into())).as_deref(),
             Some("someone")
         );
-        let expected = id_un().expect("`id -un` works on the test machine");
+        // A uid without a passwd entry (some containers) has no name to find.
+        let Some(expected) = id_un() else { return };
         // Unset or empty USER: the password database (or `id -un`) names
         // the same login.
         assert_eq!(account_name(None).as_deref(), Some(expected.as_str()));
