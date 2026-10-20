@@ -15,6 +15,7 @@ use crate::config::Config;
 use crate::env_detect::Shell;
 use crate::error::CliError;
 use crate::paths::Paths;
+use crate::txn::{self, Transaction};
 use crate::{fsutil, shell, ui};
 
 /// What a refresh replaced, restored in reverse order on failure. Unlike
@@ -26,28 +27,18 @@ enum Undo {
     RcBlock(PathBuf, String, String),
 }
 
-fn rollback(paths: &Paths, undo: Vec<Undo>) {
-    if undo.is_empty() {
-        return;
-    }
-    ui::warn("Rolling back changes…");
-    for u in undo.into_iter().rev() {
-        let (what, res) = match u {
-            Undo::Wrapper(p, Some(bytes)) => (
-                paths.display(&p),
-                fsutil::write_atomic(&p, &bytes).and_then(|()| fsutil::set_executable(&p)),
-            ),
-            Undo::Wrapper(p, None) => (paths.display(&p), fsutil::remove_any(&p)),
-            Undo::RcBlock(rc, id, body) => (
-                format!("alias block in {}", paths.display(&rc)),
-                shell::upsert_block(paths, &rc, &id, &body),
-            ),
-        };
-        match res {
-            Ok(()) => ui::info(&format!("restored {what}")),
-            Err(e) => ui::warn(&format!("could not restore {what}: {e:#}")),
-        }
-    }
+fn rollback(paths: &Paths, undo: &mut Transaction<Undo>) {
+    undo.rollback(&txn::RESTORE, |u| match u {
+        Undo::Wrapper(p, Some(bytes)) => (
+            paths.display(&p),
+            fsutil::write_atomic(&p, &bytes).and_then(|()| fsutil::set_executable(&p)),
+        ),
+        Undo::Wrapper(p, None) => (paths.display(&p), fsutil::remove_any(&p)),
+        Undo::RcBlock(rc, id, body) => (
+            format!("alias block in {}", paths.display(&rc)),
+            shell::upsert_block(paths, &rc, &id, &body),
+        ),
+    });
 }
 
 /// How one profile's refresh went.
@@ -67,7 +58,7 @@ pub fn run(paths: &Paths, cfg: &Config, args: &RefreshLaunchersArgs) -> Result<(
     }
 
     let claude_bin = claude::find_binary(env.claude_bin.as_deref());
-    let mut undo: Vec<Undo> = Vec::new();
+    let mut undo: Transaction<Undo> = Transaction::new();
     let mut outcomes = Vec::new();
     let mut rc_changed = false;
     let result = (|| -> Result<()> {
@@ -93,7 +84,7 @@ pub fn run(paths: &Paths, cfg: &Config, args: &RefreshLaunchersArgs) -> Result<(
             let mut changed = false;
             let script = shell::launcher_script(paths, name, &p.dir, claude_bin.as_deref());
             if existing.as_deref() != Some(script.as_bytes()) {
-                undo.push(Undo::Wrapper(wrapper.clone(), existing));
+                undo.record(Undo::Wrapper(wrapper.clone(), existing));
                 shell::install_launcher(wrapper, &script)?;
                 changed = true;
             }
@@ -102,7 +93,7 @@ pub fn run(paths: &Paths, cfg: &Config, args: &RefreshLaunchersArgs) -> Result<(
                 let body = shell::alias_block(paths, rc_shell(&rc), name, &p.dir, Some(wrapper));
                 let old = shell::block_body(&rc, name).unwrap_or_default();
                 if old.trim_end() != body.trim_end() {
-                    undo.push(Undo::RcBlock(rc.clone(), name.clone(), old));
+                    undo.record(Undo::RcBlock(rc.clone(), name.clone(), old));
                     shell::upsert_block(paths, &rc, name, &body)?;
                     changed = true;
                     rc_changed = true;
@@ -120,9 +111,10 @@ pub fn run(paths: &Paths, cfg: &Config, args: &RefreshLaunchersArgs) -> Result<(
         Ok(())
     })();
     if let Err(e) = result {
-        rollback(paths, undo);
+        rollback(paths, &mut undo);
         return Err(e);
     }
+    undo.commit();
 
     let count = |f: fn(&Outcome) -> bool| outcomes.iter().filter(|o| f(o)).count();
     let skipped = count(|o| matches!(o, Outcome::Skipped));

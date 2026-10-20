@@ -24,6 +24,7 @@ use crate::cli::ShareArgs;
 use crate::config::{Account, AccountKind, Config, OrgMatch, Profile};
 use crate::error::CliError;
 use crate::paths::Paths;
+use crate::txn::{self, Transaction};
 use crate::{fsutil, metrics, shell, ui};
 
 /// Printed verbatim on stderr the first time sharing is turned on for a
@@ -73,25 +74,27 @@ enum Undo {
     Link(PathBuf),
 }
 
-fn rollback(paths: &Paths, undo: Vec<Undo>) {
-    for u in undo.into_iter().rev() {
-        let (what, res) = match u {
-            Undo::Moved { from, to } => (
-                format!("move {} back", paths.display(&to)),
-                from.parent()
-                    .map_or(Ok(()), std::fs::create_dir_all)
-                    .and_then(|()| std::fs::rename(&to, &from))
-                    .map_err(anyhow::Error::from),
-            ),
-            Undo::Link(p) => (
-                format!("remove {}", paths.display(&p)),
-                fsutil::remove_any(&p),
-            ),
-        };
-        if let Err(e) = res {
-            ui::warn(&format!("rollback: could not {what}: {e:#}"));
-        }
-    }
+/// Rollback of a share: quiet unless a step fails.
+const MESSAGES: txn::Messages = txn::Messages {
+    header: None,
+    done: None,
+    failed: "rollback: could not",
+};
+
+fn rollback(paths: &Paths, undo: &mut Transaction<Undo>) {
+    undo.rollback(&MESSAGES, |u| match u {
+        Undo::Moved { from, to } => (
+            format!("move {} back", paths.display(&to)),
+            from.parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|()| std::fs::rename(&to, &from))
+                .map_err(anyhow::Error::from),
+        ),
+        Undo::Link(p) => (
+            format!("remove {}", paths.display(&p)),
+            fsutil::remove_any(&p),
+        ),
+    });
 }
 
 /// How merging a profile's existing sessions into the store went.
@@ -514,7 +517,7 @@ fn enable(
     let staged = profile
         .dir
         .join(format!(".projects.mcc-share-{}", std::process::id()));
-    let mut undo: Vec<Undo> = Vec::new();
+    let mut undo: Transaction<Undo> = Transaction::new();
     let result = (|| -> Result<Merge> {
         let mut merge = Merge {
             backup: paths.backups_dir.join(format!(
@@ -538,14 +541,14 @@ fn enable(
         if !already {
             if matches!(state, Projects::Dir) {
                 rename(&projects, &staged)?;
-                undo.push(Undo::Moved {
+                undo.record(Undo::Moved {
                     from: projects.clone(),
                     to: staged.clone(),
                 });
             }
             std::os::unix::fs::symlink(&store, &projects)
                 .with_context(|| format!("linking {}", projects.display()))?;
-            undo.push(Undo::Link(projects.clone()));
+            undo.record(Undo::Link(projects.clone()));
             if matches!(state, Projects::Dir) {
                 let backup = merge.backup.clone();
                 merge_into(&staged, &store, &backup, &mut undo, &mut merge)?;
@@ -566,10 +569,11 @@ fn enable(
     let merge = match result {
         Ok(m) => m,
         Err(e) => {
-            rollback(paths, undo);
+            rollback(paths, &mut undo);
             return Err(e);
         }
     };
+    undo.commit();
     if !already
         && matches!(state, Projects::Dir)
         && let Err(e) = fsutil::remove_any(&staged)
@@ -805,7 +809,7 @@ fn merge_into(
     src: &Path,
     dst: &Path,
     backup: &Path,
-    undo: &mut Vec<Undo>,
+    undo: &mut Transaction<Undo>,
     merge: &mut Merge,
 ) -> Result<()> {
     let mut entries: Vec<_> = std::fs::read_dir(src)
@@ -819,7 +823,7 @@ fn merge_into(
         match std::fs::symlink_metadata(&to) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 rename(&from, &to)?;
-                undo.push(Undo::Moved { from, to });
+                undo.record(Undo::Moved { from, to });
                 merge.moved += 1;
             }
             Err(e) => return Err(e).with_context(|| format!("reading {}", to.display())),
@@ -832,7 +836,7 @@ fn merge_into(
                     .with_context(|| format!("creating {}", backup.display()))?;
                 let kept = backup.join(&name);
                 rename(&from, &kept)?;
-                undo.push(Undo::Moved { from, to: kept });
+                undo.record(Undo::Moved { from, to: kept });
                 merge.conflicts += 1;
             }
         }
@@ -1026,7 +1030,7 @@ mod tests {
                 std::fs::write(p, body).unwrap();
             }
         }
-        let mut undo = Vec::new();
+        let mut undo = Transaction::new();
         let mut merge = Merge::default();
         merge_into(&src, &dst, &backup, &mut undo, &mut merge).unwrap();
         let read = |p: PathBuf| std::fs::read_to_string(p).unwrap();
@@ -1039,7 +1043,7 @@ mod tests {
 
         // Rolling back puts every moved file back where it was.
         let paths = Paths::new(d.path().to_path_buf());
-        rollback(&paths, undo);
+        rollback(&paths, &mut undo);
         assert_eq!(read(src.join("p/a.jsonl")), "mine");
         assert_eq!(read(src.join("q/b.jsonl")), "b");
         assert!(!dst.join("q").exists());

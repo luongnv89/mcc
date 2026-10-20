@@ -12,6 +12,7 @@ mod metrics;
 mod paths;
 mod pick;
 mod shell;
+mod txn;
 mod ui;
 mod usage;
 mod validate;

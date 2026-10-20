@@ -14,6 +14,7 @@ use crate::cli::RenameArgs;
 use crate::config::Config;
 use crate::error::CliError;
 use crate::paths::Paths;
+use crate::txn::{self, Transaction};
 use crate::{fsutil, shell, ui, validate};
 
 /// Something created during `rename`, undone in reverse order on failure.
@@ -22,24 +23,14 @@ enum Undo {
     RcBlock(PathBuf, String),
 }
 
-fn rollback(paths: &Paths, undo: Vec<Undo>) {
-    if undo.is_empty() {
-        return;
-    }
-    ui::warn("Rolling back changes…");
-    for u in undo.into_iter().rev() {
-        let (what, res) = match u {
-            Undo::Wrapper(p) => (paths.display(&p), fsutil::remove_any(&p)),
-            Undo::RcBlock(rc, id) => (
-                format!("alias block in {}", paths.display(&rc)),
-                shell::remove_block(paths, &rc, &id).map(|_| ()),
-            ),
-        };
-        match res {
-            Ok(()) => ui::info(&format!("removed {what}")),
-            Err(e) => ui::warn(&format!("could not remove {what}: {e:#}")),
-        }
-    }
+fn rollback(paths: &Paths, undo: &mut Transaction<Undo>) {
+    undo.rollback(&txn::REMOVE, |u| match u {
+        Undo::Wrapper(p) => (paths.display(&p), fsutil::remove_any(&p)),
+        Undo::RcBlock(rc, id) => (
+            format!("alias block in {}", paths.display(&rc)),
+            shell::remove_block(paths, &rc, &id).map(|_| ()),
+        ),
+    });
 }
 
 pub fn run(paths: &Paths, cfg: &mut Config, args: &RenameArgs) -> Result<()> {
@@ -70,7 +61,7 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &RenameArgs) -> Result<()> {
         "Rename Claude Code profile \"{old}\" to \"{new}\""
     ));
     let mut steps = ui::Steps::new(5);
-    let mut undo: Vec<Undo> = Vec::new();
+    let mut undo: Transaction<Undo> = Transaction::new();
 
     // rc files that hold the old alias block: the one recorded for the
     // profile, plus the current shell's (in case it changed since `add`).
@@ -109,7 +100,7 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &RenameArgs) -> Result<()> {
             &profile.dir,
             claude::find_binary(env.claude_bin.as_deref()).as_deref(),
         )?;
-        undo.push(Undo::Wrapper(wrapper.clone()));
+        undo.record(Undo::Wrapper(wrapper.clone()));
         step.ok("");
 
         let step = steps.start("Add shell alias");
@@ -122,7 +113,7 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &RenameArgs) -> Result<()> {
                         new,
                         &shell::alias_block(paths, sh, new, &profile.dir, Some(&wrapper)),
                     )?;
-                    undo.push(Undo::RcBlock(rc.clone(), new.to_string()));
+                    undo.record(Undo::RcBlock(rc.clone(), new.to_string()));
                 }
                 let shown: Vec<String> = rc_files.iter().map(|rc| paths.display(rc)).collect();
                 step.ok(&shown.join(", "));
@@ -165,9 +156,10 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &RenameArgs) -> Result<()> {
     })();
 
     if let Err(e) = result {
-        rollback(paths, undo);
+        rollback(paths, &mut undo);
         return Err(e);
     }
+    undo.commit();
 
     // The new command works from here on; leftovers of the old one are
     // warnings, not failures.

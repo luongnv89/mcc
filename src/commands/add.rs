@@ -12,6 +12,7 @@ use crate::copy::{self, Rewriter};
 use crate::env_detect::{EnvInfo, dir_on_path};
 use crate::error::CliError;
 use crate::paths::Paths;
+use crate::txn::{self, Transaction};
 use crate::{fsutil, metrics, shell, ui, validate};
 
 /// Something created during `add`, undone in reverse order on failure.
@@ -22,32 +23,22 @@ enum Undo {
     Registry(String),
 }
 
-fn rollback(paths: &Paths, cfg: &mut Config, undo: Vec<Undo>) {
-    if undo.is_empty() {
-        return;
-    }
-    ui::warn("Rolling back changes…");
-    for u in undo.into_iter().rev() {
-        let (what, res) = match u {
-            Undo::Dir(p) => (paths.display(&p), fsutil::remove_any(&p)),
-            Undo::Wrapper(p) => (paths.display(&p), fsutil::remove_any(&p)),
-            Undo::RcBlock(rc, id) => (
-                format!("alias block in {}", paths.display(&rc)),
-                shell::remove_block(paths, &rc, &id).map(|_| ()),
-            ),
-            Undo::Registry(alias) => {
-                cfg.profiles.remove(&alias);
-                (
-                    format!("registry entry \"{alias}\""),
-                    cfg.save(&paths.config_file),
-                )
-            }
-        };
-        match res {
-            Ok(()) => ui::info(&format!("removed {what}")),
-            Err(e) => ui::warn(&format!("could not remove {what}: {e:#}")),
+fn rollback(paths: &Paths, cfg: &mut Config, undo: &mut Transaction<Undo>) {
+    undo.rollback(&txn::REMOVE, |u| match u {
+        Undo::Dir(p) => (paths.display(&p), fsutil::remove_any(&p)),
+        Undo::Wrapper(p) => (paths.display(&p), fsutil::remove_any(&p)),
+        Undo::RcBlock(rc, id) => (
+            format!("alias block in {}", paths.display(&rc)),
+            shell::remove_block(paths, &rc, &id).map(|_| ()),
+        ),
+        Undo::Registry(alias) => {
+            cfg.profiles.remove(&alias);
+            (
+                format!("registry entry \"{alias}\""),
+                cfg.save(&paths.config_file),
+            )
         }
-    }
+    });
 }
 
 pub fn run(paths: &Paths, cfg: &mut Config, args: &AddArgs) -> Result<()> {
@@ -344,7 +335,7 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
     ui::header(&format!("Add Claude Code profile \"{alias}\""));
     let profile_dir = paths.profile_dir(&alias);
     let mut steps = ui::Steps::new(8);
-    let mut undo: Vec<Undo> = Vec::new();
+    let mut undo: Transaction<Undo> = Transaction::new();
 
     let result = (|| -> Result<()> {
         let step = steps.start("Validate alias");
@@ -357,7 +348,7 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
 
         let step = steps.start(&format!("Create {}", paths.display(&profile_dir)));
         std::fs::create_dir_all(&profile_dir)?;
-        undo.push(Undo::Dir(profile_dir.clone()));
+        undo.record(Undo::Dir(profile_dir.clone()));
         fsutil::set_private_dir(&profile_dir)?;
         step.ok("");
 
@@ -382,7 +373,7 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
             &profile_dir,
             claude::find_binary(env.claude_bin.as_deref()).as_deref(),
         )?;
-        undo.push(Undo::Wrapper(wrapper.clone()));
+        undo.record(Undo::Wrapper(wrapper.clone()));
         if dir_on_path(&paths.local_bin) {
             step.ok("");
         } else {
@@ -401,7 +392,7 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
                     &alias,
                     &shell::alias_block(paths, sh, &alias, &profile_dir, Some(&wrapper)),
                 )?;
-                undo.push(Undo::RcBlock(rc.clone(), alias.clone()));
+                undo.record(Undo::RcBlock(rc.clone(), alias.clone()));
                 step.ok(&paths.display(rc));
                 Some(rc.clone())
             }
@@ -433,14 +424,14 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
                 account: None,
             },
         );
-        undo.push(Undo::Registry(alias.clone()));
+        undo.record(Undo::Registry(alias.clone()));
         cfg.save(&paths.config_file)?;
         step.ok(&paths.display(&paths.config_file));
         Ok(())
     })();
 
     if let Err(e) = result {
-        rollback(paths, cfg, undo);
+        rollback(paths, cfg, &mut undo);
         return Err(e);
     }
 
@@ -459,7 +450,7 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
             ) {
                 Ok(ok) => ok,
                 Err(e) => {
-                    rollback(paths, cfg, undo);
+                    rollback(paths, cfg, &mut undo);
                     return Err(CliError::runtime(format!(
                         "{e:#} — profile \"{alias}\" was removed"
                     ))
@@ -480,7 +471,7 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
                         "",
                     )?;
                 if !keep {
-                    rollback(paths, cfg, undo);
+                    rollback(paths, cfg, &mut undo);
                     return Err(CliError::runtime(format!(
                         "login failed; profile \"{alias}\" was removed"
                     ))
@@ -496,6 +487,8 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
             None
         }
     };
+    // The profile is kept from here on: nothing below rolls it back.
+    undo.commit();
     let logged_in = account.is_some();
     if let Some(a) = &account {
         warn_if_duplicate(paths, cfg, Some(&alias), a);
