@@ -142,7 +142,7 @@ mcc share work --off                  # stop sharing; work keeps a copy of the s
 mcc project set work                  # `mcc run` starts `work` in this git repository
 mcc project set work --allow lab      # …and may offer `lab` when `work` is at its limit
 mcc project set default --path ~/site # …and the default profile in ~/site
-mcc project list                      # every project and its profile
+mcc project list                      # every project, its profile and allowed profiles
 mcc run -- --resume                   # start this project's profile; arguments after `--` go to claude
 mcc run --profile lab                 # start `lab` here this time; the project's default stays
 mcc run --dry-run                     # print the profile `mcc run` would start, and why
@@ -280,7 +280,7 @@ $ mcc run
 - **Sessions:** Claude Code keeps sessions per profile. If you start another profile, `--resume` and `-c` there only see that profile's sessions, unless both profiles [share sessions](#sharing-sessions-between-profiles).
 - **Why there's no automatic switching:** Anthropic's [Team](https://support.claude.com/en/articles/12004354-purchase-and-manage-seats-on-team-plans) and [Enterprise](https://support.claude.com/en/articles/13393991-purchase-and-manage-seats-on-enterprise-plans) seat rules say you can't route your work through another user's account to use their remaining usage. Its [Consumer Terms](https://www.anthropic.com/legal/consumer-terms) also forbid bypassing its systems or protective measures. So which account to use when one is at its limit is always your call.
 - **`mcc list`** shows your projects under the profile table, with the profile and account each one starts with (and `← here` for the current directory). `mcc list --long` adds a `Default for` row to each profile's card, and `mcc list --json` has a `project_defaults` array per profile.
-- `mcc project list` (`--json`) shows every project and its profile, and `mcc project unset` removes the one that applies here (or the one given with `--path`).
+- `mcc project list` (`--json`) shows every project with its profile and allowed profiles (an `allow` array in the JSON), and `mcc project unset` removes the one that applies here (or the one given with `--path`).
 - `mcc rename` updates the project defaults and allow lists that name the profile. `mcc delete` removes the project defaults naming it, and takes it off the allow lists.
 - The usage lookup is the same as for `mcc usage`, described below.
 

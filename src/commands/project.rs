@@ -106,11 +106,28 @@ fn set(
             ", start it anyway, or start an allowed profile",
         ),
     };
+    let allowed = project.allow.clone();
     let previous = cfg.projects.insert(key(&dir), project);
     cfg.save(&paths.config_file)?;
-    let was = match previous {
-        Some(p) if p.profile != profile => format!(" (was `{}`)", p.profile),
-        _ => String::new(),
+    // What changed: the profile, and the profiles it no longer allows.
+    let mut was = Vec::new();
+    if let Some(p) = &previous {
+        if p.profile != profile {
+            was.push(format!("was `{}`", p.profile));
+        }
+        let dropped: Vec<String> = p
+            .allow
+            .iter()
+            .filter(|n| *n != profile && !allowed.contains(n))
+            .cloned()
+            .collect();
+        if !dropped.is_empty() {
+            was.push(format!("no longer allows {}", ticked(&dropped)));
+        }
+    }
+    let was = match was.as_slice() {
+        [] => String::new(),
+        notes => format!(" ({})", notes.join("; ")),
     };
     ui::success(&format!(
         "{}: `mcc run` starts `{profile}` here{was}{also}",

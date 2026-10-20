@@ -307,6 +307,41 @@ fn run_at_the_limit_without_a_terminal_exits_2_without_other_usage() {
 }
 
 #[test]
+fn run_offers_only_allowed_profiles_that_exist_and_are_not_the_projects() {
+    let sb = run_sandbox();
+    set_project_allowing(&sb, "work", "lab");
+    // A hand-edited list: the project's own profile, a profile that doesn't
+    // exist, and a name twice.
+    let cfg = sb.read(".mcc/config.toml");
+    assert!(cfg.contains("allow = [\"lab\"]\n"), "{cfg}");
+    sb.write(
+        ".mcc/config.toml",
+        &cfg.replace(
+            "allow = [\"lab\"]",
+            "allow = [\"work\", \"ghost\", \"lab\", \"lab\"]",
+        ),
+    );
+    let s = stub(&[("tok-work", 100.0, 40.0), ("tok-lab", 1.0, 1.0)]);
+    let o = sb
+        .mcc()
+        .env("MCC_USAGE_URL", &s.url)
+        .current_dir(sb.path("code/app"))
+        .arg("run")
+        .assert()
+        .code(2)
+        .stdout(predicate::str::is_empty());
+    let err = String::from_utf8(o.get_output().stderr.clone()).unwrap();
+    assert!(
+        err.lines().any(|l| l.ends_with(
+            "wait until `work` resets, or start it anyway with `mcc run --profile work` (this project also allows `lab`)"
+        )),
+        "{err}"
+    );
+    assert!(!err.contains("ghost") && !err.contains('%'), "{err}");
+    assert_eq!(s.tokens(), ["tok-work"]);
+}
+
+#[test]
 fn project_set_allow_names_other_profiles_mcc_run_may_offer() {
     let sb = run_sandbox();
     let app = real(&sb, "code/app");
@@ -329,7 +364,15 @@ fn project_set_allow_names_other_profiles_mcc_run_may_offer() {
         ])
     );
 
-    set_project_allowing(&sb, "work", "lab");
+    // Narrowing the list names what it no longer allows.
+    sb.mcc()
+        .current_dir(sb.path("code/app"))
+        .args(["project", "set", "work", "--allow", "lab"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "`mcc run` starts `work` here (no longer allows `side`, `default`); at its limit it can also offer `lab`",
+        ));
     let cfg = sb.read(".mcc/config.toml");
     assert!(
         cfg.contains(&format!(
@@ -363,11 +406,29 @@ fn project_set_allow_names_other_profiles_mcc_run_may_offer() {
         .stderr(predicate::str::contains("no profile named \"nope\""));
     assert_eq!(sb.read(".mcc/config.toml"), cfg);
 
-    // Setting it again without --allow clears the list.
-    set_project(&sb, "work");
+    // Setting it again without --allow clears the list, and says so.
+    sb.mcc()
+        .current_dir(sb.path("code/app/src"))
+        .args(["project", "set", "work"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "`mcc run` starts `work` here (no longer allows `lab`)\n",
+        ));
     assert!(!sb.read(".mcc/config.toml").contains("allow"));
     let entries = json(stdout_of(sb.mcc().args(["project", "list", "--json"])).as_bytes());
     assert_eq!(entries[0]["allow"], serde_json::json!([]));
+
+    // Switching to a profile it allowed doesn't count that one as dropped.
+    set_project_allowing(&sb, "work", "lab,side");
+    sb.mcc()
+        .current_dir(sb.path("code/app"))
+        .args(["project", "set", "lab"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "`mcc run` starts `lab` here (was `work`; no longer allows `side`)\n",
+        ));
 }
 
 #[test]

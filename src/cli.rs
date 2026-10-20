@@ -337,7 +337,7 @@ pub enum ProjectAction {
         path: Option<PathBuf>,
     },
 
-    /// List every project and its profile
+    /// List every project with its profile and allowed profiles
     #[command(visible_alias = "ls")]
     List {
         /// Output JSON (to stdout) instead of a table
