@@ -166,6 +166,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Diff(args) => commands::diff::run(&paths, &cfg, &args),
         Command::Rename(args) => commands::rename::run(&paths, &mut cfg, &args),
         Command::Share(args) => commands::share::run(&paths, &mut cfg, &args),
+        Command::Link(args) => commands::link::run(&paths, &mut cfg, &args),
         Command::Project(args) => commands::project::run(&paths, &mut cfg, &args),
         Command::Run(args) => commands::run::run(&paths, &cfg, &args),
         Command::Env(args) => commands::env::run(&paths, &cfg, &args),
@@ -201,7 +202,8 @@ fn writes_config(command: &Command) -> bool {
         | Command::Delete(_)
         | Command::Sync(_)
         | Command::Rename(_)
-        | Command::Share(_) => true,
+        | Command::Share(_)
+        | Command::Link(_) => true,
         Command::Project(args) => !matches!(args.action, cli::ProjectAction::List { .. }),
         // install/uninstall edit settings.json files and mcc's state, one
         // run at a time; the bare shim is routed before the lock is taken.

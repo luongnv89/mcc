@@ -765,6 +765,7 @@ mod tests {
                 label: None,
                 account: None,
                 settings: None,
+                link: Vec::new(),
             },
         );
         let f = |d: Option<&str>| profile_for(&p, &cfg, d.map(OsStr::new));

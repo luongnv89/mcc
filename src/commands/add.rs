@@ -326,6 +326,19 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
     let shell_path = (!env.shell_path.is_empty()).then_some(env.shell_path.as_str());
     let alias = resolve_alias(paths, cfg, args, shell_path)?;
     let clone = resolve_mode(args)?;
+    // Checked before anything is created: each item can be linked and the
+    // default has it.
+    let link = match (clone, args.link.is_empty()) {
+        (_, true) => Vec::new(),
+        (true, false) => super::link::check_new_links(paths, &args.link)?,
+        (false, false) => {
+            return Err(CliError::usage(
+                "--link needs --clone: a fresh profile copies nothing to link",
+            )
+            .hint(format!("example: mcc add {alias} --clone --link skills"))
+            .into());
+        }
+    };
     let bin = if args.no_login {
         claude::find_binary(env.claude_bin.as_deref())
     } else {
@@ -358,7 +371,10 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
             "Set up an empty profile"
         });
         if clone {
-            step.ok(&clone_setup(paths, cfg, &profile_dir)?);
+            step.ok(&clone_setup(paths, cfg, &profile_dir, &link)?);
+            if !link.is_empty() {
+                ui::warn(&super::link::write_through_note(&alias, &link));
+            }
         } else {
             step.skip("fresh profile");
         }
@@ -423,6 +439,7 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
                 label: None,
                 account: None,
                 settings: None,
+                link: link.clone(),
             },
         );
         undo.record(Undo::Registry(alias.clone()));
@@ -521,8 +538,10 @@ fn now() -> String {
     chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
 }
 
-fn clone_setup(paths: &Paths, cfg: &Config, profile_dir: &Path) -> Result<String> {
-    let spec = copy::spec(None, &cfg.sync)?;
+/// Copy the default's setup into the new profile, linking the items in
+/// `link` to the default's copy instead (see `mcc link`).
+fn clone_setup(paths: &Paths, cfg: &Config, profile_dir: &Path, link: &[String]) -> Result<String> {
+    let spec = copy::spec(None, &cfg.sync)?.without(link);
     // The same rewriter sync uses, so a clone and a sync write the same.
     let rw = Rewriter::for_profile(paths, cfg, profile_dir)?;
     let plan = copy::plan(
@@ -543,14 +562,20 @@ fn clone_setup(paths: &Paths, cfg: &Config, profile_dir: &Path) -> Result<String
     // What was copied, so `mcc sync` can later tell the default's changes
     // from edits made in the profile.
     plan.manifest(None).save(profile_dir)?;
+    super::link::link_new_profile(paths, profile_dir, link)?;
     let groups: Vec<String> = plan
         .by_group()
         .iter()
         .map(|(g, a, ..)| format!("{g} {a}"))
         .collect();
     let mcp = plan.mcp.as_ref().map_or(0, |m| m.added.len());
+    let linked = if link.is_empty() {
+        String::new()
+    } else {
+        format!("; linked: {}", link.join(", "))
+    };
     Ok(format!(
-        "{} items ({}), {mcp} MCP servers; no credentials copied",
+        "{} items ({}), {mcp} MCP servers{linked}; no credentials copied",
         plan.count(copy::Action::Add),
         if groups.is_empty() {
             "nothing to copy".into()

@@ -60,6 +60,7 @@ pub fn run(paths: &Paths, cfg: &Config, args: &DiffArgs) -> Result<()> {
             paths.display(&dir.join(manifest::FILE))
         ));
     }
+    super::link::report_in_diff(paths, cfg, alias, &spec);
     let plan = super::sync::plan_for(paths, cfg, &dir, &spec, loaded.manifest(), false, false)?;
     let rw = Rewriter::for_profile(paths, cfg, &dir)?;
 

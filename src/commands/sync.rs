@@ -115,6 +115,7 @@ fn load_manifest(paths: &Paths, dir: &Path) -> Option<Manifest> {
 }
 
 /// Plan a sync of `dir` from the default, three-way against its manifest.
+/// The profile's linked items (see `mcc link`) are left out.
 pub fn plan_for(
     paths: &Paths,
     cfg: &Config,
@@ -125,11 +126,14 @@ pub fn plan_for(
     force: bool,
 ) -> Result<Plan> {
     let rw = Rewriter::for_profile(paths, cfg, dir)?;
+    // Linked items are the default's own files: never compared, written,
+    // pruned or recorded in the manifest.
+    let spec = spec.without(super::link::linked(cfg, dir));
     copy::plan_with(
         &paths.default_dir,
         &paths.default_json,
         dir,
-        spec,
+        &spec,
         &rw,
         prune,
         &Base { manifest, force },
@@ -272,6 +276,7 @@ fn sync_one(
             "\"{alias}\": the settings overlay sets statusLine.command, which replaces the mcc statusline shim, so usage for this profile is no longer cached; leave statusLine.command out of the overlay to keep it"
         ));
     }
+    super::link::report_in_sync(paths, cfg, alias, spec);
     let mut steps = ui::Steps::new(if args.dry_run { 1 } else { 3 });
 
     let step = steps.start("Compare with the default profile");
@@ -499,13 +504,21 @@ fn print_plan(plan: &Plan, dry_run: bool) {
 /// backup leaves the profile untouched. Never reuses an earlier backup folder
 /// (two syncs can land in one millisecond).
 fn backup(dir: &Path, plan: &Plan) -> Result<Option<PathBuf>> {
-    let rels = copy::outermost_existing(
+    backup_rels(
         dir,
         BACKED_UP
             .iter()
             .map(PathBuf::from)
             .chain(plan.backup_paths(dir)),
-    );
+    )
+}
+
+/// Copy the paths `rels` (relative to the profile `dir`; missing ones and
+/// ones inside another are skipped, symlinks are copied as symlinks, never
+/// followed) to a new `<dir>/.mcc-backup/<timestamp>/`. `None` when none of
+/// them exists.
+pub fn backup_rels(dir: &Path, rels: impl IntoIterator<Item = PathBuf>) -> Result<Option<PathBuf>> {
+    let rels = copy::outermost_existing(dir, rels);
     if rels.is_empty() {
         return Ok(None);
     }

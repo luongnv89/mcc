@@ -6,6 +6,7 @@ pub mod diff;
 pub mod env;
 pub mod exec;
 pub mod init;
+pub mod link;
 pub mod list;
 pub mod project;
 pub mod refresh_launchers;

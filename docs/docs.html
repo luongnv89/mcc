@@ -63,6 +63,7 @@
               <li><a href="#cmd-diff">diff</a></li>
               <li><a href="#cmd-rename">rename</a></li>
               <li><a href="#cmd-share">share</a></li>
+              <li><a href="#cmd-link">link</a></li>
               <li><a href="#cmd-project">project</a></li>
               <li><a href="#cmd-run">run</a></li>
               <li><a href="#cmd-statusline">statusline</a></li>
@@ -155,6 +156,7 @@
             <tr><td><a href="#cmd-diff"><code>mcc diff ALIAS</code></a></td><td>Show how a profile differs from the default's setup</td><td><code>--only</code></td></tr>
             <tr><td><a href="#cmd-rename"><code>mcc rename ALIAS NEW</code></a> (<code>mv</code>)</td><td>Rename a profile and its command</td><td></td></tr>
             <tr><td><a href="#cmd-share"><code>mcc share ALIAS</code></a></td><td>Share the profile's sessions with the other sharing profiles of its group (off by default)</td><td><code>--off</code>, <code>--group NAME</code>, <code>--allow-cross-org</code></td></tr>
+            <tr><td><a href="#cmd-link"><code>mcc link ALIAS [ITEMS]</code></a></td><td>Link read-mostly items to the default's copy instead of copying them; edits write through to the default (off by default)</td><td><code>--off</code></td></tr>
             <tr><td><a href="#cmd-project"><code>mcc project set PROFILE</code></a></td><td>Make PROFILE the one <code>mcc run</code> starts in this project; also <code>unset</code> and <code>list</code></td><td><code>--path</code>, <code>--allow</code>, <code>list --json</code></td></tr>
             <tr><td><a href="#cmd-run"><code>mcc run [-- CLAUDE_ARGS]</code></a></td><td>Start Claude Code with the current project's profile; at its limit, ask whether to wait (the default) or start it anyway</td><td><code>--profile</code>, <code>--dry-run</code></td></tr>
             <tr><td><a href="#configuration"><code>mcc config get|set|edit|path</code></a></td><td>Read or change <code>~/.mcc/config.toml</code>; invalid values and edits leave the file unchanged</td><td><code>get KEY</code>, <code>set KEY VALUE</code>, <code>edit</code>, <code>path</code></td></tr>
@@ -295,6 +297,13 @@ lab        lab      —               —     <span class="d">unavailable       
         <div class="code"><pre><span class="p">$ </span>mcc share work                 <span class="cm"># share work's sessions</span>
 <span class="p">$ </span>work --mcc-share --resume      <span class="cm"># the same, then pick a session from any sharing profile</span>
 <span class="p">$ </span>mcc share work --off           <span class="cm"># stop sharing</span></pre></div>
+
+        <h3 id="cmd-link"><code>mcc link</code> <a class="anchor" href="#cmd-link" aria-label="Link to mcc link">#</a></h3>
+        <p class="synopsis">mcc link ALIAS [ITEMS] [--off]   <span style="color:var(--muted)">or: mcc add ALIAS --clone --link ITEMS</span></p>
+        <p>Link mode, off by default and chosen per item: the profile's <code>skills/</code>, <code>agents/</code>, <code>commands/</code>, <code>output-styles/</code> or <code>CLAUDE.md</code> (items <code>skills</code>, <code>agents</code>, <code>commands</code>, <code>output-styles</code>, <code>claude-md</code>) becomes a symlink to the default profile's, so nothing is duplicated and nothing drifts. <code>sync</code> and <code>diff</code> leave linked items alone: never compared, copied, pruned or recorded. Turning it on backs up the profile's own copy to <code>.mcc-backup/</code> first. <strong>Write-through:</strong> editing a linked item in the profile, by hand or by Claude Code, changes the default's real files, and every other profile that links it; mcc prints this warning whenever link mode is turned on. <code>--off</code> removes only the symlink, never the default's files, and copies the default's item in its place. A failed step undoes the whole run. <code>settings</code> can't be linked (it is merged with the profile's overlay). Without ITEMS it shows each item's mode. The setting is kept as <code>link = [...]</code> under <code>[profiles.&lt;alias&gt;]</code>.</p>
+        <div class="code"><pre><span class="p">$ </span>mcc link work skills,agents    <span class="cm"># link work's skills/ and agents/ to ~/.claude's</span>
+<span class="p">$ </span>mcc link work skills --off     <span class="cm"># give work its own copy of skills/ again</span>
+<span class="p">$ </span>mcc add lab --clone --link skills  <span class="cm"># clone, linking skills/ instead of copying it</span></pre></div>
 
         <h3 id="cmd-project"><code>mcc project</code> <a class="anchor" href="#cmd-project" aria-label="Link to mcc project">#</a></h3>
         <p class="synopsis">mcc project set PROFILE [--path DIR] [--allow PROFILE…] | unset [--path DIR] | list [--json | --json-v2]</p>

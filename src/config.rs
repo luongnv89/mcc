@@ -111,6 +111,13 @@ pub struct Profile {
     /// while unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings: Option<toml::Table>,
+    /// Sync items in link mode (`mcc link <alias> <item>`): the profile has
+    /// a symlink to the default's copy instead of a copy of its own, and
+    /// `mcc sync` leaves it alone. Off for every item by default, and left
+    /// out of the file while empty. Editing the key by hand does nothing
+    /// alone: `mcc link` creates (or removes) the symlink.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub link: Vec<String>,
 }
 
 /// A Claude Code account, as its state file (`oauthAccount` in
@@ -577,6 +584,7 @@ mod tests {
                 label: None,
                 account: None,
                 settings: None,
+                link: Vec::new(),
             },
         );
         cfg.save(&path).unwrap();
@@ -713,6 +721,7 @@ mod tests {
             share_cross_org_allowed_at: None,
             label: None,
             account: None,
+            link: Vec::new(),
             settings: None,
         }
     }

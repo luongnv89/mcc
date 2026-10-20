@@ -134,7 +134,7 @@ pub enum Command {
 
     /// Copy the default profile's setup into a profile (one-way: default → profile)
     #[command(
-        after_help = "Items: settings, claude-md, keybindings, statusline, agents, skills,\n       commands, hooks, output-styles, plugins, mcp\n\nEach sync records what it wrote in <profile>/.mcc-sync.json. The next sync\ncompares the default and the profile with it: a path changed only in the\ndefault is updated; one edited (or deleted) only in the profile is kept and\nreported as a local edit; one changed in both is a conflict, kept unless\n--force. Everything overwritten or removed is first backed up to\n<profile>/.mcc-backup/<timestamp>/. `mcc diff ALIAS` shows the differences.\n\nExamples:\n  mcc sync work --dry-run\n  mcc sync work --only skills,agents\n  mcc sync work --force\n  mcc sync --all --prune"
+        after_help = "Items: settings, claude-md, keybindings, statusline, agents, skills,\n       commands, hooks, output-styles, plugins, mcp\n\nEach sync records what it wrote in <profile>/.mcc-sync.json. The next sync\ncompares the default and the profile with it: a path changed only in the\ndefault is updated; one edited (or deleted) only in the profile is kept and\nreported as a local edit; one changed in both is a conflict, kept unless\n--force. Everything overwritten or removed is first backed up to\n<profile>/.mcc-backup/<timestamp>/. `mcc diff ALIAS` shows the differences.\nItems linked to the default with `mcc link` are left alone.\n\nExamples:\n  mcc sync work --dry-run\n  mcc sync work --only skills,agents\n  mcc sync work --force\n  mcc sync --all --prune"
     )]
     Sync(SyncArgs),
 
@@ -197,6 +197,37 @@ pub enum Command {
         share_tos_reminder!()
     ))]
     Share(ShareArgs),
+
+    /// Link read-mostly items to the default profile's copy instead of copying them (off by default)
+    #[command(after_help = concat!(
+        "Items: claude-md, agents, skills, commands, output-styles\n",
+        "\n",
+        "Examples:\n",
+        "  mcc link work                 Show which items `work` links\n",
+        "  mcc link work skills,agents   Link `work`'s skills/ and agents/ to the default's\n",
+        "  mcc link work skills --off    Give `work` its own copy of skills/ again\n",
+        "  mcc add lab --clone --link skills   Clone, linking skills/ instead of copying it\n",
+        "\n",
+        "A linked item is a symlink to the default profile's (~/.claude/skills), so\n",
+        "every profile that links it sees the same files: nothing is duplicated and\n",
+        "nothing drifts, and `mcc sync` (and `mcc diff`) leave it alone.\n",
+        "\n",
+        "Write-through: editing a linked item in the profile, by hand or by Claude Code\n",
+        "(e.g. installing a skill), changes the default's real files, and so every other\n",
+        "profile that links it. This note is printed each time link mode is turned on.\n",
+        "\n",
+        "Turning link mode on first backs up the profile's own copy (it may hold local\n",
+        "edits) to <profile>/.mcc-backup/<timestamp>/. `--off` removes only the symlink,\n",
+        "never the default's files it points at, and copies the default's item in its\n",
+        "place. A failed step undoes the whole change. settings can't be linked: each\n",
+        "profile's settings.json is merged with its own overlay.\n",
+        "\n",
+        "The setting is kept per profile in ~/.mcc/config.toml (default: none linked):\n",
+        "\n",
+        "  [profiles.work]\n",
+        "  link = [\"skills\", \"agents\"]  # set it with `mcc link`\n",
+    ))]
+    Link(LinkArgs),
 
     /// Choose the profile `mcc run` starts with in a project
     #[command(
@@ -349,6 +380,15 @@ pub struct AddArgs {
     #[arg(long)]
     pub no_login: bool,
 
+    /// Link these items to the default's copy instead of copying them (see `mcc help link`)
+    #[arg(
+        long,
+        value_delimiter = ',',
+        value_name = "ITEMS",
+        conflicts_with = "fresh"
+    )]
+    pub link: Vec<String>,
+
     /// Label the account, e.g. "personal" or the work organization (asked if omitted)
     #[arg(long, value_name = "LABEL")]
     pub label: Option<String>,
@@ -444,6 +484,20 @@ pub struct ShareArgs {
     /// Called by the launcher for `<alias> --mcc-share`: only the note and errors, on stderr
     #[arg(long, hide = true, conflicts_with = "off")]
     pub from_launch: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct LinkArgs {
+    /// Profile whose items to link
+    pub alias: String,
+
+    /// Items to link (comma- or space-separated); none shows each item's mode
+    #[arg(value_delimiter = ',', value_name = "ITEMS")]
+    pub items: Vec<String>,
+
+    /// Stop linking: give the profile its own copy of the items again
+    #[arg(long)]
+    pub off: bool,
 }
 
 #[derive(Debug, Args)]

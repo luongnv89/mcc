@@ -104,6 +104,11 @@ fn settable(key: &str, parts: &[String]) -> Result<Key> {
                 "session sharing is set with `mcc share {alias}` (see `mcc help share`)"
             )));
         }
+        ["profiles", alias, "link"] => {
+            return Err(managed(&format!(
+                "link mode is set with `mcc link {alias} ITEMS` (see `mcc help link`), which also creates the symlinks"
+            )));
+        }
         ["profiles", alias, "settings", ..] => {
             return Err(managed(&format!(
                 "a settings overlay is a table of JSON settings: edit [profiles.{alias}.settings] with `mcc config edit`, or write the profile's settings.mcc.json"
@@ -290,6 +295,8 @@ pub fn check(text: &str) -> Result<Config> {
             super::add::check_label(label)
                 .map_err(|m| CliError::input(format!("profiles.{alias}.label: {m}")))?;
         }
+        super::link::check_items(&p.link)
+            .map_err(|e| CliError::input(format!("profiles.{alias}.link: {e}")))?;
         if let Some(group) = &p.share_group {
             super::share::check_group(group)
                 .map_err(|e| CliError::input(format!("profiles.{alias}.share_group: {e}")))?;
