@@ -203,7 +203,7 @@ mcc completions fish > ~/.config/fish/completions/mcc.fish
 
 - changed only in the default: updated (or added) in the profile;
 - edited, or deleted, only in the profile: kept, and reported as a **local edit**;
-- changed in both: a **conflict**, kept and reported; `--force` overwrites it (after backing it up).
+- changed in both, or added on both sides: a **conflict**, kept and reported; `--force` overwrites it (after backing it up).
 
 `--dry-run` shows the same classification and writes nothing, not even the record. A profile without a record yet (created `--fresh` or by an older mcc) is compared two-way once: every difference is taken from the default, as before, and the record starts with that sync. The record belongs to its profile and is never copied. `mcc diff ALIAS` lists each differing path with its class and a line diff (`---` default, `+++` profile), and `mcc list` sums it up in its `SYNC` column (`--json`: `sync.behind`, `sync.local_edits`, `sync.conflicts`).
 

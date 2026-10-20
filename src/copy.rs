@@ -537,9 +537,10 @@ fn current_hash(p: &Path) -> Result<Option<String>> {
 
 /// Three-way classification of a default file or symlink (`want`) that the
 /// profile has differently (`have`, `None` when missing): what a two-way
-/// copy would do (`two_way`: `Add` or `Update`) when mcc wrote nothing there
-/// before, or only the default changed since it did; otherwise a local edit
-/// (only the profile changed) or a conflict (both did). The `bool` marks a
+/// copy would do (`two_way`: `Add` or `Update`) without a manifest, when the
+/// profile lacks a path mcc never wrote, or when only the default changed
+/// since mcc wrote it; otherwise a local edit (only the profile changed) or a
+/// conflict (both did, including both adding a path mcc never wrote). The `bool` marks a
 /// conflict `--force` overwrites.
 fn three_way(
     base: &Base,
@@ -548,8 +549,17 @@ fn three_way(
     have: Option<&str>,
     two_way: Action,
 ) -> (Action, bool) {
-    let Some(last) = base.manifest.and_then(|m| m.files.get(&manifest::key(rel))) else {
+    let Some(m) = base.manifest else {
         return (two_way, false);
+    };
+    let Some(last) = m.files.get(&manifest::key(rel)) else {
+        // mcc never wrote it: missing in the profile, it is simply new; there,
+        // the profile created its own (both sides added it).
+        return match have {
+            None => (two_way, false),
+            Some(_) if base.force => (two_way, true),
+            Some(_) => (Action::Conflict, false),
+        };
     };
     if have == Some(last.as_str()) {
         (two_way, false)
@@ -907,7 +917,16 @@ fn plan_mcp(
         let have_hash = have.map(manifest::hash_json);
         let last = base.manifest.and_then(|m| m.mcp.get(k));
         let take = match last {
-            None => true,
+            None if base.manifest.is_none() || have.is_none() => true,
+            // Added on both sides: the profile's own server.
+            None if base.force => {
+                change.forced.push(k.clone());
+                true
+            }
+            None => {
+                change.conflicts.push(k.clone());
+                false
+            }
             Some(l) if have_hash.as_ref() == Some(l) => true,
             Some(l) if *l == want => {
                 change.local.push(k.clone());
@@ -1759,8 +1778,21 @@ mod tests {
         );
         assert_eq!(action_of(&p, "agents/a.md"), None);
 
+        // Added on both sides (mcc never wrote it): a conflict.
+        std::fs::write(src.join("agents/both.md"), "theirs").unwrap();
+        std::fs::write(dst.join("agents/both.md"), "mine").unwrap();
+        let p = plan3(&paths, &dst, &m2, false);
+        assert_eq!(
+            action_of(&p, "agents/both.md"),
+            Some((Action::Conflict, false))
+        );
+
         // --force overwrites conflicts, never local edits.
         let p = plan3(&paths, &dst, &m2, true);
+        assert_eq!(
+            action_of(&p, "agents/both.md"),
+            Some((Action::Update, true))
+        );
         assert_eq!(action_of(&p, "agents/c.md"), Some((Action::Update, true)));
         assert_eq!(
             action_of(&p, "agents/b.md"),
