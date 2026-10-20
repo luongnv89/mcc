@@ -73,13 +73,23 @@ pub fn run(paths: &Paths, cfg: &Config, args: &DiffArgs) -> Result<()> {
         shown += 1;
         file_diff(&mut out, paths, &dir, alias, c, &rw)?;
     }
-    if let Some(m) = &plan.mcp {
+    if spec.mcp {
         let (src, dst) = copy::mcp_servers(&paths.default_json, &dir.join(".claude.json"), &rw)?;
+        let none = Vec::new();
+        let m = plan.mcp.as_ref();
+        let pick = |f: fn(&copy::McpChange) -> &Vec<String>| m.map_or(&none, f);
+        // Servers only the profile has (sync keeps them unless --prune).
+        let extra: Vec<String> = dst
+            .keys()
+            .filter(|k| !src.contains_key(*k))
+            .cloned()
+            .collect();
         let labeled = [
-            (&m.added, "new in default"),
-            (&m.updated, "changed in default"),
-            (&m.local, "local edit"),
-            (&m.conflicts, "conflict"),
+            (pick(|m| &m.added), "new in default"),
+            (pick(|m| &m.updated), "changed in default"),
+            (pick(|m| &m.local), "local edit"),
+            (pick(|m| &m.conflicts), "conflict"),
+            (&extra, "only in profile"),
         ];
         for (names, label) in labeled {
             for name in names {

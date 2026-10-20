@@ -118,9 +118,27 @@ pub fn hash_link(target: &Path) -> String {
     digest(b"link\0", target.as_os_str().as_bytes())
 }
 
-/// Hash of an MCP server entry.
+/// Hash of an MCP server entry. Object keys are sorted first, so a config
+/// that was only re-serialized in another key order hashes the same.
 pub fn hash_json(v: &Value) -> String {
-    digest(b"json\0", v.to_string().as_bytes())
+    digest(b"json\0", canonical(v).to_string().as_bytes())
+}
+
+/// `v` with every object's keys sorted; arrays keep their order.
+fn canonical(v: &Value) -> Value {
+    match v {
+        Value::Object(m) => {
+            let mut keys: Vec<&String> = m.keys().collect();
+            keys.sort();
+            Value::Object(
+                keys.into_iter()
+                    .map(|k| (k.clone(), canonical(&m[k])))
+                    .collect(),
+            )
+        }
+        Value::Array(a) => Value::Array(a.iter().map(canonical).collect()),
+        _ => v.clone(),
+    }
 }
 
 #[cfg(test)]
@@ -151,5 +169,20 @@ mod tests {
         assert_ne!(hash_file(b"x"), hash_link(Path::new("x")));
         assert_eq!(hash_file(b"x"), hash_file(b"x"));
         assert_eq!(key(Path::new("a/b/c.md")), "a/b/c.md");
+    }
+
+    #[test]
+    fn json_hash_ignores_key_order_only() {
+        let a: Value =
+            serde_json::from_str(r#"{"command":"x","args":["1","2"],"env":{"A":"1","B":"2"}}"#)
+                .unwrap();
+        let b: Value =
+            serde_json::from_str(r#"{"env":{"B":"2","A":"1"},"args":["1","2"],"command":"x"}"#)
+                .unwrap();
+        let c: Value =
+            serde_json::from_str(r#"{"command":"x","args":["2","1"],"env":{"A":"1","B":"2"}}"#)
+                .unwrap();
+        assert_eq!(hash_json(&a), hash_json(&b));
+        assert_ne!(hash_json(&a), hash_json(&c));
     }
 }

@@ -1857,4 +1857,35 @@ mod tests {
         assert_eq!(mcp.updated, vec!["fs".to_string()]);
         assert_eq!(mcp.forced, vec!["fs".to_string()]);
     }
+
+    /// A profile server only re-serialized in another key order is not a
+    /// local edit, so the default's change to it is taken, not a conflict.
+    #[test]
+    fn reordered_mcp_server_is_not_a_local_edit() {
+        let (_d, paths, dst) = setup();
+        std::fs::write(
+            &paths.default_json,
+            r#"{"mcpServers":{"fs":{"command":"x","args":["a"],"env":{"A":"1","B":"2"}}}}"#,
+        )
+        .unwrap();
+        let m = cloned(&paths, &dst);
+        std::fs::write(
+            dst.join(".claude.json"),
+            r#"{"mcpServers":{"fs":{"env":{"B":"2","A":"1"},"args":["a"],"command":"x"}}}"#,
+        )
+        .unwrap();
+        let p = plan3(&paths, &dst, &m, false);
+        let mcp = p.mcp.as_ref().unwrap();
+        assert!(mcp.local.is_empty() && mcp.conflicts.is_empty());
+        assert!(mcp.is_empty());
+        std::fs::write(
+            &paths.default_json,
+            r#"{"mcpServers":{"fs":{"command":"y","args":["a"],"env":{"A":"1","B":"2"}}}}"#,
+        )
+        .unwrap();
+        let p = plan3(&paths, &dst, &m, false);
+        let mcp = p.mcp.as_ref().unwrap();
+        assert!(mcp.local.is_empty() && mcp.conflicts.is_empty());
+        assert_eq!(mcp.updated, vec!["fs".to_string()]);
+    }
 }

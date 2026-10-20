@@ -1537,6 +1537,9 @@ fn diff_shows_the_differences() {
     sb.write(".claude/CLAUDE.md", "# my rules\n# more\n");
     sb.write(".mcc/profiles/work/agents/reviewer.md", "my agent");
     sb.write(".mcc/profiles/work/agents/mine.md", "only here");
+    let mut state = json(sb.read(".mcc/profiles/work/.claude.json").as_bytes());
+    state["mcpServers"]["solo"] = serde_json::json!({"command": "solo-server"});
+    sb.write(".mcc/profiles/work/.claude.json", &state.to_string());
     let before = sb.read(&manifest_path());
     sb.mcc()
         .args(["diff", "work"])
@@ -1553,6 +1556,13 @@ fn diff_shows_the_differences() {
         .stdout(predicate::str::contains(
             "== only in profile: agents/mine.md",
         ))
+        .stdout(predicate::str::contains(
+            "== only in profile: MCP server \"solo\"",
+        ))
+        .stdout(predicate::str::contains(
+            "+++ work/.claude.json mcpServers.solo",
+        ))
+        .stdout(predicate::str::contains("solo-server"))
         .stderr(predicate::str::contains("1 behind, 1 local edit"));
     // Read-only.
     assert_eq!(sb.read(&manifest_path()), before);
