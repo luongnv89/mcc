@@ -41,6 +41,7 @@ fn every_subcommand_has_help() {
         "delete",
         "rm",
         "sync",
+        "diff",
         "usage",
         "rename",
         "mv",

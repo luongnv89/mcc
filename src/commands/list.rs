@@ -29,6 +29,11 @@ pub fn run(paths: &Paths, cfg: &Config, args: &ListArgs) -> Result<()> {
             .map(|(dir, _)| dir.clone())
             .collect();
     }
+    for m in all.iter_mut().filter(|m| !m.is_default) {
+        if let Some(p) = cfg.profiles.get(&m.name) {
+            m.sync = super::sync::status(paths, cfg, &p.dir);
+        }
+    }
     if !usage_disabled(args) {
         attach_usage(paths, cfg, &mut all);
     }
@@ -220,6 +225,14 @@ fn table(out: &mut impl Write, all: &[ProfileMetrics]) -> Result<()> {
     Ok(())
 }
 
+/// The SYNC cell: "✓", e.g. "3 behind, 2 local edits", or "—" for the
+/// default profile and profiles that can't be compared.
+fn sync_cell(m: &ProfileMetrics) -> String {
+    m.sync
+        .as_ref()
+        .map_or_else(|| "—".into(), super::sync::status_text)
+}
+
 /// Header and rows, with usage bars `bar` cells wide.
 ///
 /// UPDATED (how old cached usage is) follows WEEK when any profile's usage
@@ -240,6 +253,7 @@ fn table_lines(all: &[ProfileMetrics], bar: usize, now: DateTime<Utc>) -> Vec<St
         "SIZE",
         "LAST USED",
         "SYNCED",
+        "SYNC",
     ]);
     let rows: Vec<Vec<String>> = all
         .iter()
@@ -284,6 +298,7 @@ fn table_lines(all: &[ProfileMetrics], bar: usize, now: DateTime<Utc>) -> Vec<St
                 } else {
                     metrics::ago_str(m.last_sync.as_deref())
                 },
+                sync_cell(m),
             ]);
             cells
         })
@@ -480,6 +495,7 @@ fn card(
             format!("{} ({mode})", m.created_at.clone().unwrap_or_default()),
         )?;
         row(out, "Last sync", metrics::ago_str(m.last_sync.as_deref()))?;
+        row(out, "Sync", sync_cell(m))?;
     }
     writeln!(out)?;
     Ok(())

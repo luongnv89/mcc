@@ -1,4 +1,7 @@
-//! `mcc sync` — one-way copy of the default profile's setup into profiles.
+//! `mcc sync` — one-way copy of the default profile's setup into profiles,
+//! three-way against the profile's sync manifest (`.mcc-sync.json`): changes
+//! in the default are copied, edits made in the profile are kept, and paths
+//! changed on both sides are conflicts, kept unless `--force`.
 
 use std::path::{Path, PathBuf};
 
@@ -6,8 +9,9 @@ use anyhow::{Context, Result};
 
 use crate::cli::SyncArgs;
 use crate::config::Config;
-use crate::copy::{self, Action, Plan, Rewriter, Spec};
+use crate::copy::{self, Action, Base, Plan, Rewriter, Spec, Status};
 use crate::error::CliError;
+use crate::manifest::{self, Manifest};
 use crate::paths::Paths;
 use crate::{fsutil, ui};
 
@@ -93,6 +97,103 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &SyncArgs) -> Result<()> {
     Ok(())
 }
 
+/// The profile's sync manifest, warning (and comparing two-way) when it
+/// can't be read.
+fn load_manifest(paths: &Paths, dir: &Path) -> Option<Manifest> {
+    match manifest::load(dir) {
+        manifest::Loaded::Found(m) => Some(m),
+        manifest::Loaded::Missing => None,
+        manifest::Loaded::Invalid(why) => {
+            ui::warn(&format!(
+                "ignoring {} ({why}); every difference is taken from the default this time",
+                paths.display(&dir.join(manifest::FILE))
+            ));
+            None
+        }
+    }
+}
+
+/// Plan a sync of `dir` from the default, three-way against its manifest.
+pub fn plan_for(
+    paths: &Paths,
+    cfg: &Config,
+    dir: &Path,
+    spec: &Spec,
+    manifest: Option<&Manifest>,
+    prune: bool,
+    force: bool,
+) -> Result<Plan> {
+    let rw = Rewriter::new(paths, dir, &cfg.sync);
+    copy::plan_with(
+        &paths.default_dir,
+        &paths.default_json,
+        dir,
+        spec,
+        &rw,
+        prune,
+        &Base { manifest, force },
+    )
+}
+
+/// How a profile compares with the default (for `mcc list`): `None` when the
+/// default or the profile dir is missing, or the comparison fails.
+pub fn status(paths: &Paths, cfg: &Config, dir: &Path) -> Option<Status> {
+    if !paths.default_dir.is_dir() || !dir.is_dir() {
+        return None;
+    }
+    let spec = copy::spec(None, &cfg.sync).ok()?;
+    let loaded = manifest::load(dir);
+    plan_for(paths, cfg, dir, &spec, loaded.manifest(), false, false)
+        .ok()
+        .map(|p| p.status())
+}
+
+fn plural(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+/// "✓", or e.g. "3 behind, 2 local edits, 1 conflict".
+pub fn status_text(s: &Status) -> String {
+    let mut parts = Vec::new();
+    if s.behind > 0 {
+        parts.push(format!("{} behind", s.behind));
+    }
+    if s.local_edits > 0 {
+        parts.push(plural(s.local_edits, "local edit", "local edits"));
+    }
+    if s.conflicts > 0 {
+        parts.push(plural(s.conflicts, "conflict", "conflicts"));
+    }
+    if parts.is_empty() {
+        "✓".into()
+    } else {
+        parts.join(", ")
+    }
+}
+
+/// The local edits and conflicts a sync keeps, e.g. ", except 2 local edits
+/// (kept)", or "".
+fn kept_note(s: &Status) -> String {
+    let mut parts = Vec::new();
+    if s.local_edits > 0 {
+        parts.push(format!(
+            "{} (kept)",
+            plural(s.local_edits, "local edit", "local edits")
+        ));
+    }
+    if s.conflicts > 0 {
+        parts.push(format!(
+            "{} (skipped)",
+            plural(s.conflicts, "conflict", "conflicts")
+        ));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(", except {}", parts.join(" and "))
+    }
+}
+
 fn sync_one(
     paths: &Paths,
     cfg: &mut Config,
@@ -115,33 +216,64 @@ fn sync_one(
     let mut steps = ui::Steps::new(if args.dry_run { 1 } else { 3 });
 
     let step = steps.start("Compare with the default profile");
-    let plan = copy::plan(
-        &paths.default_dir,
-        &paths.default_json,
+    let previous = load_manifest(paths, &dir);
+    let plan = plan_for(
+        paths,
+        cfg,
         &dir,
         spec,
-        &rw,
+        previous.as_ref(),
         args.prune,
+        args.force,
     )?;
-    step.ok(&format!(
+    let status = plan.status();
+    let mut summary = format!(
         "{} to add, {} to update, {} to remove, {} unchanged",
         plan.count(Action::Add),
         plan.count(Action::Update),
         plan.count(Action::Remove),
         plan.unchanged
-    ));
+    );
+    if status.local_edits > 0 {
+        summary.push_str(&format!(
+            ", {}",
+            plural(status.local_edits, "local edit", "local edits")
+        ));
+    }
+    if status.conflicts > 0 {
+        summary.push_str(&format!(
+            ", {}",
+            plural(status.conflicts, "conflict", "conflicts")
+        ));
+    }
+    step.ok(&summary);
     print_plan(&plan, args.dry_run);
+    if status.conflicts > 0 {
+        ui::hint(&format!(
+            "conflicts changed in the default and in the profile; see them with `mcc diff {alias}`, or overwrite them with `mcc sync {alias} --force` (backed up first)"
+        ));
+    }
+    let next = plan.manifest(previous.as_ref());
 
     if plan.actionable() == 0 {
-        ui::result(true, &format!("\"{alias}\" is already up to date"));
+        // Nothing to copy, but record what the profile matches, so the next
+        // sync can tell its edits from the default's.
+        if !args.dry_run && previous.as_ref() != Some(&next) {
+            next.save(&dir)?;
+        }
+        ui::result(
+            true,
+            &format!("\"{alias}\" is already up to date{}", kept_note(&status)),
+        );
         return Ok(());
     }
     if args.dry_run {
         ui::result(
             true,
             &format!(
-                "dry run — {} change(s) would be applied to \"{alias}\"; nothing was written",
-                plan.actionable()
+                "dry run — {} change(s) would be applied to \"{alias}\"{}; nothing was written",
+                plan.actionable(),
+                kept_note(&status)
             ),
         );
         return Ok(());
@@ -179,6 +311,7 @@ fn sync_one(
         &rw,
         ui::is_interactive() && !ui::settings().quiet,
     )?;
+    next.save(&dir)?;
     step.ok(&format!("{} change(s)", plan.actionable()));
 
     if let Some(p) = cfg.profiles.get_mut(alias) {
@@ -188,13 +321,16 @@ fn sync_one(
     cfg.save(&paths.config_file)?;
     ui::result(
         true,
-        &format!("\"{alias}\" now matches the default profile's setup"),
+        &format!(
+            "\"{alias}\" now matches the default profile's setup{}",
+            kept_note(&status)
+        ),
     );
     Ok(())
 }
 
 fn print_plan(plan: &Plan, dry_run: bool) {
-    for (group, add, upd, rem, extra) in plan.by_group() {
+    for (group, add, upd, rem, extra, local, conflict) in plan.by_group() {
         let mut parts = Vec::new();
         if add > 0 {
             parts.push(format!("+{add} new"));
@@ -205,52 +341,95 @@ fn print_plan(plan: &Plan, dry_run: bool) {
         if rem > 0 {
             parts.push(format!("-{rem} removed"));
         }
+        if local > 0 {
+            parts.push(format!(
+                "{} (kept)",
+                plural(local, "local edit", "local edits")
+            ));
+        }
+        if conflict > 0 {
+            parts.push(format!(
+                "{} (skipped; --force overwrites)",
+                plural(conflict, "conflict", "conflicts")
+            ));
+        }
         if extra > 0 {
             parts.push(format!("{extra} only in profile (kept; --prune removes)"));
         }
         ui::kv(&group, &parts.join(", "));
     }
     if let Some(m) = &plan.mcp
-        && !m.is_empty()
+        && !(m.is_empty() && m.local.is_empty() && m.conflicts.is_empty())
     {
         let mut parts = Vec::new();
+        let list =
+            |sign: &str, names: &[String]| format!("{sign}{} ({})", names.len(), names.join(", "));
         if !m.added.is_empty() {
-            parts.push(format!("+{} ({})", m.added.len(), m.added.join(", ")));
+            parts.push(list("+", &m.added));
         }
         if !m.updated.is_empty() {
-            parts.push(format!("~{} ({})", m.updated.len(), m.updated.join(", ")));
+            parts.push(list("~", &m.updated));
         }
         if !m.removed.is_empty() {
-            parts.push(format!("-{} ({})", m.removed.len(), m.removed.join(", ")));
+            parts.push(list("-", &m.removed));
+        }
+        if !m.local.is_empty() {
+            parts.push(format!(
+                "{} kept ({})",
+                plural(m.local.len(), "local edit", "local edits"),
+                m.local.join(", ")
+            ));
+        }
+        if !m.conflicts.is_empty() {
+            parts.push(format!(
+                "{} skipped ({})",
+                plural(m.conflicts.len(), "conflict", "conflicts"),
+                m.conflicts.join(", ")
+            ));
+        }
+        if !m.forced.is_empty() {
+            parts.push(format!("--force overwrites {}", m.forced.join(", ")));
         }
         ui::kv("mcp", &parts.join(", "));
     }
-    // List individual paths in dry-run (all with --verbose, else the first 15).
-    if dry_run {
-        let limit = if ui::settings().verbose {
-            usize::MAX
-        } else {
-            15
+    // List individual paths: in a dry run every change, otherwise the local
+    // edits and conflicts kept and the conflicts --force overwrites (all with
+    // --verbose, else the first 15).
+    let limit = if ui::settings().verbose {
+        usize::MAX
+    } else {
+        15
+    };
+    let listed: Vec<_> = plan
+        .changes
+        .iter()
+        .filter(|c| {
+            if dry_run {
+                c.action != Action::Extra
+            } else {
+                matches!(c.action, Action::LocalEdit | Action::Conflict) || c.forced
+            }
+        })
+        .collect();
+    for c in listed.iter().take(limit) {
+        let line = match (c.action, c.forced) {
+            (_, true) => format!("~ {} (conflict, overwritten with --force)", c.rel.display()),
+            (Action::Add, _) => format!("+ {}", c.rel.display()),
+            (Action::Update, _) => format!("~ {}", c.rel.display()),
+            (Action::LocalEdit, _) => format!("= {} (local edit, kept)", c.rel.display()),
+            (Action::Conflict, _) => format!(
+                "! {} (conflict: changed in the default and the profile; skipped)",
+                c.rel.display()
+            ),
+            _ => format!("- {}", c.rel.display()),
         };
-        let listed: Vec<_> = plan
-            .changes
-            .iter()
-            .filter(|c| c.action != Action::Extra)
-            .collect();
-        for c in listed.iter().take(limit) {
-            let sign = match c.action {
-                Action::Add => "+",
-                Action::Update => "~",
-                _ => "-",
-            };
-            ui::info(&format!("{sign} {}", c.rel.display()));
-        }
-        if listed.len() > limit {
-            ui::hint(&format!(
-                "…and {} more (use --verbose to list all)",
-                listed.len() - limit
-            ));
-        }
+        ui::info(&line);
+    }
+    if listed.len() > limit {
+        ui::hint(&format!(
+            "…and {} more (use --verbose to list all)",
+            listed.len() - limit
+        ));
     }
 }
 

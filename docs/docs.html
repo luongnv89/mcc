@@ -60,6 +60,7 @@
               <li><a href="#cmd-list">list</a></li>
               <li><a href="#cmd-usage">usage</a></li>
               <li><a href="#cmd-sync">sync</a></li>
+              <li><a href="#cmd-diff">diff</a></li>
               <li><a href="#cmd-rename">rename</a></li>
               <li><a href="#cmd-share">share</a></li>
               <li><a href="#cmd-project">project</a></li>
@@ -150,7 +151,8 @@
             <tr><td><a href="#cmd-add"><code>mcc add [ALIAS]</code></a></td><td>Create the default profile, or a new profile with its own command</td><td><code>--clone</code>, <code>--fresh</code>, <code>--no-login</code>, <code>-y</code></td></tr>
             <tr><td><a href="#cmd-list"><code>mcc list</code></a> (<code>ls</code>)</td><td>Show every profile with metrics and usage</td><td><code>--json</code>, <code>-l</code>, <code>--no-usage</code></td></tr>
             <tr><td><a href="#cmd-usage"><code>mcc usage [PROFILE]</code></a></td><td>Show 5-hour and weekly usage in a table</td><td><code>--json</code>, <code>--show-email</code>, <code>--hide-email</code></td></tr>
-            <tr><td><a href="#cmd-sync"><code>mcc sync [ALIAS]</code></a></td><td>Copy the default's setup into a profile</td><td><code>--all</code>, <code>--dry-run</code>, <code>--prune</code>, <code>--only</code>, <code>-y</code></td></tr>
+            <tr><td><a href="#cmd-sync"><code>mcc sync [ALIAS]</code></a></td><td>Copy the default's setup into a profile</td><td><code>--all</code>, <code>--dry-run</code>, <code>--prune</code>, <code>--force</code>, <code>--only</code>, <code>-y</code></td></tr>
+            <tr><td><a href="#cmd-diff"><code>mcc diff ALIAS</code></a></td><td>Show how a profile differs from the default's setup</td><td><code>--only</code></td></tr>
             <tr><td><a href="#cmd-rename"><code>mcc rename ALIAS NEW</code></a> (<code>mv</code>)</td><td>Rename a profile and its command</td><td></td></tr>
             <tr><td><a href="#cmd-share"><code>mcc share ALIAS</code></a></td><td>Share the profile's sessions with your other sharing profiles (off by default)</td><td><code>--off</code></td></tr>
             <tr><td><a href="#cmd-project"><code>mcc project set PROFILE</code></a></td><td>Make PROFILE the one <code>mcc run</code> starts in this project; also <code>unset</code> and <code>list</code></td><td><code>--path</code>, <code>--allow</code>, <code>list --json</code></td></tr>
@@ -208,7 +210,7 @@
 
         <h3 id="cmd-list"><code>mcc list</code> <a class="anchor" href="#cmd-list" aria-label="Link to mcc list">#</a></h3>
         <p class="synopsis">mcc list [--json | -l/--long] [--no-usage]   <span style="color:var(--muted)">alias: mcc ls</span></p>
-        <p>One row per profile, the default included: command, account, organization, 5-hour and weekly usage (with a bar), skills, agents, commands, plugins (enabled/installed), MCP servers, hooks, size, last used and last sync. When projects have a default profile (<code>mcc project set</code>), a second table lists each project with its profile and account, marking the one that applies in the current directory with <code>← here</code>. <code>--long</code> cards show them in a <code>Default for</code> row, and <code>--json</code> has a <code>project_defaults</code> array per profile. Cards also show the organization's ID and the profile's label, and <code>--json</code> has <code>organization</code>, <code>organization_uuid</code> and <code>label</code>.</p>
+        <p>One row per profile, the default included: command, account, organization, 5-hour and weekly usage (with a bar), skills, agents, commands, plugins (enabled/installed), MCP servers, hooks, size, last used and last sync, and a <code>SYNC</code> column saying how the profile compares with the default (<code>✓</code>, <code>3 behind</code>, <code>2 local edits</code>, <code>1 conflict</code>; <code>sync</code> in <code>--json</code>). When projects have a default profile (<code>mcc project set</code>), a second table lists each project with its profile and account, marking the one that applies in the current directory with <code>← here</code>. <code>--long</code> cards show them in a <code>Default for</code> row, and <code>--json</code> has a <code>project_defaults</code> array per profile. Cards also show the organization's ID and the profile's label, and <code>--json</code> has <code>organization</code>, <code>organization_uuid</code> and <code>label</code>.</p>
         <div class="table-wrap"><table>
           <thead><tr><th>Option</th><th>Effect</th></tr></thead>
           <tbody>
@@ -247,8 +249,8 @@ lab        lab      —               —     <span class="d">unavailable       
         <p>See <a href="#usage-limits">Usage limits</a> for how to read the output and where the data comes from.</p>
 
         <h3 id="cmd-sync"><code>mcc sync</code> <a class="anchor" href="#cmd-sync" aria-label="Link to mcc sync">#</a></h3>
-        <p class="synopsis">mcc sync (ALIAS | --all) [--dry-run] [--prune] [--only ITEMS] [-y]</p>
-        <p>Copies the default profile's setup into a profile. It plans the changes, copies every file or folder it is about to overwrite or remove (such as <code>CLAUDE.md</code>, skills, agents, <code>settings.json</code> and <code>.claude.json</code>) to <code>&lt;profile&gt;/.mcc-backup/&lt;timestamp&gt;/</code>, then applies them with progress.</p>
+        <p class="synopsis">mcc sync (ALIAS | --all) [--dry-run] [--prune] [--force] [--only ITEMS] [-y]</p>
+        <p>Copies the default profile's setup into a profile. It plans the changes, copies every file or folder it is about to overwrite or remove (such as <code>CLAUDE.md</code>, skills, agents, <code>settings.json</code> and <code>.claude.json</code>) to <code>&lt;profile&gt;/.mcc-backup/&lt;timestamp&gt;/</code>, then applies them with progress. It is three-way: changes made only in the default are copied, edits made only in the profile are kept (local edits), and paths changed in both are conflicts, kept unless <code>--force</code>; see <a href="#three-way">Three-way sync</a>.</p>
         <div class="table-wrap"><table>
           <thead><tr><th>Option</th><th>Effect</th></tr></thead>
           <tbody>
@@ -256,13 +258,21 @@ lab        lab      —               —     <span class="d">unavailable       
             <tr><td><code>--all</code></td><td>Sync every mcc profile</td></tr>
             <tr><td><code>--dry-run</code></td><td>Show what would change without writing anything</td></tr>
             <tr><td><code>--prune</code></td><td>Also remove items that exist in the profile but not in the default (asks for confirmation)</td></tr>
+            <tr><td><code>--force</code></td><td>Also overwrite conflicts: paths changed in the default and edited in the profile (backed up first)</td></tr>
             <tr><td><code>--only ITEMS</code></td><td>Comma-separated list of items to sync: <code>settings</code>, <code>claude-md</code>, <code>keybindings</code>, <code>statusline</code>, <code>agents</code>, <code>skills</code>, <code>commands</code>, <code>hooks</code>, <code>output-styles</code>, <code>plugins</code>, <code>mcp</code></td></tr>
             <tr><td><code>-y</code>, <code>--yes</code></td><td>Do not ask for confirmation</td></tr>
           </tbody>
         </table></div>
         <div class="code"><pre><span class="p">$ </span>mcc sync work --dry-run               <span class="cm"># preview what would change</span>
 <span class="p">$ </span>mcc sync work --only skills,agents    <span class="cm"># only some items</span>
-<span class="p">$ </span>mcc sync --all --prune --yes          <span class="cm"># make every profile mirror the default exactly</span></pre></div>
+<span class="p">$ </span>mcc sync --all --prune --yes          <span class="cm"># make every profile mirror the default exactly</span>
+<span class="p">$ </span>mcc sync work --force                 <span class="cm"># also overwrite conflicts</span></pre></div>
+
+        <h3 id="cmd-diff"><code>mcc diff</code> <a class="anchor" href="#cmd-diff" aria-label="Link to mcc diff">#</a></h3>
+        <p class="synopsis">mcc diff ALIAS [--only ITEMS]</p>
+        <p>Shows how a profile differs from the default's setup, as <code>sync</code> sees it, and writes nothing. Each differing path or MCP server is listed as <em>new in default</em>, <em>changed in default</em>, <em>local edit</em>, <em>conflict</em> or <em>only in profile</em>, with a line diff for text files (<code>---</code> the default, as the profile receives it; <code>+++</code> the profile). <code>--only</code> takes the same items as <code>sync</code>.</p>
+        <div class="code"><pre><span class="p">$ </span>mcc diff work
+<span class="p">$ </span>mcc diff work --only skills,settings</pre></div>
 
         <h3 id="cmd-rename"><code>mcc rename</code> <a class="anchor" href="#cmd-rename" aria-label="Link to mcc rename">#</a></h3>
         <p class="synopsis">mcc rename ALIAS NEW   <span style="color:var(--muted)">alias: mcc mv</span></p>
@@ -371,6 +381,9 @@ lab        lab      —               —     <span class="d">unavailable       
 
         <h3>One-way sync, backups and pruning</h3>
         <p><code>sync</code> only copies default → profile, because most tools assume the default config path. Before writing, it copies every file or folder it is about to overwrite or remove (such as <code>CLAUDE.md</code>, skills, agents, <code>settings.json</code> and <code>.claude.json</code>) to <code>&lt;profile&gt;/.mcc-backup/&lt;timestamp&gt;/</code>, at the same paths, so your own edits can be restored from there. <code>--dry-run</code> changes nothing in the profile and makes no backup. Files that exist only in the profile are kept unless you pass <code>--prune</code>, and pruning asks for confirmation (or needs <code>--yes</code>).</p>
+
+        <h3 id="three-way">Three-way sync</h3>
+        <p><code>add --clone</code> and every <code>sync</code> record what they wrote in <code>&lt;profile&gt;/.mcc-sync.json</code>: each path and MCP server with a hash of its content. The next <code>sync</code> compares the default, the profile and that record for every path. Changed only in the default: updated (or added). Edited, or deleted, only in the profile: kept and reported as a local edit. Changed in both: a conflict, kept and reported; <code>--force</code> overwrites it after backing it up. <code>--dry-run</code> shows the same classification and writes nothing, not even the record. A profile without a record (created <code>--fresh</code> or by an older mcc) is compared two-way once, taking every difference from the default, and the record starts with that sync. The record belongs to its profile and is never copied; <code>[sync] extra</code> can't name it.</p>
       </section>
 
       <section id="configuration">

@@ -516,6 +516,9 @@ fn clone_setup(paths: &Paths, sync_cfg: &SyncConfig, profile_dir: &Path) -> Resu
         &rw,
         ui::is_interactive() && !ui::settings().quiet,
     )?;
+    // What was copied, so `mcc sync` can later tell the default's changes
+    // from edits made in the profile.
+    plan.manifest(None).save(profile_dir)?;
     let groups: Vec<String> = plan
         .by_group()
         .iter()

@@ -53,6 +53,9 @@ pub struct ProfileMetrics {
     /// Project directories where `mcc run` starts this profile (`mcc project
     /// set`); filled in by `mcc list` from the config, not by `collect`.
     pub project_defaults: Vec<String>,
+    /// How the profile compares with the default (`mcc sync`); filled in by
+    /// `mcc list`, and always null for the default profile.
+    pub sync: Option<crate::copy::Status>,
     /// 5-hour/weekly usage; filled in by `mcc list` (network), not by `collect`.
     pub usage: Usage,
     /// The config dir as Claude Code sees it (`CLAUDE_CONFIG_DIR`).
@@ -216,6 +219,7 @@ fn collect(
             .and_then(|r| r.wrapper.as_deref())
             .is_none_or(|w| !shell::is_mcc_wrapper(w) || shell::launcher_is_current(w)),
         project_defaults: Vec::new(),
+        sync: None,
         usage: Usage::default(),
         config_dir: dir.to_path_buf(),
         last_used_time,

@@ -7,6 +7,7 @@ mod env_detect;
 mod error;
 mod fsutil;
 mod log;
+mod manifest;
 mod metrics;
 mod paths;
 mod pick;
@@ -144,6 +145,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Usage(args) => commands::usage::run(&paths, &cfg, &args),
         Command::Delete(args) => commands::delete::run(&paths, &mut cfg, &args),
         Command::Sync(args) => commands::sync::run(&paths, &mut cfg, &args),
+        Command::Diff(args) => commands::diff::run(&paths, &cfg, &args),
         Command::Rename(args) => commands::rename::run(&paths, &mut cfg, &args),
         Command::Share(args) => commands::share::run(&paths, &mut cfg, &args),
         Command::Project(args) => commands::project::run(&paths, &mut cfg, &args),
@@ -187,6 +189,7 @@ fn writes_config(command: &Command) -> bool {
         // These read the config; the one time one of them records the live
         // usage disclosure, it takes the lock for that write alone.
         Command::List(_)
+        | Command::Diff(_)
         | Command::Usage(_)
         | Command::Run(_)
         | Command::RefreshLaunchers(_)

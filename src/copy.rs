@@ -4,7 +4,7 @@
 //! Only setup is copied — never credentials, identity, history, or caches.
 //! Absolute `~/.claude` paths in config files are rewritten to the target dir.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -16,6 +16,7 @@ use walkdir::WalkDir;
 use crate::config::SyncConfig;
 use crate::error::CliError;
 use crate::fsutil;
+use crate::manifest::{self, Manifest};
 use crate::paths::Paths;
 
 /// One whitelisted path inside a config dir.
@@ -111,6 +112,15 @@ pub fn spec(only: Option<&[String]>, cfg: &SyncConfig) -> Result<Spec> {
             if first.is_some_and(|name| name.eq_ignore_ascii_case(BACKUP_DIR)) {
                 return Err(CliError::input(format!(
                     "sync.extra entry \"{extra}\" points into {BACKUP_DIR}, where sync keeps its backups"
+                ))
+                .hint("edit [sync] extra in ~/.mcc/config.toml, e.g. extra = [\"rules\"]")
+                .into());
+            }
+            // The sync manifest records this profile's own sync state.
+            if first.is_some_and(|name| name.eq_ignore_ascii_case(manifest::FILE)) {
+                return Err(CliError::input(format!(
+                    "sync.extra entry \"{extra}\" is {}, where sync records what it wrote",
+                    manifest::FILE
                 ))
                 .hint("edit [sync] extra in ~/.mcc/config.toml, e.g. extra = [\"rules\"]")
                 .into());
@@ -248,6 +258,19 @@ pub enum Action {
     Remove,
     /// Exists only in the target; kept because `--prune` was not given.
     Extra,
+    /// Edited in the profile since mcc last wrote it (or deleted there), while
+    /// the default still has what mcc wrote: kept as it is.
+    LocalEdit,
+    /// Changed in the default *and* edited in the profile since mcc last
+    /// wrote it: kept as it is (`--force` overwrites it instead).
+    Conflict,
+}
+
+impl Action {
+    /// Kept as it is in the profile: nothing is written for it.
+    pub fn kept(self) -> bool {
+        matches!(self, Action::Extra | Action::LocalEdit | Action::Conflict)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -255,7 +278,11 @@ pub struct Change {
     pub action: Action,
     pub rel: PathBuf,
     pub group: String,
-    rewrite: bool,
+    pub(crate) rewrite: bool,
+    /// A directory (its contents are listed as their own changes).
+    pub dir: bool,
+    /// A conflict that `--force` overwrites (`action` is `Add` or `Update`).
+    pub forced: bool,
 }
 
 #[derive(Debug, Default)]
@@ -263,7 +290,15 @@ pub struct McpChange {
     pub added: Vec<String>,
     pub updated: Vec<String>,
     pub removed: Vec<String>,
+    /// Servers edited (or removed) in the profile only; kept.
+    pub local: Vec<String>,
+    /// Servers changed on both sides; kept unless `--force`.
+    pub conflicts: Vec<String>,
+    /// Conflicts that `--force` overwrites (also in `added`/`updated`).
+    pub forced: Vec<String>,
     merged: Option<Value>,
+    /// Hash of every default server, as the profile receives it.
+    hashes: BTreeMap<String, String>,
 }
 
 impl McpChange {
@@ -272,11 +307,37 @@ impl McpChange {
     }
 }
 
+/// What three-way sync compares against (see [`plan_with`]).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Base<'a> {
+    /// What mcc last wrote into the profile; `None` compares two-way only.
+    pub manifest: Option<&'a Manifest>,
+    /// Overwrite conflicts instead of keeping them.
+    pub force: bool,
+}
+
+/// How a profile compares with the default, in counts of files, symlinks
+/// and MCP servers (directories are not counted).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Status {
+    /// Paths and servers the next sync would add, update or remove.
+    pub behind: usize,
+    /// Profile edits a sync keeps.
+    pub local_edits: usize,
+    /// Changed on both sides; a sync keeps them unless `--force`.
+    pub conflicts: usize,
+}
+
 #[derive(Debug, Default)]
 pub struct Plan {
     pub changes: Vec<Change>,
     pub unchanged: usize,
     pub mcp: Option<McpChange>,
+    /// Hash of every default file or symlink in the sync set, as the profile
+    /// receives it (what a sync writes, or finds already there).
+    hashes: BTreeMap<PathBuf, String>,
+    /// The manifest items this plan covers (see [`Manifest::items`]).
+    items: Vec<String>,
 }
 
 impl Plan {
@@ -285,15 +346,30 @@ impl Plan {
     }
 
     pub fn actionable(&self) -> usize {
-        self.changes
-            .iter()
-            .filter(|c| c.action != Action::Extra)
-            .count()
+        self.changes.iter().filter(|c| !c.action.kept()).count()
             + self.mcp.as_ref().map_or(0, |m| usize::from(!m.is_empty()))
     }
 
-    /// Files touched per group: group → (add, update, remove).
-    pub fn by_group(&self) -> Vec<(String, usize, usize, usize, usize)> {
+    /// The summary `mcc list` and `mcc diff` show.
+    pub fn status(&self) -> Status {
+        let files = |f: &dyn Fn(Action) -> bool| {
+            self.changes
+                .iter()
+                .filter(|c| !c.dir && f(c.action))
+                .count()
+        };
+        let mcp = self.mcp.as_ref();
+        Status {
+            behind: files(&|a| matches!(a, Action::Add | Action::Update | Action::Remove))
+                + mcp.map_or(0, |m| m.added.len() + m.updated.len() + m.removed.len()),
+            local_edits: files(&|a| a == Action::LocalEdit) + mcp.map_or(0, |m| m.local.len()),
+            conflicts: files(&|a| a == Action::Conflict) + mcp.map_or(0, |m| m.conflicts.len()),
+        }
+    }
+
+    /// Changes per group: (group, add, update, remove, extra, local, conflict).
+    #[allow(clippy::type_complexity)]
+    pub fn by_group(&self) -> Vec<(String, usize, usize, usize, usize, usize, usize)> {
         let mut groups: Vec<String> = Vec::new();
         for c in &self.changes {
             if !groups.contains(&c.group) {
@@ -309,15 +385,53 @@ impl Plan {
                         .filter(|c| c.group == g && c.action == a)
                         .count()
                 };
-                let (add, upd, rem, ext) = (
+                (
+                    g.clone(),
                     n(Action::Add),
                     n(Action::Update),
                     n(Action::Remove),
                     n(Action::Extra),
-                );
-                (g, add, upd, rem, ext)
+                    n(Action::LocalEdit),
+                    n(Action::Conflict),
+                )
             })
             .collect()
+    }
+
+    /// The manifest to record once this plan is applied: `previous` (if any)
+    /// with every path and server the profile now has as the default does,
+    /// and without what was removed. Kept local edits and conflicts keep
+    /// their previous entry, so the next sync classifies them the same way.
+    pub fn manifest(&self, previous: Option<&Manifest>) -> Manifest {
+        let mut m = previous.cloned().unwrap_or_default();
+        m.items.extend(self.items.iter().cloned());
+        for c in &self.changes {
+            if c.action == Action::Remove {
+                m.files.retain(|k, _| !Path::new(k).starts_with(&c.rel));
+            }
+        }
+        let kept: Vec<&PathBuf> = self
+            .changes
+            .iter()
+            .filter(|c| c.action.kept())
+            .map(|c| &c.rel)
+            .collect();
+        for (rel, h) in &self.hashes {
+            if !kept.iter().any(|k| rel.starts_with(k)) {
+                m.files.insert(manifest::key(rel), h.clone());
+            }
+        }
+        if let Some(mcp) = &self.mcp {
+            for k in &mcp.removed {
+                m.mcp.remove(k);
+            }
+            for (k, h) in &mcp.hashes {
+                if !mcp.local.contains(k) && !mcp.conflicts.contains(k) {
+                    m.mcp.insert(k.clone(), h.clone());
+                }
+            }
+        }
+        m
     }
 
     /// Paths, relative to `dst_dir`, that [`apply`] will overwrite or delete
@@ -392,26 +506,72 @@ fn kind(p: &Path) -> Kind {
     }
 }
 
-/// Does `dst` already match what copying `src` would produce?
-fn same(src: &Path, dst: &Path, rewrite: bool, rw: &Rewriter) -> Result<bool> {
-    match (kind(src), kind(dst)) {
-        (Kind::Link(a), Kind::Link(b)) => Ok(rw.link_target(src, &a) == b),
-        (Kind::File, Kind::File) => {
-            if !rewrite {
-                let (a, b) = (std::fs::metadata(src)?.len(), std::fs::metadata(dst)?.len());
-                if a != b {
-                    return Ok(false);
-                }
-            }
-            let a = std::fs::read(src).with_context(|| format!("reading {}", src.display()))?;
-            let b = std::fs::read(dst).with_context(|| format!("reading {}", dst.display()))?;
-            Ok(if rewrite {
-                rewritten(&a, rw) == b
-            } else {
-                a == b
-            })
-        }
-        _ => Ok(false),
+/// The hash of what copying `src` gives the profile ([`manifest`] hashes):
+/// its content (with paths rewritten when `rewrite`), or for a symlink, the
+/// target the copy points at. `None` for a directory or a missing path.
+fn desired_hash(src: &Path, rewrite: bool, rw: &Rewriter) -> Result<Option<String>> {
+    Ok(match kind(src) {
+        Kind::Link(target) => Some(manifest::hash_link(&rw.link_target(src, &target))),
+        Kind::File => Some(manifest::hash_file(&desired_bytes(src, rewrite, rw)?)),
+        Kind::Dir | Kind::Missing => None,
+    })
+}
+
+/// What copying the file `src` writes into the profile.
+pub fn desired_bytes(src: &Path, rewrite: bool, rw: &Rewriter) -> Result<Vec<u8>> {
+    let bytes = std::fs::read(src).with_context(|| format!("reading {}", src.display()))?;
+    Ok(if rewrite {
+        rewritten(&bytes, rw)
+    } else {
+        bytes
+    })
+}
+
+/// The hash of the file or symlink at `p` in the profile, as [`desired_hash`].
+fn current_hash(p: &Path) -> Result<Option<String>> {
+    Ok(match kind(p) {
+        Kind::Link(target) => Some(manifest::hash_link(&target)),
+        Kind::File => Some(manifest::hash_file(
+            &std::fs::read(p).with_context(|| format!("reading {}", p.display()))?,
+        )),
+        Kind::Dir | Kind::Missing => None,
+    })
+}
+
+/// Three-way classification of a default file or symlink (`want`) that the
+/// profile has differently (`have`, `None` when missing): what a two-way
+/// copy would do (`two_way`: `Add` or `Update`) without a manifest, when the
+/// profile lacks a path mcc never wrote, or when only the default changed
+/// since mcc wrote it; otherwise a local edit (only the profile changed) or a
+/// conflict (both did, including both adding a path mcc never wrote). The `bool` marks a
+/// conflict `--force` overwrites.
+fn three_way(
+    base: &Base,
+    rel: &Path,
+    want: &str,
+    have: Option<&str>,
+    two_way: Action,
+) -> (Action, bool) {
+    let Some(m) = base.manifest else {
+        return (two_way, false);
+    };
+    let Some(last) = m.files.get(&manifest::key(rel)) else {
+        // mcc never wrote it: missing in the profile, it is simply new; there,
+        // the profile created its own (both sides added it).
+        return match have {
+            None => (two_way, false),
+            Some(_) if base.force => (two_way, true),
+            Some(_) => (Action::Conflict, false),
+        };
+    };
+    if have == Some(last.as_str()) {
+        (two_way, false)
+    } else if want == last {
+        (Action::LocalEdit, false)
+    } else if base.force {
+        (two_way, true)
+    } else {
+        (Action::Conflict, false)
     }
 }
 
@@ -434,12 +594,12 @@ fn is_nonempty_dir(p: &Path) -> bool {
 /// directory. Replacing it would delete profile-only content, so that only
 /// happens with `--prune` (counted as a removal, which needs confirmation);
 /// otherwise the directory is kept and reported as profile-only.
-fn replace_dir(push: &mut impl FnMut(Action, PathBuf), rel: PathBuf, prune: bool) {
+fn replace_dir(push: &mut impl FnMut(Action, PathBuf, bool), rel: PathBuf, prune: bool) {
     if prune {
-        push(Action::Remove, rel.clone());
-        push(Action::Add, rel);
+        push(Action::Remove, rel.clone(), false);
+        push(Action::Add, rel, false);
     } else {
-        push(Action::Extra, rel);
+        push(Action::Extra, rel, false);
     }
 }
 
@@ -462,7 +622,8 @@ fn linked_ancestor(dst_dir: &Path, rel: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Compute what a copy from `src` to `dst` would change.
+/// Compute what a copy from `src` to `dst` would change (two-way: every
+/// difference is taken from the source).
 pub fn plan(
     src_dir: &Path,
     src_json: &Path,
@@ -471,19 +632,57 @@ pub fn plan(
     rw: &Rewriter,
     prune: bool,
 ) -> Result<Plan> {
+    plan_with(
+        src_dir,
+        src_json,
+        dst_dir,
+        spec,
+        rw,
+        prune,
+        &Base::default(),
+    )
+}
+
+/// [`plan`], three-way against `base.manifest` (what mcc last wrote into the
+/// profile): a file, symlink or MCP server the profile has differently is
+/// taken from the source only when the profile still has what mcc wrote, or
+/// mcc never wrote it. Otherwise it is a [`Action::LocalEdit`] when the
+/// source still has what mcc wrote, else a [`Action::Conflict`] (taken anyway
+/// with `base.force`). Deleting such a path in the profile counts as an edit.
+pub fn plan_with(
+    src_dir: &Path,
+    src_json: &Path,
+    dst_dir: &Path,
+    spec: &Spec,
+    rw: &Rewriter,
+    prune: bool,
+    base: &Base,
+) -> Result<Plan> {
     let mut plan = Plan::default();
     let extra_action = if prune { Action::Remove } else { Action::Extra };
     // Symlinked parent dirs in the profile already planned for replacement.
     let mut relinked: BTreeSet<PathBuf> = BTreeSet::new();
+    // Only items the manifest records are compared three-way.
+    let tracked = |key: &str| Base {
+        manifest: base.manifest.filter(|m| m.items.contains(key)),
+        force: base.force,
+    };
     for item in &spec.items {
         let src = src_dir.join(&item.rel);
         let dst = dst_dir.join(&item.rel);
-        let mut push = |action, rel: PathBuf| {
-            plan.changes.push(Change {
+        let item_key = manifest::key(&item.rel);
+        let base = &tracked(&item_key);
+        plan.items.push(item_key);
+        let hashes = &mut plan.hashes;
+        let changes = &mut plan.changes;
+        let mut push = |action, rel: PathBuf, forced: bool| {
+            changes.push(Change {
                 action,
                 rel,
                 group: item.group.clone(),
                 rewrite: item.rewrite,
+                dir: false,
+                forced,
             })
         };
         // A nested item (`plugins/cache`) under a symlinked profile dir: like
@@ -494,7 +693,7 @@ pub fn plan(
         let detached = match linked_ancestor(dst_dir, &item.rel) {
             Some(link) => {
                 if kind(&src) != Kind::Missing && relinked.insert(link.clone()) {
-                    push(Action::Remove, link);
+                    push(Action::Remove, link, false);
                 }
                 true
             }
@@ -503,18 +702,28 @@ pub fn plan(
         match kind(&src) {
             Kind::Missing => {
                 if !detached && kind(&dst) != Kind::Missing {
-                    push(extra_action, item.rel.clone());
+                    push(extra_action, item.rel.clone(), false);
                 }
             }
             Kind::File | Kind::Link(_) => {
-                if detached || kind(&dst) == Kind::Missing {
-                    push(Action::Add, item.rel.clone());
+                let want = desired_hash(&src, item.rewrite, rw)?.expect("file or symlink");
+                hashes.insert(item.rel.clone(), want.clone());
+                if detached {
+                    push(Action::Add, item.rel.clone(), false);
+                } else if kind(&dst) == Kind::Missing {
+                    let (a, f) = three_way(base, &item.rel, &want, None, Action::Add);
+                    push(a, item.rel.clone(), f);
                 } else if is_nonempty_dir(&dst) {
                     replace_dir(&mut push, item.rel.clone(), prune);
-                } else if same(&src, &dst, item.rewrite, rw)? {
-                    plan.unchanged += 1;
                 } else {
-                    push(Action::Update, item.rel.clone());
+                    let have = current_hash(&dst)?;
+                    if have.as_deref() == Some(want.as_str()) {
+                        plan.unchanged += 1;
+                    } else {
+                        let (a, f) =
+                            three_way(base, &item.rel, &want, have.as_deref(), Action::Update);
+                        push(a, item.rel.clone(), f);
+                    }
                 }
             }
             Kind::Dir => {
@@ -524,10 +733,10 @@ pub fn plan(
                 // symlink; the whole subtree is then copied fresh.
                 let fresh = !matches!(dst_kind, Kind::Dir | Kind::Missing);
                 if fresh {
-                    push(Action::Remove, item.rel.clone());
+                    push(Action::Remove, item.rel.clone(), false);
                 }
                 if fresh || dst_kind == Kind::Missing {
-                    push(Action::Add, item.rel.clone());
+                    push(Action::Add, item.rel.clone(), false);
                 }
                 // Nested dirs replaced the same way; their contents are fresh.
                 let mut replaced: Vec<PathBuf> = Vec::new();
@@ -551,31 +760,42 @@ pub fn plan(
                         .to_path_buf();
                     seen.insert(rel_in.clone());
                     let rel = item.rel.join(&rel_in);
+                    let want = desired_hash(entry.path(), false, rw)?;
+                    if let Some(h) = &want {
+                        hashes.insert(rel.clone(), h.clone());
+                    }
                     if fresh || detached || replaced.iter().any(|r| rel_in.starts_with(r)) {
-                        push(Action::Add, rel);
+                        push(Action::Add, rel, false);
                         continue;
                     }
                     let d = dst_dir.join(&rel);
-                    if entry.file_type().is_dir() {
+                    let Some(want) = want else {
+                        // A directory.
                         match kind(&d) {
                             Kind::Dir => {}
-                            Kind::Missing => push(Action::Add, rel),
+                            Kind::Missing => push(Action::Add, rel, false),
                             _ => {
                                 replaced.push(rel_in);
-                                push(Action::Update, rel);
+                                push(Action::Update, rel, false);
                             }
                         }
                         continue;
-                    }
+                    };
                     if matches!(kind(&d), Kind::Missing) {
-                        push(Action::Add, rel);
+                        let (a, f) = three_way(base, &rel, &want, None, Action::Add);
+                        push(a, rel, f);
                     } else if is_nonempty_dir(&d) {
                         dir_conflicts.insert(rel_in);
                         replace_dir(&mut push, rel, prune);
-                    } else if same(entry.path(), &d, false, rw)? {
-                        plan.unchanged += 1;
                     } else {
-                        push(Action::Update, rel);
+                        let have = current_hash(&d)?;
+                        if have.as_deref() == Some(want.as_str()) {
+                            plan.unchanged += 1;
+                        } else {
+                            let (a, f) =
+                                three_way(base, &rel, &want, have.as_deref(), Action::Update);
+                            push(a, rel, f);
+                        }
                     }
                 }
                 if dst_kind == Kind::Dir {
@@ -600,16 +820,45 @@ pub fn plan(
                         if entry.file_type().is_dir() {
                             walker.skip_current_dir();
                         }
-                        push(extra_action, item.rel.join(rel_in));
+                        push(extra_action, item.rel.join(rel_in), false);
                     }
                 }
             }
         }
     }
+    for c in &mut plan.changes {
+        let side = if matches!(c.action, Action::Remove | Action::Extra) {
+            dst_dir
+        } else {
+            src_dir
+        };
+        c.dir = kind(&side.join(&c.rel)) == Kind::Dir;
+    }
+    drop_unneeded_dir_adds(&mut plan);
     if spec.mcp {
-        plan.mcp = plan_mcp(src_json, &dst_dir.join(".claude.json"), rw, prune)?;
+        plan.items.push(manifest::MCP_ITEM.into());
+        let base = &tracked(manifest::MCP_ITEM);
+        plan.mcp = plan_mcp(src_json, &dst_dir.join(".claude.json"), rw, prune, base)?;
     }
     Ok(plan)
+}
+
+/// A directory the profile lacks is only added when something is written
+/// inside it, or when the default's copy has no files at all. A directory
+/// whose files are all kept (deleted in the profile) stays deleted.
+fn drop_unneeded_dir_adds(plan: &mut Plan) {
+    let written: Vec<PathBuf> = plan
+        .changes
+        .iter()
+        .filter(|c| matches!(c.action, Action::Add | Action::Update) && !c.dir)
+        .map(|c| c.rel.clone())
+        .collect();
+    let hashes = &plan.hashes;
+    plan.changes.retain(|c| {
+        !(c.action == Action::Add && c.dir)
+            || written.iter().any(|w| w.starts_with(&c.rel))
+            || !hashes.keys().any(|h| h.starts_with(&c.rel))
+    });
 }
 
 pub(crate) fn read_json(path: &Path) -> Result<Option<Value>> {
@@ -624,12 +873,13 @@ pub(crate) fn read_json(path: &Path) -> Result<Option<Value>> {
     }
 }
 
-fn plan_mcp(
+/// The default's MCP servers as the profile receives them (paths
+/// rewritten), and the profile's own, from the two `.claude.json` files.
+pub fn mcp_servers(
     src_json: &Path,
     dst_json: &Path,
     rw: &Rewriter,
-    prune: bool,
-) -> Result<Option<McpChange>> {
+) -> Result<(Map<String, Value>, Map<String, Value>)> {
     let src = read_json(src_json)?;
     let src_servers = match src
         .as_ref()
@@ -649,6 +899,17 @@ fn plan_mcp(
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
+    Ok((src_servers, dst_servers))
+}
+
+fn plan_mcp(
+    src_json: &Path,
+    dst_json: &Path,
+    rw: &Rewriter,
+    prune: bool,
+    base: &Base,
+) -> Result<Option<McpChange>> {
+    let (src_servers, dst_servers) = mcp_servers(src_json, dst_json, rw)?;
     if src_servers.is_empty() && (dst_servers.is_empty() || !prune) {
         return Ok(None);
     }
@@ -659,12 +920,50 @@ fn plan_mcp(
         dst_servers.clone()
     };
     for (k, v) in &src_servers {
-        match dst_servers.get(k) {
-            None => change.added.push(k.clone()),
-            Some(old) if old != v => change.updated.push(k.clone()),
-            _ => {}
+        let want = manifest::hash_json(v);
+        change.hashes.insert(k.clone(), want.clone());
+        let have = dst_servers.get(k);
+        if have == Some(v) {
+            merged.insert(k.clone(), v.clone());
+            continue;
         }
-        merged.insert(k.clone(), v.clone());
+        let have_hash = have.map(manifest::hash_json);
+        let last = base.manifest.and_then(|m| m.mcp.get(k));
+        let take = match last {
+            None if base.manifest.is_none() || have.is_none() => true,
+            // Added on both sides: the profile's own server.
+            None if base.force => {
+                change.forced.push(k.clone());
+                true
+            }
+            None => {
+                change.conflicts.push(k.clone());
+                false
+            }
+            Some(l) if have_hash.as_ref() == Some(l) => true,
+            Some(l) if *l == want => {
+                change.local.push(k.clone());
+                false
+            }
+            Some(_) if base.force => {
+                change.forced.push(k.clone());
+                true
+            }
+            Some(_) => {
+                change.conflicts.push(k.clone());
+                false
+            }
+        };
+        if take {
+            if have.is_none() {
+                change.added.push(k.clone());
+            } else {
+                change.updated.push(k.clone());
+            }
+            merged.insert(k.clone(), v.clone());
+        } else if let Some(old) = have {
+            merged.insert(k.clone(), old.clone());
+        }
     }
     if prune {
         change.removed = dst_servers
@@ -685,11 +984,7 @@ pub fn apply(
     rw: &Rewriter,
     progress: bool,
 ) -> Result<()> {
-    let todo: Vec<&Change> = plan
-        .changes
-        .iter()
-        .filter(|c| c.action != Action::Extra)
-        .collect();
+    let todo: Vec<&Change> = plan.changes.iter().filter(|c| !c.action.kept()).collect();
     let bar = if progress && !todo.is_empty() {
         let pb = ProgressBar::new(todo.len() as u64);
         pb.set_style(
@@ -721,7 +1016,7 @@ pub fn apply(
         match c.action {
             Action::Remove => fsutil::remove_any(&dst)?,
             Action::Add | Action::Update => copy_one(&src, &dst, c.rewrite, rw)?,
-            Action::Extra => {}
+            Action::Extra | Action::LocalEdit | Action::Conflict => {}
         }
         bar.inc(1);
     }
@@ -1289,6 +1584,8 @@ mod tests {
             rel: PathBuf::from(rel),
             group: "test".into(),
             rewrite: false,
+            dir: false,
+            forced: false,
         }
     }
 
@@ -1316,6 +1613,8 @@ mod tests {
                 change(Action::Add, "plugins/cache"),
             ],
             unchanged: 0,
+            hashes: BTreeMap::new(),
+            items: Vec::new(),
             mcp: Some(McpChange {
                 added: vec!["fs".into()],
                 ..McpChange::default()
@@ -1348,6 +1647,8 @@ mod tests {
             ".mcc-backup",
             "./.mcc-backup/20260101-000000.000",
             ".MCC-Backup",
+            ".mcc-sync.json",
+            "./.mcc-sync.json",
         ] {
             let err = spec(None, &extra(bad)).unwrap_err();
             assert_eq!(
@@ -1366,5 +1667,225 @@ mod tests {
     fn unknown_group_is_usage_error() {
         let err = spec(Some(&["nope".to_string()]), &SyncConfig::default()).unwrap_err();
         assert_eq!(crate::error::classify(&err).0, crate::error::EXIT_USAGE);
+    }
+
+    /// Clone, then return the manifest the clone recorded.
+    fn cloned(paths: &Paths, dst: &Path) -> Manifest {
+        let rw = Rewriter::new(paths, dst, &SyncConfig::default());
+        let sp = spec(None, &SyncConfig::default()).unwrap();
+        let p = plan(
+            &paths.default_dir,
+            &paths.default_json,
+            dst,
+            &sp,
+            &rw,
+            false,
+        )
+        .unwrap();
+        apply(&p, &paths.default_dir, dst, &rw, false).unwrap();
+        p.manifest(None)
+    }
+
+    fn plan3(paths: &Paths, dst: &Path, m: &Manifest, force: bool) -> Plan {
+        let rw = Rewriter::new(paths, dst, &SyncConfig::default());
+        let sp = spec(None, &SyncConfig::default()).unwrap();
+        plan_with(
+            &paths.default_dir,
+            &paths.default_json,
+            dst,
+            &sp,
+            &rw,
+            false,
+            &Base {
+                manifest: Some(m),
+                force,
+            },
+        )
+        .unwrap()
+    }
+
+    fn action_of(p: &Plan, rel: &str) -> Option<(Action, bool)> {
+        p.changes
+            .iter()
+            .find(|c| c.rel == Path::new(rel))
+            .map(|c| (c.action, c.forced))
+    }
+
+    #[test]
+    fn three_way_classifies_each_path() {
+        let (_d, paths, dst) = setup();
+        let src = paths.default_dir.clone();
+        std::fs::write(src.join("agents/b.md"), "b").unwrap();
+        std::fs::write(src.join("agents/c.md"), "c").unwrap();
+        std::fs::create_dir_all(src.join("skills/two")).unwrap();
+        std::fs::write(src.join("skills/two/SKILL.md"), "two").unwrap();
+        let m = cloned(&paths, &dst);
+        assert!(m.files.contains_key("agents/a.md"), "{m:?}");
+        assert!(m.files.contains_key("settings.json"));
+        assert!(m.mcp.contains_key("fs"));
+        assert!(m.items.contains("agents") && m.items.contains(manifest::MCP_ITEM));
+        assert!(!m.files.keys().any(|k| k.contains("temp_git_")));
+
+        std::fs::write(src.join("agents/a.md"), "agent v2").unwrap(); // upstream
+        std::fs::write(dst.join("agents/b.md"), "my b").unwrap(); // local edit
+        std::fs::write(src.join("agents/c.md"), "c v2").unwrap(); // both
+        std::fs::write(dst.join("agents/c.md"), "my c").unwrap();
+        std::fs::remove_dir_all(dst.join("skills/two")).unwrap(); // deleted locally
+        std::fs::write(src.join("agents/new.md"), "new").unwrap(); // new upstream
+
+        let p = plan3(&paths, &dst, &m, false);
+        assert_eq!(action_of(&p, "agents/a.md"), Some((Action::Update, false)));
+        assert_eq!(
+            action_of(&p, "agents/b.md"),
+            Some((Action::LocalEdit, false))
+        );
+        assert_eq!(
+            action_of(&p, "agents/c.md"),
+            Some((Action::Conflict, false))
+        );
+        assert_eq!(
+            action_of(&p, "skills/two/SKILL.md"),
+            Some((Action::LocalEdit, false))
+        );
+        // The deleted dir is not re-created empty.
+        assert_eq!(action_of(&p, "skills/two"), None, "{:?}", p.changes);
+        assert_eq!(action_of(&p, "agents/new.md"), Some((Action::Add, false)));
+        assert_eq!(
+            p.status(),
+            Status {
+                behind: 2,
+                local_edits: 2,
+                conflicts: 1
+            }
+        );
+        // Only what changed upstream is backed up and written.
+        assert_eq!(p.backup_paths(&dst), vec![PathBuf::from("agents/a.md")]);
+        let rw = Rewriter::new(&paths, &dst, &SyncConfig::default());
+        apply(&p, &paths.default_dir, &dst, &rw, false).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dst.join("agents/a.md")).unwrap(),
+            "agent v2"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dst.join("agents/b.md")).unwrap(),
+            "my b"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dst.join("agents/c.md")).unwrap(),
+            "my c"
+        );
+        assert!(!dst.join("skills/two").exists());
+
+        // Kept paths keep their old entry, so they classify the same next time.
+        let m2 = p.manifest(Some(&m));
+        assert_eq!(m2.files["agents/b.md"], m.files["agents/b.md"]);
+        assert_eq!(m2.files["agents/c.md"], m.files["agents/c.md"]);
+        assert_ne!(m2.files["agents/a.md"], m.files["agents/a.md"]);
+        assert!(m2.files.contains_key("agents/new.md"));
+        let p = plan3(&paths, &dst, &m2, false);
+        assert_eq!(
+            action_of(&p, "agents/b.md"),
+            Some((Action::LocalEdit, false))
+        );
+        assert_eq!(
+            action_of(&p, "agents/c.md"),
+            Some((Action::Conflict, false))
+        );
+        assert_eq!(action_of(&p, "agents/a.md"), None);
+
+        // Added on both sides (mcc never wrote it): a conflict.
+        std::fs::write(src.join("agents/both.md"), "theirs").unwrap();
+        std::fs::write(dst.join("agents/both.md"), "mine").unwrap();
+        let p = plan3(&paths, &dst, &m2, false);
+        assert_eq!(
+            action_of(&p, "agents/both.md"),
+            Some((Action::Conflict, false))
+        );
+
+        // --force overwrites conflicts, never local edits.
+        let p = plan3(&paths, &dst, &m2, true);
+        assert_eq!(
+            action_of(&p, "agents/both.md"),
+            Some((Action::Update, true))
+        );
+        assert_eq!(action_of(&p, "agents/c.md"), Some((Action::Update, true)));
+        assert_eq!(
+            action_of(&p, "agents/b.md"),
+            Some((Action::LocalEdit, false))
+        );
+    }
+
+    #[test]
+    fn three_way_mcp_servers() {
+        let (_d, paths, dst) = setup();
+        let m = cloned(&paths, &dst);
+        // Local edit: the profile changes "fs"; the default adds "gh".
+        std::fs::write(
+            dst.join(".claude.json"),
+            r#"{"mcpServers":{"fs":{"command":"mine"}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &paths.default_json,
+            r#"{"mcpServers":{"fs":{"command":"~/.claude/bin/fs"},"gh":{"command":"gh"}}}"#,
+        )
+        .unwrap();
+        let p = plan3(&paths, &dst, &m, false);
+        let mcp = p.mcp.as_ref().unwrap();
+        assert_eq!(mcp.local, vec!["fs".to_string()]);
+        assert_eq!(mcp.added, vec!["gh".to_string()]);
+        let rw = Rewriter::new(&paths, &dst, &SyncConfig::default());
+        apply(&p, &paths.default_dir, &dst, &rw, false).unwrap();
+        let v: Value =
+            serde_json::from_str(&std::fs::read_to_string(dst.join(".claude.json")).unwrap())
+                .unwrap();
+        assert_eq!(v["mcpServers"]["fs"]["command"], "mine");
+        assert_eq!(v["mcpServers"]["gh"]["command"], "gh");
+
+        // Both sides change "fs": a conflict, kept unless forced.
+        let m2 = p.manifest(Some(&m));
+        std::fs::write(
+            &paths.default_json,
+            r#"{"mcpServers":{"fs":{"command":"v2"},"gh":{"command":"gh"}}}"#,
+        )
+        .unwrap();
+        let p = plan3(&paths, &dst, &m2, false);
+        assert_eq!(p.mcp.as_ref().unwrap().conflicts, vec!["fs".to_string()]);
+        assert!(p.mcp.as_ref().unwrap().is_empty());
+        let p = plan3(&paths, &dst, &m2, true);
+        let mcp = p.mcp.as_ref().unwrap();
+        assert_eq!(mcp.updated, vec!["fs".to_string()]);
+        assert_eq!(mcp.forced, vec!["fs".to_string()]);
+    }
+
+    /// A profile server only re-serialized in another key order is not a
+    /// local edit, so the default's change to it is taken, not a conflict.
+    #[test]
+    fn reordered_mcp_server_is_not_a_local_edit() {
+        let (_d, paths, dst) = setup();
+        std::fs::write(
+            &paths.default_json,
+            r#"{"mcpServers":{"fs":{"command":"x","args":["a"],"env":{"A":"1","B":"2"}}}}"#,
+        )
+        .unwrap();
+        let m = cloned(&paths, &dst);
+        std::fs::write(
+            dst.join(".claude.json"),
+            r#"{"mcpServers":{"fs":{"env":{"B":"2","A":"1"},"args":["a"],"command":"x"}}}"#,
+        )
+        .unwrap();
+        let p = plan3(&paths, &dst, &m, false);
+        let mcp = p.mcp.as_ref().unwrap();
+        assert!(mcp.local.is_empty() && mcp.conflicts.is_empty());
+        assert!(mcp.is_empty());
+        std::fs::write(
+            &paths.default_json,
+            r#"{"mcpServers":{"fs":{"command":"y","args":["a"],"env":{"A":"1","B":"2"}}}}"#,
+        )
+        .unwrap();
+        let p = plan3(&paths, &dst, &m, false);
+        let mcp = p.mcp.as_ref().unwrap();
+        assert!(mcp.local.is_empty() && mcp.conflicts.is_empty());
+        assert_eq!(mcp.updated, vec!["fs".to_string()]);
     }
 }
