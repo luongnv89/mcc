@@ -170,7 +170,7 @@ mcc completions fish > ~/.config/fish/completions/mcc.fish
 | Shell alias | a managed block in your rc file, between `# >>> mcc:<alias> >>>` and `# <<< mcc:<alias> <<<`, that runs the launcher |
 | Shared sessions | `~/.mcc/shared/projects`, only for profiles that opted in with `mcc share` (their `projects/` links there) |
 | Project defaults | `[projects."<dir>"]` tables in `~/.mcc/config.toml`, written by `mcc project set` |
-| mcc state | `~/.mcc/config.toml` (environment + registry), `~/.mcc/logs/mcc.log`, `~/.mcc/backups/` (rc file backups, session-merge conflicts) |
+| mcc state | `~/.mcc/config.toml` (environment + registry; safe to edit by hand, mcc keeps your comments and formatting), `~/.mcc/.lock` (held while a command writes the config), `~/.mcc/logs/mcc.log`, `~/.mcc/backups/` (rc file backups, session-merge conflicts) |
 
 ### What clone and sync copy
 
@@ -232,9 +232,13 @@ Editing the key by hand does nothing on its own. `mcc share <alias>` does the ac
 
 - **What is shared:** the profile's `projects/` directory, where Claude Code keeps the session transcripts `--resume` lists. It is replaced with a link to `~/.mcc/shared/projects`. The sessions the profile already had are moved into that store without overwriting anything. If a file of the same name with different contents is already there, the store's copy is kept and the profile's copy goes to `~/.mcc/backups/shared-projects-<alias>-<time>/`, with a warning.
 - **What is never shared:** credentials (`.credentials.json`, the keychain login), the account (`.claude.json`), `policy-limits.json`, `remote-settings.json`, prompt history (`history.jsonl`), live session state (`sessions/`), `shell-snapshots/`, `file-history/` and `todos/`. Each profile keeps its own login and `CLAUDE_CONFIG_DIR`.
-- **Every time sharing is turned on**, by `mcc share` or by `--mcc-share`, mcc prints this note on stderr:
+- **The first time sharing is turned on for a profile**, by `mcc share` or by `--mcc-share`, mcc prints this note on stderr and records when as `share_note_acknowledged_at` under `[profiles.<alias>]`:
 
   > ⚠ Session sharing makes conversation history available across your Claude Code accounts. Use it only between accounts you own. Don't use it to get around usage limits, and never let other people use your account or credentials — doing so can violate Anthropic's Consumer Terms (https://www.anthropic.com/legal/consumer-terms) and Usage Policy (https://www.anthropic.com/legal/aup), including the updated Usage Policy that takes effect November 12, 2026.
+
+  After that, every `mcc share` or `--mcc-share` for that profile prints a one-line reminder instead:
+
+  > ⚠ Session sharing is on: use it only between accounts you own, never to get around usage limits or to let other people use your account (Anthropic's Consumer Terms and Usage Policy; full note: `mcc share --help`).
 
 - **`--off`** replaces the link with a directory of the profile's own, holding a copy of the shared sessions. The store stays for the other sharing profiles; mcc never deletes it, so remove `~/.mcc/shared` by hand once no profile shares.
 - **`mcc delete`** of a sharing profile removes only its link. The sessions stay in the store.

@@ -15,9 +15,11 @@ All notable changes to mcc are recorded here. The format follows [Keep a Changel
 ### Changed
 
 - The session-sharing and `mcc run` terms-of-service notes, the README and the docs site now mention the updated Anthropic Usage Policy that takes effect November 12, 2026. The README and docs site quote the Team and Enterprise seat rules separately, each in its own words, document `MCC_NON_INTERACTIVE`, and `docs/PLAN.md` is marked as a historical plan. ([#38](https://github.com/luongnv89/mcc/issues/38))
+- The full session-sharing note is printed only the first time sharing is turned on for a profile, and when is recorded as `share_note_acknowledged_at` under `[profiles.ALIAS]` in `~/.mcc/config.toml`. Later `mcc share` and `ALIAS --mcc-share` runs print a one-line reminder instead. ([#36](https://github.com/luongnv89/mcc/issues/36))
 
 ### Fixed
 
+- Saving `~/.mcc/config.toml` keeps hand-written comments and formatting, and a command that changes nothing (such as `ALIAS --mcc-share` on a profile that already shares) no longer rewrites it. Every command that writes the config holds an advisory lock on `~/.mcc/.lock` from loading it to saving it, so concurrent runs no longer lose each other's changes; a command that has to wait says so. ([#35](https://github.com/luongnv89/mcc/issues/35))
 - The `mcc project` and `mcc list` tests expected absolute project paths, but mcc shows a project under `$HOME` as `~/…`; they now expect what mcc prints, so they pass on Linux as well as macOS. ([#32](https://github.com/luongnv89/mcc/issues/32))
 - `mcc sync` backs up every file or folder it overwrites or removes (such as `CLAUDE.md`, skills and agents) to `<profile>/.mcc-backup/<timestamp>/`, not only `settings.json`, `settings.local.json` and `.claude.json`, so edits made in a profile can be restored. A symlink is backed up as the link itself. `sync.extra` entries that are empty, `.` or inside `.mcc-backup` are rejected. ([#30](https://github.com/luongnv89/mcc/issues/30))
 

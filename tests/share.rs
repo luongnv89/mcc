@@ -11,6 +11,9 @@ use predicates::prelude::*;
 /// The terms-of-service note, verbatim (issue #25).
 const NOTE: &str = "⚠ Session sharing makes conversation history available across your Claude Code accounts. Use it only between accounts you own. Don't use it to get around usage limits, and never let other people use your account or credentials — doing so can violate Anthropic's Consumer Terms (https://www.anthropic.com/legal/consumer-terms) and Usage Policy (https://www.anthropic.com/legal/aup), including the updated Usage Policy that takes effect November 12, 2026.";
 
+/// The one-line reminder printed once the note was shown (issue #36).
+const REMINDER: &str = "⚠ Session sharing is on: use it only between accounts you own, never to get around usage limits or to let other people use your account (Anthropic's Consumer Terms and Usage Policy; full note: `mcc share --help`).";
+
 const SESSION: &str = "projects/-tmp-proj/session1.jsonl";
 
 fn out(o: &[u8]) -> String {
@@ -20,6 +23,11 @@ fn out(o: &[u8]) -> String {
 /// True when `stderr` carries the note as a line of its own, byte for byte.
 fn has_note(stderr: &str) -> bool {
     stderr.lines().any(|l| l == NOTE)
+}
+
+/// True when `stderr` carries the one-line reminder as a line of its own.
+fn has_reminder(stderr: &str) -> bool {
+    stderr.lines().any(|l| l == REMINDER)
 }
 
 fn launch(sb: &Sandbox, alias: &str, args: &[&str]) -> Output {
@@ -173,10 +181,10 @@ fn launch_flag_turns_sharing_on_and_is_stripped() {
     );
     assert!(profile_section(&sb, "work").contains("share_sessions = true"));
 
-    // Every launch with the flag shows the note again.
+    // Later launches with the flag show the one-line reminder instead.
     let o = launch(&sb, "work", &["--mcc-share"]);
     assert_eq!(out(&o.stdout), "fake claude \n");
-    assert!(has_note(&out(&o.stderr)));
+    assert_eq!(out(&o.stderr).trim_end(), REMINDER);
 }
 
 #[test]
@@ -217,14 +225,106 @@ fn share_prints_the_note_and_records_the_setting() {
     assert!(section.contains("share_sessions = true"), "{section}");
     assert_eq!(link_target(&sb, ".mcc/profiles/work/projects"), store(&sb));
 
-    // Idempotent, and the note is shown every time sharing is turned on.
+    // Idempotent; the note was shown, so later runs print the reminder.
     let o = sb.mcc().args(["share", "work"]).assert().success();
     let err = out(&o.get_output().stderr);
-    assert!(has_note(&err), "{err}");
+    assert!(!has_note(&err), "{err}");
+    assert!(has_reminder(&err), "{err}");
     assert!(err.contains("already shared"), "{err}");
     // Even with --quiet.
     let o = sb.mcc().args(["share", "work", "-q"]).assert().success();
-    assert!(has_note(&out(&o.get_output().stderr)));
+    assert!(has_reminder(&out(&o.get_output().stderr)));
+}
+
+/// Issue #36: the full note is shown the first time sharing is turned on
+/// for a profile, and when is recorded in its config entry.
+#[test]
+fn the_full_note_is_shown_once_and_acknowledged() {
+    let sb = sandbox();
+    assert!(!profile_section(&sb, "work").contains("share_note_acknowledged_at"));
+    let o = launch(&sb, "work", &["--mcc-share"]);
+    let err = out(&o.stderr);
+    assert!(has_note(&err), "{err}");
+    assert!(!has_reminder(&err), "{err}");
+    let section = profile_section(&sb, "work");
+    let stamp = section
+        .lines()
+        .find_map(|l| l.strip_prefix("share_note_acknowledged_at = "))
+        .unwrap_or_else(|| panic!("no acknowledgement in {section}"));
+    let stamp = stamp.trim_matches('"');
+    assert!(
+        chrono::DateTime::parse_from_rfc3339(stamp).is_ok(),
+        "{stamp}"
+    );
+
+    // Turning sharing off and on again keeps the acknowledgement: reminder.
+    sb.mcc().args(["share", "work", "--off"]).assert().success();
+    assert!(profile_section(&sb, "work").contains(stamp));
+    let o = sb.mcc().args(["share", "work"]).assert().success();
+    let err = out(&o.get_output().stderr);
+    assert!(has_reminder(&err) && !has_note(&err), "{err}");
+    assert!(profile_section(&sb, "work").contains(stamp));
+}
+
+/// A profile that was sharing before acknowledgements existed sees the full
+/// note once more, then the reminder.
+#[test]
+fn a_profile_shared_before_acknowledgements_sees_the_note_once() {
+    let sb = sandbox();
+    sb.mcc().args(["share", "work"]).assert().success();
+    let cfg = sb.read(".mcc/config.toml");
+    let legacy: String = cfg
+        .lines()
+        .filter(|l| !l.starts_with("share_note_acknowledged_at"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    assert_ne!(legacy, cfg);
+    sb.write(".mcc/config.toml", &legacy);
+
+    assert!(has_note(
+        &out(&launch(&sb, "work", &["--mcc-share"]).stderr)
+    ));
+    assert!(profile_section(&sb, "work").contains("share_note_acknowledged_at = "));
+    assert!(has_reminder(&out(
+        &launch(&sb, "work", &["--mcc-share"]).stderr
+    )));
+}
+
+/// Issue #35: `--mcc-share` on a profile that already shares changes
+/// nothing, so it does not rewrite config.toml.
+#[test]
+fn launching_an_already_shared_profile_leaves_the_config_alone() {
+    use std::os::unix::fs::MetadataExt;
+    let sb = sandbox();
+    launch(&sb, "work", &["--mcc-share"]);
+    let path = sb.path(".mcc/config.toml");
+    let before = std::fs::metadata(&path).unwrap();
+    let text = sb.read(".mcc/config.toml");
+    let o = launch(&sb, "work", &["--mcc-share"]);
+    assert!(o.status.success(), "{}", out(&o.stderr));
+    let after = std::fs::metadata(&path).unwrap();
+    // An atomic rewrite would have replaced the file (new inode).
+    assert_eq!(before.ino(), after.ino());
+    assert_eq!(before.mtime_nsec(), after.mtime_nsec());
+    assert_eq!(sb.read(".mcc/config.toml"), text);
+}
+
+/// Issue #35: comments and formatting written by hand survive `mcc share`.
+#[test]
+fn share_keeps_hand_written_comments() {
+    let sb = sandbox();
+    let cfg = sb.read(".mcc/config.toml").replace(
+        "[profiles.work]\n",
+        "# my work account\n[profiles.work]   # keep me\n",
+    );
+    sb.write(".mcc/config.toml", &cfg);
+    sb.mcc().args(["share", "work"]).assert().success();
+    let after = sb.read(".mcc/config.toml");
+    assert!(
+        after.contains("# my work account\n[profiles.work]   # keep me\n"),
+        "{after}"
+    );
+    assert!(profile_section(&sb, "work").contains("share_sessions = true"));
 }
 
 #[test]
@@ -502,9 +602,10 @@ fn the_link_survives_a_rename() {
     sb.mcc().args(["rename", "work", "job"]).assert().success();
     assert_eq!(link_target(&sb, ".mcc/profiles/work/projects"), store(&sb));
     assert!(profile_section(&sb, "job").contains("share_sessions = true"));
+    // The acknowledgement moved with the profile: no full note again.
     let o = launch(&sb, "job", &["--mcc-share", "-c"]);
     assert_eq!(out(&o.stdout), "fake claude -c\n");
-    assert!(has_note(&out(&o.stderr)));
+    assert!(has_reminder(&out(&o.stderr)), "{}", out(&o.stderr));
 }
 
 #[test]
@@ -692,6 +793,8 @@ fn help_documents_the_flag_the_setting_and_the_note() {
     // clap wraps long lines; the note's words are all there, in order.
     let words = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(words(&help).contains(&words(NOTE)), "{help}");
+    assert!(words(&help).contains(&words(REMINDER)), "{help}");
+    assert!(help.contains("share_note_acknowledged_at"), "{help}");
     assert!(!help.contains("--from-launch"), "{help}");
     sb.mcc()
         .arg("--help")

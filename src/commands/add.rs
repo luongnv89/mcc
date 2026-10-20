@@ -254,6 +254,7 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
                 rc_file,
                 last_sync: clone.then(now),
                 share_sessions: false,
+                share_note_acknowledged_at: None,
             },
         );
         undo.push(Undo::Registry(alias.clone()));
