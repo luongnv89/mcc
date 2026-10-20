@@ -30,7 +30,7 @@ pub fn run(paths: &Paths, cfg: &Config, args: &ListArgs) -> Result<()> {
             .collect();
     }
     if !usage_disabled(args) {
-        attach_usage(&mut all);
+        attach_usage(paths, cfg, &mut all);
     }
 
     let mut out = std::io::stdout().lock();
@@ -68,6 +68,11 @@ pub fn run(paths: &Paths, cfg: &Config, args: &ListArgs) -> Result<()> {
             ui::human_size(total)
         ));
         sharing_notes(&all);
+        let names: Vec<&str> = all.iter().map(|m| m.name.as_str()).collect();
+        let usages: Vec<&Usage> = all.iter().map(|m| &m.usage).collect();
+        if let Some(hint) = usage::no_data_hint(&names, &usages) {
+            ui::hint(&hint);
+        }
     }
     Ok(())
 }
@@ -94,9 +99,10 @@ fn usage_disabled(args: &ListArgs) -> bool {
     args.no_usage || usage::disabled_by_env()
 }
 
-/// Fetch every profile's usage (default included), in parallel. Failures
-/// become an "unavailable" status: never a warning, never a failed command.
-fn attach_usage(all: &mut [ProfileMetrics]) {
+/// Every profile's usage (default included): from the statusline cache, or
+/// looked up live with `[usage] live = true`. Failures become an
+/// "unavailable" status: never a warning, never a failed command.
+fn attach_usage(paths: &Paths, cfg: &Config, all: &mut [ProfileMetrics]) {
     let targets: Vec<usage::Target> = all
         .iter()
         .map(|m| usage::Target {
@@ -105,7 +111,10 @@ fn attach_usage(all: &mut [ProfileMetrics]) {
             is_default: m.is_default,
         })
         .collect();
-    for (m, u) in all.iter_mut().zip(usage::fetch_all(&targets)) {
+    for (m, u) in all
+        .iter_mut()
+        .zip(usage::lookup(paths, &targets, cfg.usage.live))
+    {
         m.usage = u;
     }
 }
@@ -130,8 +139,16 @@ fn usage_cell(u: &Usage, w: Option<&Window>, bar: usize, now: DateTime<Utc>) -> 
             None => ui::gauge(w.percent, bar),
         },
         (Status::Ok, None) => "—".into(),
-        _ if u.reason == Some(Reason::Disabled) => "—".into(),
+        _ if matches!(u.reason, Some(Reason::Disabled | Reason::NoData)) => "—".into(),
         _ => "unavailable".into(),
+    }
+}
+
+/// How old the cached usage is ("12m ago"), or "—".
+fn updated_cell(u: &Usage, now: DateTime<Utc>) -> String {
+    match u.status {
+        Status::Ok => u.age(now).unwrap_or_else(|| "—".into()),
+        Status::Unavailable => "—".into(),
     }
 }
 
@@ -150,16 +167,22 @@ fn usage_line(w: Option<&Window>, bar: usize, now: DateTime<Utc>) -> String {
     }
 }
 
-/// The card's usage rows: one per window, or a single "Usage" row saying why
-/// there is none.
+/// The card's usage rows: one per window, then how old cached numbers are,
+/// or a single "Usage" row saying why there is none.
 fn usage_rows(u: &Usage, bar: usize, now: DateTime<Utc>) -> Vec<(&'static str, String)> {
     match (u.status, u.reason) {
-        (Status::Ok, _) => vec![
-            ("5h usage", usage_line(u.five_hour.as_ref(), bar, now)),
-            ("Weekly usage", usage_line(u.weekly.as_ref(), bar, now)),
-        ],
-        (_, Some(Reason::Disabled)) => {
-            vec![("Usage", format!("— ({})", Reason::Disabled.describe()))]
+        (Status::Ok, _) => {
+            let mut rows = vec![
+                ("5h usage", usage_line(u.five_hour.as_ref(), bar, now)),
+                ("Weekly usage", usage_line(u.weekly.as_ref(), bar, now)),
+            ];
+            if let Some(age) = u.age(now) {
+                rows.push(("Usage updated", format!("{age} (statusline cache)")));
+            }
+            rows
+        }
+        (_, Some(r @ (Reason::Disabled | Reason::NoData))) => {
+            vec![("Usage", format!("— ({})", r.describe()))]
         }
         (_, reason) => vec![(
             "Usage",
@@ -198,13 +221,16 @@ fn table(out: &mut impl Write, all: &[ProfileMetrics]) -> Result<()> {
 }
 
 /// Header and rows, with usage bars `bar` cells wide.
+///
+/// UPDATED (how old cached usage is) follows WEEK when any profile's usage
+/// came from the statusline cache.
 fn table_lines(all: &[ProfileMetrics], bar: usize, now: DateTime<Utc>) -> Vec<String> {
-    let headers = [
-        "NAME",
-        "COMMAND",
-        "ACCOUNT",
-        "5H",
-        "WEEK",
+    let cached = all.iter().any(|m| m.usage.updated_at.is_some());
+    let mut headers = vec!["NAME", "COMMAND", "ACCOUNT", "5H", "WEEK"];
+    if cached {
+        headers.push("UPDATED");
+    }
+    headers.extend([
         "SKILLS",
         "AGENTS",
         "CMDS",
@@ -214,7 +240,7 @@ fn table_lines(all: &[ProfileMetrics], bar: usize, now: DateTime<Utc>) -> Vec<St
         "SIZE",
         "LAST USED",
         "SYNCED",
-    ];
+    ]);
     let rows: Vec<Vec<String>> = all
         .iter()
         .map(|m| {
@@ -233,12 +259,17 @@ fn table_lines(all: &[ProfileMetrics], bar: usize, now: DateTime<Utc>) -> Vec<St
             } else {
                 format!("{name} (missing)")
             };
-            vec![
+            let mut cells = vec![
                 name,
                 m.command.clone(),
                 m.account.clone().unwrap_or_else(|| "—".into()),
                 usage_cell(&m.usage, m.usage.five_hour.as_ref(), bar, now),
                 usage_cell(&m.usage, m.usage.weekly.as_ref(), bar, now),
+            ];
+            if cached {
+                cells.push(updated_cell(&m.usage, now));
+            }
+            cells.extend([
                 m.skills.to_string(),
                 m.agents.to_string(),
                 m.commands.to_string(),
@@ -252,10 +283,16 @@ fn table_lines(all: &[ProfileMetrics], bar: usize, now: DateTime<Utc>) -> Vec<St
                 } else {
                     metrics::ago_str(m.last_sync.as_deref())
                 },
-            ]
+            ]);
+            cells
         })
         .collect();
-    let numeric = |i: usize| (5..=11).contains(&i);
+    let numeric = |i: usize| {
+        matches!(
+            headers[i],
+            "SKILLS" | "AGENTS" | "CMDS" | "PLUGINS" | "MCP" | "HOOKS" | "SIZE"
+        )
+    };
     let widths: Vec<usize> = (0..headers.len())
         .map(|i| {
             rows.iter()

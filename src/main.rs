@@ -115,6 +115,26 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             commands::init::detect_and_save(&paths, &mut cfg, None)?;
         }
     }
+    if needs_live_disclosure(&cli.command, &cfg) {
+        // Recording the acknowledgement writes config.toml, so it takes the
+        // lock like any other write (only for this, when the command doesn't
+        // hold it already) and re-reads the config under it.
+        let _ack_lock = match lock {
+            Some(_) => None,
+            None => {
+                let l = config::lock(&paths)?;
+                cfg = config::Config::load(&paths.config_file)?;
+                Some(l)
+            }
+        };
+        if needs_live_disclosure(&cli.command, &cfg) {
+            eprintln!("{}", usage::LIVE_DISCLOSURE);
+            cfg.usage.live_disclosed_at =
+                Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+            cfg.save(&paths.config_file)?;
+            log::write("INFO", "live usage lookup disclosure shown");
+        }
+    }
     let _lock = lock;
 
     match cli.command {
@@ -134,6 +154,23 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     }
 }
 
+/// Whether this command is about to look usage up live for the first time:
+/// `[usage] live = true` without `live_disclosed_at`, and the command reads
+/// usage (`mcc list` without `--no-usage`, `mcc usage`, `mcc run` without
+/// `--profile`) with `MCC_NO_USAGE` unset.
+fn needs_live_disclosure(command: &Command, cfg: &config::Config) -> bool {
+    let reads_usage = match command {
+        Command::List(args) => !args.no_usage,
+        Command::Usage(_) => true,
+        Command::Run(args) => args.profile.is_none(),
+        _ => false,
+    };
+    reads_usage
+        && cfg.usage.live
+        && cfg.usage.live_disclosed_at.is_none()
+        && !usage::disabled_by_env()
+}
+
 /// Commands that may write ~/.mcc/config.toml, and so take its lock.
 fn writes_config(command: &Command) -> bool {
     match command {
@@ -147,6 +184,8 @@ fn writes_config(command: &Command) -> bool {
         // install/uninstall edit settings.json files and mcc's state, one
         // run at a time; the bare shim is routed before the lock is taken.
         Command::Statusline(args) => args.action.is_some(),
+        // These read the config; the one time one of them records the live
+        // usage disclosure, it takes the lock for that write alone.
         Command::List(_)
         | Command::Usage(_)
         | Command::Run(_)

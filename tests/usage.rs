@@ -337,3 +337,317 @@ fn usage_output_has_no_colour_codes_when_piped() {
         assert!(!out.contains('\x1b'), "{out:?}");
     }
 }
+
+// ---- the statusline cache (the default) and the opt-in live lookup ----------
+
+/// default + `work` logged in and `lab` logged out, the live lookup off (the
+/// default): usage comes from what `mcc statusline` cached.
+fn cache_sandbox() -> common::Sandbox {
+    let sb = common::Sandbox::new();
+    sb.seed_default();
+    common::with_profile(&sb, "work", "--clone");
+    common::with_profile(&sb, "lab", "--fresh");
+    sb.seed_oauth(
+        ".claude",
+        "test-token-default",
+        common::now_ms() + common::HOUR_MS,
+    );
+    sb.seed_oauth(
+        ".mcc/profiles/work",
+        "test-token-work",
+        common::now_ms() + common::HOUR_MS,
+    );
+    sb.seed_keychain(
+        "Claude Code-credentials",
+        "test-token-default",
+        common::now_ms() + common::HOUR_MS,
+    );
+    // default: both windows, cached 12 minutes ago; work: the weekly window
+    // only, an hour ago; lab: nothing cached.
+    common::seed_usage_cache(
+        &sb,
+        "default",
+        Some((42.4, 2 * 3600 + 14 * 60)),
+        Some((18.0, 3 * 86400 + 4 * 3600)),
+        12 * 60 + 5,
+    );
+    common::seed_usage_cache(
+        &sb,
+        "work",
+        None,
+        Some((64.0, 3 * 86400 + 4 * 3600)),
+        3600 + 5,
+    );
+    sb
+}
+
+/// Nothing may read a token or reach the network: the stub stays unasked and
+/// the fake `security` is never run.
+fn assert_no_token_lookup(sb: &common::Sandbox, stub: &common::UsageStub) {
+    assert!(stub.requests().is_empty(), "{:?}", stub.requests());
+    assert!(!sb.exists("security.log"), "the keychain was read");
+}
+
+#[test]
+fn usage_reads_the_statusline_cache_by_default() {
+    let sb = cache_sandbox();
+    let stub = usage_stub();
+    let o = sb
+        .mcc()
+        .env("MCC_USAGE_URL", &stub.url)
+        .arg("usage")
+        .assert()
+        .success();
+    let out = String::from_utf8(o.get_output().stdout.clone()).unwrap();
+    let err = String::from_utf8(o.get_output().stderr.clone()).unwrap();
+    assert_match(r"(?m)^PROFILE .* RESETS IN\s+UPDATED$", &out);
+    assert_match(
+        &format!(
+            r"(?m)^default ★  ████░░░░░░ 42%  2h 14m {LOCAL_TIME}  ██░░░░░░░░ 18%  3d 4h {LOCAL_TIME}  12m ago$"
+        ),
+        &out,
+    );
+    assert_match(
+        &format!(r"(?m)^work       —\s+██████░░░░ 64%  3d 4h {LOCAL_TIME}  1h ago$"),
+        &out,
+    );
+    // No cached data: a dash, and a hint to use /usage.
+    assert_match(
+        r"(?m)^lab        — \(no recent usage cached; run /usage in Claude Code\)$",
+        &out,
+    );
+    assert!(err.contains("no recent usage cached for `lab`"), "{err}");
+    assert!(err.contains("/usage"), "{err}");
+    assert!(!err.contains("Live usage lookup"), "{err}");
+    assert_no_token_lookup(&sb, &stub);
+
+    let arr = usage_json(&stdout_of(sb.mcc().args(["usage", "--json"])));
+    let d = &by_name(&arr, "default")["usage"];
+    assert_eq!(d["status"], "ok");
+    assert_eq!(d["source"], "cache");
+    assert_eq!(d["five_hour"]["percent"], 42.4);
+    assert!(d["updated_at"].as_str().unwrap().ends_with('Z'));
+    let lab = &by_name(&arr, "lab")["usage"];
+    assert_eq!(lab["status"], "unavailable");
+    assert_eq!(lab["reason"], "no_data");
+    assert_eq!(lab["source"], "cache");
+}
+
+#[test]
+fn cached_usage_past_its_reset_is_obsolete() {
+    let sb = cache_sandbox();
+    // default's 5-hour window reset a minute ago; work's only window too.
+    common::seed_usage_cache(
+        &sb,
+        "default",
+        Some((99.0, -60)),
+        Some((18.0, 3 * 86400)),
+        6 * 3600,
+    );
+    common::seed_usage_cache(&sb, "work", None, Some((64.0, -60)), 8 * 86400);
+    let arr = usage_json(&stdout_of(sb.mcc().args(["usage", "--json"])));
+    let d = &by_name(&arr, "default")["usage"];
+    assert_eq!(d["status"], "ok");
+    assert_eq!(d["five_hour"], serde_json::Value::Null);
+    assert_eq!(d["weekly"]["percent"], 18.0);
+    assert_eq!(by_name(&arr, "work")["usage"]["reason"], "no_data");
+    let out = stdout_of(sb.mcc().arg("usage"));
+    assert_match(
+        r"(?m)^work       — \(no recent usage cached; run /usage in Claude Code\)$",
+        &out,
+    );
+}
+
+#[test]
+fn list_reads_the_statusline_cache_and_shows_its_age() {
+    let sb = cache_sandbox();
+    let stub = usage_stub();
+    let o = sb
+        .mcc()
+        .env("MCC_USAGE_URL", &stub.url)
+        .arg("list")
+        .assert()
+        .success();
+    let out = String::from_utf8(o.get_output().stdout.clone()).unwrap();
+    let err = String::from_utf8(o.get_output().stderr.clone()).unwrap();
+    assert_match(
+        r"(?m)^NAME\s+COMMAND\s+ACCOUNT\s+5H\s+WEEK\s+UPDATED\s+SKILLS",
+        &out,
+    );
+    assert_match(
+        r"(?m)^default ★\s+claude\s+me@example\.com\s+████░░░░░░ 42% \(2h\)\s+██░░░░░░░░ 18% \(3d\)\s+12m ago\s+2\s",
+        &out,
+    );
+    assert_match(r"(?m)^lab\s+lab\s+—\s+—\s+—\s+—\s+0\s", &out);
+    assert!(err.contains("no recent usage cached for `lab`"), "{err}");
+
+    let long = stdout_of(sb.mcc().args(["list", "--long"]));
+    assert!(
+        long.contains("Usage updated:   12m ago (statusline cache)"),
+        "{long}"
+    );
+    assert!(
+        long.contains("Usage:           — (no recent usage cached; run /usage in Claude Code)"),
+        "{long}"
+    );
+    let arr = json(
+        &sb.mcc()
+            .args(["list", "--json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    );
+    let arr = arr.as_array().unwrap();
+    assert_eq!(by_name(arr, "work")["usage"]["source"], "cache");
+    assert_no_token_lookup(&sb, &stub);
+}
+
+#[test]
+fn run_reads_the_statusline_cache_and_shows_its_age() {
+    let sb = cache_sandbox();
+    let stub = usage_stub();
+    let o = sb
+        .mcc()
+        .env("MCC_USAGE_URL", &stub.url)
+        .args(["run", "--dry-run"])
+        .assert()
+        .success();
+    let err = String::from_utf8(o.get_output().stderr.clone()).unwrap();
+    assert!(
+        err.contains(
+            "would start `default` — no project default here (5h 42%, week 18% used · 12m ago)"
+        ),
+        "{err}"
+    );
+    // A cached window at its limit stops `mcc run` like a live one.
+    common::seed_usage_cache(&sb, "default", Some((100.0, 35 * 60)), None, 60);
+    sb.mcc()
+        .env("MCC_USAGE_URL", &stub.url)
+        .args(["run", "--dry-run"])
+        .assert()
+        .stderr(predicate::str::contains(
+            "`default` (no project default here) is at its 5-hour limit, resets in 35m",
+        ));
+    assert_no_token_lookup(&sb, &stub);
+}
+
+#[test]
+fn live_lookup_shows_its_disclosure_once_and_records_it() {
+    let sb = cache_sandbox();
+    let stub = usage_stub();
+    let cfg = sb.read(".mcc/config.toml");
+    sb.write(
+        ".mcc/config.toml",
+        &cfg.replacen("[usage]\n", "[usage]\n# opted in by hand\nlive = true\n", 1),
+    );
+    // Commands that don't look usage up neither show nor record it.
+    for args in [
+        &["list", "--no-usage"][..],
+        &["run", "--dry-run", "--profile", "work"],
+    ] {
+        sb.mcc()
+            .env("MCC_USAGE_URL", &stub.url)
+            .args(args)
+            .assert()
+            .success()
+            .stderr(predicate::str::contains("Live usage lookup").not());
+    }
+    sb.mcc()
+        .env("MCC_USAGE_URL", &stub.url)
+        .env("MCC_NO_USAGE", "1")
+        .arg("usage")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Live usage lookup").not());
+    assert!(!sb.read(".mcc/config.toml").contains("live_disclosed_at"));
+    assert!(stub.requests().is_empty());
+
+    let o = sb
+        .mcc()
+        .env("MCC_USAGE_URL", &stub.url)
+        .arg("usage")
+        .assert()
+        .success();
+    let err = String::from_utf8(o.get_output().stderr.clone()).unwrap();
+    assert!(
+        err.contains("⚠ Live usage lookup is on ([usage] live = true"),
+        "{err}"
+    );
+    assert!(err.contains("OAuth access token"), "{err}");
+    let cfg = sb.read(".mcc/config.toml");
+    assert!(cfg.contains("# opted in by hand\nlive = true\n"), "{cfg}");
+    assert!(
+        regex::Regex::new(r#"(?m)^live_disclosed_at = "\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ"$"#)
+            .unwrap()
+            .is_match(&cfg),
+        "{cfg}"
+    );
+    // Live numbers, no UPDATED column.
+    let out = String::from_utf8(o.get_output().stdout.clone()).unwrap();
+    assert!(!out.contains("UPDATED"), "{out}");
+    assert_eq!(stub.tokens(), ["test-token-default", "test-token-work"]);
+
+    // Shown once: later commands look usage up quietly.
+    for args in [&["usage"][..], &["list"]] {
+        sb.mcc()
+            .env("MCC_USAGE_URL", &stub.url)
+            .args(args)
+            .assert()
+            .success()
+            .stderr(predicate::str::contains("Live usage lookup").not());
+    }
+    let arr = usage_json(&stdout_of(
+        sb.mcc()
+            .env("MCC_USAGE_URL", &stub.url)
+            .args(["usage", "--json"]),
+    ));
+    assert_eq!(by_name(&arr, "default")["usage"]["source"], "live");
+}
+
+#[test]
+fn live_lookup_reads_the_keychain_without_user() {
+    use sha2::{Digest, Sha256};
+    let sb = usage_sandbox();
+    // `work` is logged in through the keychain only.
+    std::fs::remove_file(sb.path(".mcc/profiles/work/.credentials.json")).unwrap();
+    let work_dir = sb.path(".mcc/profiles/work").display().to_string();
+    let hash: String = Sha256::digest(work_dir.as_bytes())[..4]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let service = format!("Claude Code-credentials-{hash}");
+    sb.seed_keychain(
+        &service,
+        "test-token-work",
+        common::now_ms() + common::HOUR_MS,
+    );
+    // The login name, as the system knows it.
+    let id = std::process::Command::new("id")
+        .arg("-un")
+        .output()
+        .unwrap();
+    let account = String::from_utf8(id.stdout).unwrap().trim().to_string();
+    assert!(!account.is_empty());
+    let stub = usage_stub();
+
+    // launchd, cron and IDE tasks may run without USER.
+    let arr = usage_json(&stdout_of(
+        sb.mcc()
+            .env_remove("USER")
+            .env("FAKE_KEYCHAIN_ACCOUNT", &account)
+            .env("MCC_USAGE_URL", &stub.url)
+            .args(["usage", "--json"]),
+    ));
+    let work = &by_name(&arr, "work")["usage"];
+    assert_eq!(work["status"], "ok", "{work}");
+    assert_eq!(work["weekly"]["percent"], 64.0);
+    assert_eq!(stub.tokens(), ["test-token-default", "test-token-work"]);
+    let calls = sb.read("security.log");
+    assert!(
+        calls.contains(&format!(
+            "find-generic-password -s {service} -a {account} -w"
+        )),
+        "{calls}"
+    );
+}

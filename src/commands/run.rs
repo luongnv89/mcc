@@ -58,14 +58,15 @@ fn profiles(cfg: &Config) -> Vec<Profile> {
     .collect()
 }
 
-/// Usage of `profiles`, in order; not fetched with `MCC_NO_USAGE`.
-fn fetch(paths: &Paths, profiles: &[&Profile]) -> Vec<Usage> {
+/// Usage of `profiles`, in order: cached, or live with `[usage] live = true`;
+/// not read at all with `MCC_NO_USAGE`.
+fn fetch(paths: &Paths, cfg: &Config, profiles: &[&Profile]) -> Vec<Usage> {
     if usage::disabled_by_env() {
         crate::log::write("INFO", "usage not fetched: MCC_NO_USAGE is set");
         return profiles.iter().map(|_| Usage::default()).collect();
     }
     let targets: Vec<usage::Target> = profiles.iter().map(|p| p.target(paths)).collect();
-    usage::fetch_all(&targets)
+    usage::lookup(paths, &targets, cfg.usage.live)
 }
 
 pub fn run(paths: &Paths, cfg: &Config, args: &RunArgs) -> Result<()> {
@@ -110,12 +111,12 @@ pub fn run(paths: &Paths, cfg: &Config, args: &RunArgs) -> Result<()> {
         None => "no project default here".to_string(),
     };
 
-    let default_usage = fetch(paths, &[default]).remove(0);
+    let default_usage = fetch(paths, cfg, &[default]).remove(0);
     if !pick::at_limit(&default_usage) {
         ui::info(&format!(
             "{verb} `{}` — {why} ({})",
             default.name,
-            pick::summary(&default_usage)
+            pick::summary(&default_usage, Utc::now())
         ));
         return launch(paths, cfg, default, args);
     }

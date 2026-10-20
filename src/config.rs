@@ -49,6 +49,16 @@ pub struct UsageConfig {
     /// `--show-email` / `--hide-email` override it for one run).
     #[serde(default)]
     pub show_email: bool,
+    /// Look usage up live: read each profile's OAuth token and ask
+    /// Anthropic's usage endpoint. Off by default, which reads only the
+    /// rate limits `mcc statusline` caches. Left out of the file while off,
+    /// so existing files stay as they are.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub live: bool,
+    /// When the live-lookup disclosure was shown (RFC 3339); it is shown
+    /// once. Left out of the file until then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_disclosed_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
