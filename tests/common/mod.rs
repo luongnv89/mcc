@@ -17,13 +17,18 @@ const FAKE_CLAUDE: &str = r#"#!/bin/sh
 # `auth status` reports $FAKE_EMAIL (default fake@example.com) and, when
 # $FAKE_ORG_NAME is set, its organization ($FAKE_ORG_ID, $FAKE_ORG_NAME).
 # With $FAKE_CONFIG_DIRECTORY set it also reports `configDirectory` (Claude
-# Code 2.1.268+): the directory it uses.
+# Code 2.1.268+): the directory it uses. `auth login` writes its options to
+# $HOME/login-args, one per line. $FAKE_AUTH_METHOD replaces `claude.ai` and
+# $FAKE_API_KEY_SOURCE adds `apiKeySource` (a Console sign-in reports
+# "api_key" and "/login managed key").
 dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 cfgdir=""
 [ -n "$FAKE_CONFIG_DIRECTORY" ] && cfgdir=", \"configDirectory\": \"$dir\""
 case "$1 $2" in
   "--version "*) echo "9.9.9 (Claude Code)" ;;
   "auth login")
+    shift 2
+    printf '%s\n' "$@" > "$HOME/login-args"
     mkdir -p "$dir"
     [ -n "$FAKE_LOGIN_FAIL" ] && { echo "login aborted" >&2; exit 1; }
     echo '{"token":"fake"}' > "$dir/.credentials.json"
@@ -32,7 +37,9 @@ case "$1 $2" in
     if [ -f "$dir/.credentials.json" ]; then
       org=""
       [ -n "$FAKE_ORG_NAME" ] && org=", \"orgId\": \"$FAKE_ORG_ID\", \"orgName\": \"$FAKE_ORG_NAME\""
-      echo "{\"loggedIn\": true, \"authMethod\": \"claude.ai\", \"email\": \"${FAKE_EMAIL:-fake@example.com}\"$org$cfgdir}"
+      src=""
+      [ -n "$FAKE_API_KEY_SOURCE" ] && src=", \"apiKeySource\": \"$FAKE_API_KEY_SOURCE\""
+      echo "{\"loggedIn\": true, \"authMethod\": \"${FAKE_AUTH_METHOD:-claude.ai}\", \"email\": \"${FAKE_EMAIL:-fake@example.com}\"$org$src$cfgdir}"
     else
       echo "{\"loggedIn\": false, \"authMethod\": \"none\"$cfgdir}"
     fi ;;

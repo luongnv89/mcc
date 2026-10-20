@@ -105,7 +105,7 @@ mcc delete job              # remove it completely
 |---|---|---|
 | `mcc` | With no command, once mcc is set up: the profile that applies in this directory and why, every profile's account, usage and drift, and warnings; read-only (see [Status at a glance](#status-at-a-glance-mcc)). Before setup it prints the help | |
 | `mcc init` | Detect OS, arch, terminal, shell, rc file, the `claude` binary, and whether `~/.local/bin` is on PATH (and offer to add it) | `--force`, `--shell zsh\|bash\|fish` |
-| `mcc add [ALIAS]` | Create the default profile, or a new profile with its own command; records the account and its organization, warns when another profile already uses that account, and asks for an optional label. A clone shares the default's plugins instead of copying them | `--clone`, `--fresh`, `--link ITEMS`, `--copy-plugins`, `--no-login`, `--label LABEL`, `--color COLOR`, `-y` |
+| `mcc add [ALIAS]` | Create the default profile, or a new profile with its own command; records the account and its organization, warns when another profile already uses that account, and asks for an optional label. A clone shares the default's plugins instead of copying them | `--clone`, `--fresh`, `--link ITEMS`, `--copy-plugins`, `--no-login`, `--email ADDRESS`, `--sso`, `--label LABEL`, `--color COLOR`, `-y` |
 | `mcc list` (`ls`) | Show every profile with its account, 5-hour/weekly usage and sync state in a table that fits 120 columns; `--long` adds every metric | `--json`, `--json-v2`, `-l/--long`, `--no-usage`, `--show-email`, `--hide-email` |
 | `mcc usage [PROFILE]` | Show each profile's 5-hour and weekly usage in a table (`default` or `claude` for the default profile) | `--json`, `--json-v2`, `--show-email`, `--hide-email` |
 | `mcc sync [ALIAS]` | Copy the default's setup into a profile (default → profile only), keeping edits made in the profile | `--all`, `--dry-run`, `--prune`, `--force`, `--only ITEMS`, `-y` |
@@ -487,6 +487,8 @@ With `--all`, each profile's output comes under its name followed by its exit st
 ### Accounts, organizations, labels and colors
 
 After `mcc add` logs a profile in, it records the account under `[profiles.<alias>.account]` in `~/.mcc/config.toml`: its email, Claude Code's account UUID, and its organization's name and UUID, each when Claude Code reports it. If another profile (the default included) is already logged in to the same account in the same organization, `mcc add` warns: profiles on one account share its usage limits, so this is usually a mistake. The same login in another organization, such as a personal plan and a work seat, has limits of its own, so it only gets a note. It then asks for an optional label, such as `personal` or the account's organization; `--label LABEL` sets it without asking, and `-y` or a non-interactive run skips it.
+
+`--email ADDRESS` and `--sso` are passed to `claude auth login`: the first pre-fills the address on the sign-in page, the second forces the SSO flow (`mcc add work --clone --email me@acme.com --sso`). mcc checks that `--email` looks like one address but never prints it. A profile signed in with an Anthropic Console account (API usage billing) gets a warning: Claude Code stores a Console sign-in outside the profile's directory, so profiles don't keep it separate. The profile is still added; to use a Claude subscription in it instead, run `ALIAS auth login --claudeai`. mcc tells a Console sign-in by what `claude auth status` reports (`apiKeySource` is `/login managed key`).
 
 ```toml
 [profiles.work]

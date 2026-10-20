@@ -69,6 +69,46 @@ pub struct AuthStatus {
     /// The config directory Claude Code resolved (`configDirectory`, reported
     /// by Claude Code 2.1.268 and later).
     pub config_directory: Option<String>,
+    /// Where the API credential came from (`apiKeySource`); `/login managed
+    /// key` is an Anthropic Console sign-in.
+    pub api_key_source: Option<String>,
+}
+
+/// The `apiKeySource` Claude Code reports for an API key that `claude auth
+/// login --console` created and stored.
+const CONSOLE_KEY_SOURCE: &str = "/login managed key";
+
+impl AuthStatus {
+    /// True when the login is an Anthropic Console sign-in (API usage
+    /// billing) rather than a Claude subscription. Claude Code reports it as
+    /// `authMethod: "api_key"` with `apiKeySource: "/login managed key"`; a
+    /// key from `ANTHROPIC_API_KEY` or an `apiKeyHelper` is not one.
+    pub fn is_console(&self) -> bool {
+        self.api_key_source.as_deref() == Some(CONSOLE_KEY_SOURCE)
+    }
+}
+
+/// Options passed through to `claude auth login`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LoginOptions<'a> {
+    /// `--email`: pre-fill this address on the sign-in page.
+    pub email: Option<&'a str>,
+    /// `--sso`: force the SSO sign-in flow.
+    pub sso: bool,
+}
+
+impl LoginOptions<'_> {
+    /// The arguments after `claude auth login`, each its own argv entry.
+    fn args(&self) -> Vec<&str> {
+        let mut args = Vec::new();
+        if let Some(email) = self.email {
+            args.extend(["--email", email]);
+        }
+        if self.sso {
+            args.push("--sso");
+        }
+        args
+    }
 }
 
 impl Claude<'_> {
@@ -87,10 +127,10 @@ impl Claude<'_> {
         cmd
     }
 
-    /// Run `claude auth login` attached to the terminal.
-    pub fn login(&self) -> Result<bool> {
+    /// Run `claude auth login` attached to the terminal, with `opts`.
+    pub fn login(&self, opts: &LoginOptions) -> Result<bool> {
         let mut cmd = self.command();
-        cmd.args(["auth", "login"]);
+        cmd.args(["auth", "login"]).args(opts.args());
         CHILD_RUNNING.store(true, Ordering::SeqCst);
         let status = cmd
             .status()
@@ -168,6 +208,7 @@ fn parse_status(raw: Value) -> AuthStatus {
         org_name: str_at(&["/orgName", "/organizationName", "/account/organizationName"]),
         org_id: str_at(&["/orgId", "/organizationUuid", "/account/organizationUuid"]),
         config_directory: str_at(&["/configDirectory"]),
+        api_key_source: str_at(&["/apiKeySource"]),
     }
 }
 
@@ -197,6 +238,33 @@ mod tests {
             "loggedIn": true, "configDirectory": "/h/.mcc/profiles/work"
         }));
         assert_eq!(s.config_directory.as_deref(), Some("/h/.mcc/profiles/work"));
+    }
+
+    #[test]
+    fn console_logins_are_told_apart() {
+        // A Console sign-in, as Claude Code 2.1.286 reports it.
+        let s = parse_status(serde_json::json!({
+            "loggedIn": true, "authMethod": "api_key",
+            "apiKeySource": "/login managed key", "email": "a@b.c"
+        }));
+        assert!(s.is_console());
+        // A Claude subscription, and an API key from the environment.
+        let s = parse_status(serde_json::json!({"loggedIn": true, "authMethod": "claude.ai"}));
+        assert!(!s.is_console());
+        let s = parse_status(serde_json::json!({
+            "loggedIn": true, "authMethod": "api_key", "apiKeySource": "ANTHROPIC_API_KEY"
+        }));
+        assert!(!s.is_console());
+    }
+
+    #[test]
+    fn login_options_are_separate_arguments() {
+        assert!(LoginOptions::default().args().is_empty());
+        let opts = LoginOptions {
+            email: Some("a b@c.d"),
+            sso: true,
+        };
+        assert_eq!(opts.args(), ["--email", "a b@c.d", "--sso"]);
     }
 
     #[test]

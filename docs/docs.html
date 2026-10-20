@@ -209,6 +209,7 @@ work       Acme     ████░░░░░░ 42% (2h) ██░░░░�
         </ol>
         <p>If a step fails, the changes made so far are rolled back. Without an alias or a <code>--clone</code>/<code>--fresh</code> flag, <code>add</code> asks interactively.</p>
         <p>After the login, <code>add</code> records the account under <code>[profiles.&lt;alias&gt;.account]</code> in <code>~/.mcc/config.toml</code> (email, account UUID, organization name and UUID, as Claude Code reports them) and warns when another profile, the default included, is already logged in to the same account, since profiles on one account share its usage limits. It then asks for an optional label, such as <code>personal</code> or the account's organization, kept as <code>label</code>.</p>
+        <p>A profile signed in with an Anthropic Console account (API usage billing) gets a warning, without stopping: Claude Code stores a Console sign-in outside the profile's directory, so profiles don't keep it separate. To use a Claude subscription in it instead, run <code>ALIAS auth login --claudeai</code>.</p>
         <div class="table-wrap"><table>
           <thead><tr><th>Option</th><th>Effect</th></tr></thead>
           <tbody>
@@ -216,6 +217,8 @@ work       Acme     ████░░░░░░ 42% (2h) ██░░░░�
             <tr><td><code>--clone</code></td><td>Copy the default profile's setup (never credentials)</td></tr>
             <tr><td><code>--fresh</code></td><td>Start with an empty profile</td></tr>
             <tr><td><code>--no-login</code></td><td>Skip <code>claude auth login</code>; log in later by running the alias</td></tr>
+            <tr><td><code>--email ADDRESS</code></td><td>Passed to <code>claude auth login --email</code>: pre-fills the address on the sign-in page. mcc does not print it</td></tr>
+            <tr><td><code>--sso</code></td><td>Passed to <code>claude auth login --sso</code>: forces the SSO sign-in flow</td></tr>
             <tr><td><code>--label LABEL</code></td><td>Label the account (e.g. <code>personal</code>, or the work organization) instead of being asked; 1–64 characters</td></tr>
             <tr><td><code>-y</code>, <code>--yes</code></td><td>Accept defaults without prompting</td></tr>
           </tbody>
