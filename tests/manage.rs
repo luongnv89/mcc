@@ -729,20 +729,23 @@ fn sync_dry_run_then_apply() {
     sb.seed_default();
     with_profile(&sb, "work", "--fresh");
 
+    // No manifest yet, but only additions: nothing local is replaced (#87).
     sb.mcc()
         .args(["sync", "work", "--dry-run"])
         .assert()
         .success()
         .stdout(predicate::str::is_empty())
         .stderr(predicate::str::contains("dry run"))
-        .stderr(predicate::str::contains("+ skills/alpha/SKILL.md"));
+        .stderr(predicate::str::contains("+ skills/alpha/SKILL.md"))
+        .stderr(predicate::str::contains("would be replaced").not());
     assert!(!sb.exists(".mcc/profiles/work/skills"));
 
     sb.mcc()
         .args(["sync", "work"])
         .assert()
         .success()
-        .stderr(predicate::str::contains("now matches the default"));
+        .stderr(predicate::str::contains("now matches the default"))
+        .stderr(predicate::str::contains("will be replaced").not());
     assert!(sb.exists(".mcc/profiles/work/skills/alpha/SKILL.md"));
     assert!(!sb.exists(".mcc/profiles/work/.credentials.json.default"));
     let state = json(sb.read(".mcc/profiles/work/.claude.json").as_bytes());
@@ -1616,9 +1619,90 @@ fn invalid_manifest_falls_back_to_two_way() {
         .args(["sync", "work"])
         .assert()
         .success()
-        .stderr(predicate::str::contains("ignoring"));
+        .stderr(predicate::str::contains("ignoring"))
+        .stderr(predicate::str::contains("1 path will be replaced"))
+        .stderr(predicate::str::contains("~ CLAUDE.md"));
     assert_eq!(sb.read(".mcc/profiles/work/CLAUDE.md"), "# my rules\n");
     assert_eq!(json(sb.read(&manifest_path()).as_bytes())["version"], 1);
+}
+
+/// #87: without a manifest a sync is two-way and replaces local edits with
+/// the default's version, so it lists each one and where it is backed up —
+/// even with --quiet, which hides the plan (so the paths below can only come
+/// from the warning).
+#[test]
+fn sync_without_manifest_lists_the_local_edits_it_replaces() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    with_profile(&sb, "work", "--clone");
+    std::fs::remove_file(sb.path(&manifest_path())).unwrap();
+    sb.write(".mcc/profiles/work/CLAUDE.md", "# mine\n");
+    #[cfg(unix)]
+    let before = snapshot(&sb.path(".mcc/profiles/work"));
+
+    sb.mcc()
+        .args(["sync", "work", "--dry-run", "-q"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("1 path would be replaced"))
+        .stderr(predicate::str::contains("~ CLAUDE.md"))
+        .stderr(predicate::str::contains(".mcc-backup"));
+    #[cfg(unix)]
+    assert_eq!(snapshot(&sb.path(".mcc/profiles/work")), before);
+    assert_eq!(sb.read(".mcc/profiles/work/CLAUDE.md"), "# mine\n");
+    assert!(!sb.exists(&manifest_path()));
+    assert!(backup_dirs(&sb, "work").is_empty());
+
+    sb.mcc()
+        .args(["sync", "work", "-q"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("1 path will be replaced"))
+        .stderr(predicate::str::contains("~ CLAUDE.md"))
+        .stderr(predicate::str::contains(".mcc-backup"));
+    assert_eq!(sb.read(".mcc/profiles/work/CLAUDE.md"), "# my rules\n");
+    let backups = backup_dirs(&sb, "work");
+    assert_eq!(backups.len(), 1, "{backups:?}");
+    assert_eq!(
+        std::fs::read_to_string(backups[0].join("CLAUDE.md")).unwrap(),
+        "# mine\n"
+    );
+    assert!(sb.exists(&manifest_path()));
+
+    // Recorded now: the next sync is three-way, keeps the edit and takes the
+    // default's change without the warning.
+    sb.write(".mcc/profiles/work/CLAUDE.md", "# mine again\n");
+    sb.write(".claude/agents/reviewer.md", "agent v2");
+    sb.mcc()
+        .args(["sync", "work"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("= CLAUDE.md (local edit, kept)"))
+        .stderr(predicate::str::contains("will be replaced").not())
+        .stderr(predicate::str::contains("would be replaced").not());
+    assert_eq!(sb.read(".mcc/profiles/work/CLAUDE.md"), "# mine again\n");
+    assert_eq!(sb.read(".mcc/profiles/work/agents/reviewer.md"), "agent v2");
+}
+
+/// #87: an MCP server edited in the profile is listed as well.
+#[test]
+fn sync_without_manifest_lists_the_mcp_servers_it_replaces() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    with_profile(&sb, "work", "--clone");
+    std::fs::remove_file(sb.path(&manifest_path())).unwrap();
+    let mut state = json(sb.read(".mcc/profiles/work/.claude.json").as_bytes());
+    state["mcpServers"]["fs"]["args"] = serde_json::json!(["mine"]);
+    sb.write(".mcc/profiles/work/.claude.json", &state.to_string());
+
+    sb.mcc()
+        .args(["sync", "work", "--dry-run", "-q"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("1 path would be replaced"))
+        .stderr(predicate::str::contains(
+            "~ MCP server \"fs\" (.claude.json)",
+        ));
 }
 
 #[test]
