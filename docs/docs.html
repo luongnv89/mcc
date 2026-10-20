@@ -387,6 +387,9 @@ lab        lab      —               —     <span class="d">unavailable       
 
         <h3 id="three-way">Three-way sync</h3>
         <p><code>add --clone</code> and every <code>sync</code> record what they wrote in <code>&lt;profile&gt;/.mcc-sync.json</code>: each path and MCP server with a hash of its content. The next <code>sync</code> compares the default, the profile and that record for every path. Changed only in the default: updated (or added). Edited, or deleted, only in the profile: kept and reported as a local edit. Changed in both: a conflict, kept and reported; <code>--force</code> overwrites it after backing it up. <code>--dry-run</code> shows the same classification and writes nothing, not even the record. A profile without a record (created <code>--fresh</code> or by an older mcc) is compared two-way once, taking every difference from the default, and the record starts with that sync. The record belongs to its profile and is never copied; <code>[sync] extra</code> can't name it.</p>
+
+        <h3 id="settings-overlays">Per-profile settings overlays</h3>
+        <p>A profile can keep its own <code>model</code>, <code>env</code>, <code>permissions</code> or <code>statusLine</code> with an overlay: <code>[profiles.&lt;alias&gt;.settings]</code> in <code>~/.mcc/config.toml</code> and/or <code>&lt;profile&gt;/settings.mcc.json</code> (which wins where both set a key). Clone and every <code>sync</code> write the default's <code>settings.json</code> (paths rewritten), then deep-merge the overlay onto it: objects merge key by key, arrays and other values replace the default's whole (an overlay <code>permissions.allow</code> is the profile's whole list), and <code>null</code> (JSON only) removes a key. The merged result is what the sync record holds, so overlay keys are never local edits or conflicts, and editing the overlay is applied by the next <code>sync</code>, with the usual backup. When <code>[sync] exclude</code> has <code>"settings"</code>, the profile owns its <code>settings.json</code> and the overlay is not applied. An overlay <code>statusLine</code> replaces the default's, the <code>mcc statusline</code> shim included.</p>
       </section>
 
       <section id="configuration">
@@ -402,6 +405,9 @@ show_email = true              <span class="cm"># show account emails in `mcc us
 
 [profiles.work]
 share_sessions = true          <span class="cm"># default: false; set it with `mcc share work`</span>
+
+[profiles.work.settings]       <span class="cm"># optional: merged onto the default's settings.json</span>
+model = "sonnet"
 
 [projects."/Users/me/code/app"]
 profile = "work"               <span class="cm"># `mcc run` starts `work` here; set it with `mcc project set work`</span>

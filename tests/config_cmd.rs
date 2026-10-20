@@ -137,6 +137,11 @@ fn invalid_values_leave_the_file_unchanged() {
         (["profiles.work.label", "a\u{7}b"], 2, "control characters"),
         (["profiles.ghost.label", "x"], 2, "no profile named"),
         (["profiles.work.share_group", "acme"], 2, "mcc share work"),
+        (
+            ["profiles.work.settings.model", "sonnet"],
+            2,
+            "[profiles.work.settings] with `mcc config edit`",
+        ),
         (["projects.\"/x\".profile", "work"], 2, "mcc project set"),
         (["usage.nope", "1"], 2, "unknown config key"),
     ] {

@@ -7,7 +7,7 @@ use serde_json::{Map, Value};
 
 use crate::claude::{self, Claude};
 use crate::cli::AddArgs;
-use crate::config::{Account, Config, Profile, SyncConfig};
+use crate::config::{Account, Config, Profile};
 use crate::copy::{self, Rewriter};
 use crate::env_detect::{EnvInfo, dir_on_path};
 use crate::error::CliError;
@@ -358,7 +358,7 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
             "Set up an empty profile"
         });
         if clone {
-            step.ok(&clone_setup(paths, &cfg.sync, &profile_dir)?);
+            step.ok(&clone_setup(paths, cfg, &profile_dir)?);
         } else {
             step.skip("fresh profile");
         }
@@ -422,6 +422,7 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
                 share_cross_org_allowed_at: None,
                 label: None,
                 account: None,
+                settings: None,
             },
         );
         undo.record(Undo::Registry(alias.clone()));
@@ -520,9 +521,10 @@ fn now() -> String {
     chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
 }
 
-fn clone_setup(paths: &Paths, sync_cfg: &SyncConfig, profile_dir: &Path) -> Result<String> {
-    let spec = copy::spec(None, sync_cfg)?;
-    let rw = Rewriter::new(paths, profile_dir, sync_cfg);
+fn clone_setup(paths: &Paths, cfg: &Config, profile_dir: &Path) -> Result<String> {
+    let spec = copy::spec(None, &cfg.sync)?;
+    // The same rewriter sync uses, so a clone and a sync write the same.
+    let rw = Rewriter::for_profile(paths, cfg, profile_dir)?;
     let plan = copy::plan(
         &paths.default_dir,
         &paths.default_json,

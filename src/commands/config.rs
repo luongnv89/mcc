@@ -104,6 +104,11 @@ fn settable(key: &str, parts: &[String]) -> Result<Key> {
                 "session sharing is set with `mcc share {alias}` (see `mcc help share`)"
             )));
         }
+        ["profiles", alias, "settings", ..] => {
+            return Err(managed(&format!(
+                "a settings overlay is a table of JSON settings: edit [profiles.{alias}.settings] with `mcc config edit`, or write the profile's settings.mcc.json"
+            )));
+        }
         ["profiles", _, ..] => {
             return Err(managed(
                 "mcc keeps a profile's other keys itself; `mcc rename` renames a profile",

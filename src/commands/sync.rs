@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use crate::cli::SyncArgs;
+use crate::commands::statusline;
 use crate::config::Config;
 use crate::copy::{self, Action, Base, Plan, Rewriter, Spec, Status};
 use crate::error::CliError;
@@ -123,7 +124,7 @@ pub fn plan_for(
     prune: bool,
     force: bool,
 ) -> Result<Plan> {
-    let rw = Rewriter::new(paths, dir, &cfg.sync);
+    let rw = Rewriter::for_profile(paths, cfg, dir)?;
     copy::plan_with(
         &paths.default_dir,
         &paths.default_json,
@@ -194,6 +195,43 @@ fn kept_note(s: &Status) -> String {
     }
 }
 
+/// Whether the profile's settings overlay replaces the `mcc statusline` shim
+/// the default's `settings.json` has: the default's `statusLine.command` is
+/// the shim, and the merged (overlaid) one is not. `false` without an overlay,
+/// when settings aren't synced, or when either file can't be read (the plan
+/// reports that).
+fn overlay_drops_shim(paths: &Paths, spec: &Spec, rw: &Rewriter) -> bool {
+    let src = paths.default_dir.join(copy::SETTINGS_FILE);
+    let Some(item) = spec
+        .items
+        .iter()
+        .find(|i| i.rel == Path::new(copy::SETTINGS_FILE))
+    else {
+        return false;
+    };
+    if !rw.overlays(&src) {
+        return false;
+    }
+    let command = |bytes: &[u8]| {
+        serde_json::from_slice::<serde_json::Value>(bytes)
+            .ok()
+            .and_then(|v| {
+                v.get("statusLine")?
+                    .get("command")?
+                    .as_str()
+                    .map(str::to_owned)
+            })
+    };
+    let shim = |c: &Option<String>| c.as_deref().is_some_and(statusline::is_shim);
+    let Ok(base) = std::fs::read(&src) else {
+        return false;
+    };
+    if !shim(&command(&base)) {
+        return false;
+    }
+    copy::desired_bytes(&src, item.rewrite, rw).is_ok_and(|merged| !shim(&command(&merged)))
+}
+
 fn sync_one(
     paths: &Paths,
     cfg: &mut Config,
@@ -212,7 +250,28 @@ fn sync_one(
         ))
         .into());
     }
-    let rw = Rewriter::new(paths, &dir, &cfg.sync);
+    let rw = Rewriter::for_profile(paths, cfg, &dir)?;
+    if rw.has_overlay() && cfg.sync.exclude.iter().any(|g| g == "settings") {
+        ui::warn(&format!(
+            "\"{alias}\" has a settings overlay, but [sync] exclude has \"settings\", so sync leaves its settings.json alone and the overlay is not applied"
+        ));
+    }
+    if rw.has_overlay()
+        && spec
+            .items
+            .iter()
+            .any(|i| i.rel == Path::new(copy::SETTINGS_FILE))
+        && !paths.default_dir.join(copy::SETTINGS_FILE).is_file()
+    {
+        ui::warn(&format!(
+            "\"{alias}\" has a settings overlay, but the default profile has no settings.json to merge it onto, so it is not applied"
+        ));
+    }
+    if overlay_drops_shim(paths, spec, &rw) {
+        ui::warn(&format!(
+            "\"{alias}\": the settings overlay sets statusLine.command, which replaces the mcc statusline shim, so usage for this profile is no longer cached; leave statusLine.command out of the overlay to keep it"
+        ));
+    }
     let mut steps = ui::Steps::new(if args.dry_run { 1 } else { 3 });
 
     let step = steps.start("Compare with the default profile");
