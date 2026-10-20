@@ -10,9 +10,11 @@ All notable changes to mcc are recorded here. The format follows [Keep a Changel
 - `mcc run [-- CLAUDE_ARGS]` starts Claude Code with the current project's default profile, or the default profile outside every project. mcc never switches accounts on its own. When that profile is at its 5-hour or weekly limit, `mcc run` asks what to do: waiting (starting nothing) is the default, starting it anyway comes next, and other profiles are offered only when the project allows them, by name and without their usage. Only that profile's usage is fetched. Without a terminal it stops (exit 2). `--profile NAME` starts NAME without checking usage. Starting a profile other than the project's, from the prompt or with `--profile`, prints a terms-of-service note on stderr. `--dry-run` prints the profile it would start. If the profile's usage can't be read, it starts. ([#31](https://github.com/luongnv89/mcc/issues/31))
 - `mcc list` shows the project defaults under the profile table (project, profile and account, with `← here` for the current directory). `--long` cards have a `Default for` row, and `--json` has a `project_defaults` array per profile.
 - `project` and `run` are reserved and can't be used as aliases.
+- A GitHub Actions CI workflow runs `cargo test` on Linux and macOS, `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `shellcheck install.sh` and `brew audit` on the Homebrew formula for every push and pull request. ([#32](https://github.com/luongnv89/mcc/issues/32))
 
 ### Fixed
 
+- The `mcc project` and `mcc list` tests expected absolute project paths, but mcc shows a project under `$HOME` as `~/…`; they now expect what mcc prints, so they pass on Linux as well as macOS. ([#32](https://github.com/luongnv89/mcc/issues/32))
 - `mcc sync` backs up every file or folder it overwrites or removes (such as `CLAUDE.md`, skills and agents) to `<profile>/.mcc-backup/<timestamp>/`, not only `settings.json`, `settings.local.json` and `.claude.json`, so edits made in a profile can be restored. A symlink is backed up as the link itself. `sync.extra` entries that are empty, `.` or inside `.mcc-backup` are rejected. ([#30](https://github.com/luongnv89/mcc/issues/30))
 
 ## [0.3.0] - 2026-10-13

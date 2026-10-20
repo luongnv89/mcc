@@ -29,7 +29,10 @@ Run these before you open a pull request:
 cargo test                                   # unit + integration tests
 cargo fmt --all -- --check                   # formatting
 cargo clippy --all-targets -- -D warnings    # lints
+shellcheck install.sh                        # installer script
 ```
+
+CI (`.github/workflows/ci.yml`) runs the same checks on every push and pull request: `cargo test` on Linux and macOS, `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `shellcheck install.sh`, and `brew audit --strict` on `packaging/homebrew/mcc.rb`.
 
 The tests never touch your real `~/.claude`, rc files, or keychain, and never reach the network. The integration suite sets `MCC_HOME` to a temp dir, puts a fake `claude` script on `PATH`, points `MCC_SECURITY_BIN` at a fake `security` script, and points `MCC_USAGE_URL` at a refused loopback port or a local stub server. Keep new tests sandboxed the same way.
 

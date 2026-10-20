@@ -39,7 +39,7 @@ fi
 ok "cargo: $(cargo --version)"
 
 # 3. Build + install (local checkout if we're in one, else from GitHub)
-script_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd || true)"
+script_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || script_dir=""
 if [ -n "$script_dir" ] && [ -f "$script_dir/Cargo.toml" ] && grep -q '^name = "mcc"' "$script_dir/Cargo.toml"; then
   info "building from $script_dir"
   cargo install --path "$script_dir" --locked --force
