@@ -244,7 +244,7 @@ lab        lab      —               <span class="d">unavailable            una
 
         <h3 id="cmd-sync"><code>mcc sync</code> <a class="anchor" href="#cmd-sync" aria-label="Link to mcc sync">#</a></h3>
         <p class="synopsis">mcc sync (ALIAS | --all) [--dry-run] [--prune] [--only ITEMS] [-y]</p>
-        <p>Copies the default profile's setup into a profile. It plans the changes, backs up the profile's <code>settings.json</code>, <code>settings.local.json</code> and <code>.claude.json</code> to <code>&lt;profile&gt;/.mcc-backup/&lt;timestamp&gt;/</code>, then applies them with progress.</p>
+        <p>Copies the default profile's setup into a profile. It plans the changes, copies every file or folder it is about to overwrite or remove (such as <code>CLAUDE.md</code>, skills, agents, <code>settings.json</code> and <code>.claude.json</code>) to <code>&lt;profile&gt;/.mcc-backup/&lt;timestamp&gt;/</code>, then applies them with progress.</p>
         <div class="table-wrap"><table>
           <thead><tr><th>Option</th><th>Effect</th></tr></thead>
           <tbody>
@@ -358,7 +358,7 @@ lab        lab      —               <span class="d">unavailable            una
         <p>Symlinks stay symlinks. A link into the default profile is re-pointed into the copy. A relative link elsewhere (such as <code>skills/x -&gt; ../../.agents/skills/x</code>) is resolved so it still works from the new location.</p>
 
         <h3>One-way sync, backups and pruning</h3>
-        <p><code>sync</code> only copies default → profile, because most tools assume the default config path. Before writing, it backs up the profile's <code>settings.json</code>, <code>settings.local.json</code> and <code>.claude.json</code> to <code>&lt;profile&gt;/.mcc-backup/&lt;timestamp&gt;/</code>. Files that exist only in the profile are kept unless you pass <code>--prune</code>, and pruning asks for confirmation (or needs <code>--yes</code>).</p>
+        <p><code>sync</code> only copies default → profile, because most tools assume the default config path. Before writing, it copies every file or folder it is about to overwrite or remove (such as <code>CLAUDE.md</code>, skills, agents, <code>settings.json</code> and <code>.claude.json</code>) to <code>&lt;profile&gt;/.mcc-backup/&lt;timestamp&gt;/</code>, at the same paths, so your own edits can be restored from there. <code>--dry-run</code> changes nothing in the profile and makes no backup. Files that exist only in the profile are kept unless you pass <code>--prune</code>, and pruning asks for confirmation (or needs <code>--yes</code>).</p>
       </section>
 
       <section id="configuration">

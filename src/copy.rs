@@ -48,6 +48,10 @@ const BUILTIN: &[(&str, &str, bool)] = &[
 /// Pseudo-group for MCP servers stored in `.claude.json`.
 pub const MCP_GROUP: &str = "mcp";
 
+/// Folder inside a profile where `mcc sync` backs up what it overwrites or
+/// removes. Never part of the sync set.
+pub const BACKUP_DIR: &str = ".mcc-backup";
+
 pub fn group_names() -> Vec<&'static str> {
     let mut v: Vec<&str> = BUILTIN.iter().map(|b| b.0).collect();
     v.dedup();
@@ -86,13 +90,27 @@ pub fn spec(only: Option<&[String]>, cfg: &SyncConfig) -> Result<Spec> {
     if only.is_none() {
         for extra in &cfg.extra {
             let rel = PathBuf::from(extra);
+            // None for "" or ".", which name the config dir itself.
+            let first = rel.components().find_map(|c| match c {
+                std::path::Component::Normal(name) => Some(name),
+                _ => None,
+            });
             if rel.is_absolute()
+                || first.is_none()
                 || rel
                     .components()
                     .any(|c| matches!(c, std::path::Component::ParentDir))
             {
                 return Err(CliError::input(format!(
                     "sync.extra entry \"{extra}\" must be a relative path inside the config dir"
+                ))
+                .hint("edit [sync] extra in ~/.mcc/config.toml, e.g. extra = [\"rules\"]")
+                .into());
+            }
+            // Syncing the backups would prune or overwrite them.
+            if first.is_some_and(|name| name.eq_ignore_ascii_case(BACKUP_DIR)) {
+                return Err(CliError::input(format!(
+                    "sync.extra entry \"{extra}\" points into {BACKUP_DIR}, where sync keeps its backups"
                 ))
                 .hint("edit [sync] extra in ~/.mcc/config.toml, e.g. extra = [\"rules\"]")
                 .into());
@@ -301,6 +319,50 @@ impl Plan {
             })
             .collect()
     }
+
+    /// Paths, relative to `dst_dir`, that [`apply`] will overwrite or delete
+    /// and that exist now: every update or removal, a file standing where a
+    /// copied path needs its parent dir (see `blocks_parent`), and
+    /// `.claude.json` when its MCP servers change. Paths only added are never
+    /// listed: they are missing, or sit below a listed path (e.g. a symlinked
+    /// dir that is replaced), and must not be read through it.
+    pub fn backup_paths(&self, dst_dir: &Path) -> Vec<PathBuf> {
+        let mut rels = Vec::new();
+        for c in &self.changes {
+            if matches!(c.action, Action::Update | Action::Remove) {
+                rels.push(c.rel.clone());
+            }
+            if matches!(c.action, Action::Add | Action::Update)
+                && let Some(parent) = c.rel.parent()
+                && !parent.as_os_str().is_empty()
+                && blocks_parent(&dst_dir.join(parent))
+            {
+                rels.push(parent.to_path_buf());
+            }
+        }
+        if self.mcp.as_ref().is_some_and(|m| !m.is_empty()) {
+            rels.push(PathBuf::from(".claude.json"));
+        }
+        outermost_existing(dst_dir, rels)
+    }
+}
+
+/// The paths in `rels` that exist under `dir` (symlinks not followed), each
+/// once, without any path that lies inside another one of them: copying the
+/// outer path already covers it, and nothing may be copied below a symlink.
+pub fn outermost_existing(dir: &Path, rels: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
+    let mut rels: Vec<PathBuf> = rels
+        .into_iter()
+        .filter(|r| std::fs::symlink_metadata(dir.join(r)).is_ok())
+        .collect();
+    rels.sort_by_key(|r| r.components().count());
+    let mut out: Vec<PathBuf> = Vec::new();
+    for r in rels {
+        if !out.iter().any(|o| r.starts_with(o)) {
+            out.push(r);
+        }
+    }
+    out
 }
 
 fn is_noise(name: &str) -> bool {
@@ -678,10 +740,16 @@ pub fn apply(
     Ok(())
 }
 
+/// A file, or a symlink that does not lead to a dir, where `copy_one` needs a
+/// parent dir: `copy_one` deletes it, so `Plan::backup_paths` backs it up.
+fn blocks_parent(parent: &Path) -> bool {
+    parent.is_file() || parent.is_symlink() && !parent.is_dir()
+}
+
 fn copy_one(src: &Path, dst: &Path, rewrite: bool, rw: &Rewriter) -> Result<()> {
     if let Some(parent) = dst.parent() {
         // A file where a parent dir should be: replace it.
-        if parent.is_file() || parent.is_symlink() && !parent.is_dir() {
+        if blocks_parent(parent) {
             fsutil::remove_any(parent)?;
         }
         std::fs::create_dir_all(parent)
@@ -1129,6 +1197,8 @@ mod tests {
         assert_eq!(p.changes[0].action, Action::Remove, "{:?}", p.changes);
         assert_eq!(p.changes[0].rel, PathBuf::from("plugins"));
         assert_eq!(p.count(Action::Remove), 1, "{:?}", p.changes);
+        // Only the link is backed up, never what lies behind it.
+        assert_eq!(p.backup_paths(&dst), [PathBuf::from("plugins")]);
         apply(&p, &paths.default_dir, &dst, &rw, false).unwrap();
 
         // The link's target is untouched: nothing written, nothing pruned.
@@ -1175,6 +1245,121 @@ mod tests {
         let err = apply(&p, &paths.default_dir, &dst, &rw, false).unwrap_err();
         assert!(err.to_string().contains("symlinked directory"), "{err}");
         assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn backup_paths_lists_what_apply_overwrites_or_removes() {
+        let (_d, paths, dst) = setup();
+        std::fs::create_dir_all(dst.join("skills/one")).unwrap();
+        std::fs::write(dst.join("skills/one/SKILL.md"), "edited").unwrap();
+        std::fs::create_dir_all(dst.join("skills/mine/deep")).unwrap();
+        std::fs::write(dst.join("skills/mine/deep/x.md"), "mine").unwrap();
+        // A file where plugins/cache needs its parent dir.
+        std::fs::write(dst.join("plugins"), "not a dir").unwrap();
+        std::fs::write(dst.join(".claude.json"), r#"{"mcpServers":{}}"#).unwrap();
+        let rw = Rewriter::new(&paths, &dst, &SyncConfig::default());
+        let groups = ["skills", "agents", "plugins", "mcp"].map(String::from);
+        let sp = spec(Some(&groups), &SyncConfig::default()).unwrap();
+        let p = plan(
+            &paths.default_dir,
+            &paths.default_json,
+            &dst,
+            &sp,
+            &rw,
+            true,
+        )
+        .unwrap();
+        assert!(p.count(Action::Add) > 0, "{:?}", p.changes);
+        let mut got = p.backup_paths(&dst);
+        got.sort();
+        let want: Vec<PathBuf> = [
+            ".claude.json",
+            "plugins",
+            "skills/mine",
+            "skills/one/SKILL.md",
+        ]
+        .map(PathBuf::from)
+        .into();
+        assert_eq!(got, want, "{:?}", p.changes);
+    }
+
+    fn change(action: Action, rel: &str) -> Change {
+        Change {
+            action,
+            rel: PathBuf::from(rel),
+            group: "test".into(),
+            rewrite: false,
+        }
+    }
+
+    #[test]
+    fn backup_paths_dedupes_and_keeps_outermost() {
+        let d = tempfile::tempdir().unwrap();
+        let dst = d.path();
+        std::fs::create_dir_all(dst.join("skills/mine/deep")).unwrap();
+        std::fs::write(dst.join("skills/mine/deep/x.md"), "x").unwrap();
+        std::fs::write(dst.join("CLAUDE.md"), "edited").unwrap();
+        std::fs::write(dst.join("plugins"), "a file where a dir belongs").unwrap();
+        std::fs::write(dst.join(".claude.json"), "{}").unwrap();
+        std::fs::create_dir_all(dst.join("agents")).unwrap();
+        std::fs::write(dst.join("agents/a.md"), "exists, but only added").unwrap();
+        let mut p = Plan {
+            changes: vec![
+                change(Action::Update, "CLAUDE.md"),
+                change(Action::Update, "CLAUDE.md"),
+                change(Action::Remove, "skills/mine/deep/x.md"),
+                change(Action::Remove, "skills/mine"),
+                change(Action::Remove, "skills/gone"),
+                change(Action::Add, "agents/a.md"),
+                change(Action::Extra, "agents"),
+                change(Action::Add, "plugins/installed_plugins.json"),
+                change(Action::Add, "plugins/cache"),
+            ],
+            unchanged: 0,
+            mcp: Some(McpChange {
+                added: vec!["fs".into()],
+                ..McpChange::default()
+            }),
+        };
+        let mut got = p.backup_paths(dst);
+        got.sort();
+        let want: Vec<PathBuf> = [".claude.json", "CLAUDE.md", "plugins", "skills/mine"]
+            .map(PathBuf::from)
+            .into();
+        assert_eq!(got, want);
+
+        // No MCP change: .claude.json is not touched.
+        p.mcp = Some(McpChange::default());
+        assert!(!p.backup_paths(dst).contains(&PathBuf::from(".claude.json")));
+    }
+
+    #[test]
+    fn extra_entries_must_stay_out_of_the_backup_dir() {
+        let extra = |e: &str| SyncConfig {
+            exclude: vec![],
+            extra: vec![e.to_string()],
+        };
+        for bad in [
+            "",
+            ".",
+            "./",
+            "/abs",
+            "../up",
+            ".mcc-backup",
+            "./.mcc-backup/20260101-000000.000",
+            ".MCC-Backup",
+        ] {
+            let err = spec(None, &extra(bad)).unwrap_err();
+            assert_eq!(
+                crate::error::classify(&err).0,
+                crate::error::EXIT_INPUT,
+                "{bad:?}: {err}"
+            );
+        }
+        for ok in ["rules", "./rules", "rules/.mcc-backup"] {
+            let sp = spec(None, &extra(ok)).unwrap();
+            assert!(sp.items.iter().any(|i| i.group == "extra"), "{ok:?}");
+        }
     }
 
     #[test]

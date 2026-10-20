@@ -984,6 +984,108 @@ fn back_to_back_syncs_keep_every_backup() {
     assert!(kept[1].contains("opus"), "{kept:?}");
 }
 
+/// The backup folders under `<profile>/.mcc-backup/`, oldest first.
+fn backup_dirs(sb: &Sandbox, alias: &str) -> Vec<std::path::PathBuf> {
+    let root = sb.path(&format!(".mcc/profiles/{alias}/.mcc-backup"));
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut dirs: Vec<_> = entries.map(|e| e.unwrap().path()).collect();
+    dirs.sort();
+    dirs
+}
+
+/// Regression for #30: profile-local edits a sync overwrites are recoverable.
+#[test]
+fn sync_backs_up_every_file_it_overwrites() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    sb.write(".claude/skills/one/SKILL.md", "one");
+    with_profile(&sb, "work", "--clone");
+    sb.write(".mcc/profiles/work/CLAUDE.md", "# my edited rules\n");
+    sb.write(".mcc/profiles/work/skills/one/SKILL.md", "my edited one");
+
+    sb.mcc()
+        .args(["sync", "work"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Back up profile config"));
+    assert_eq!(sb.read(".mcc/profiles/work/CLAUDE.md"), "# my rules\n");
+    assert_eq!(sb.read(".mcc/profiles/work/skills/one/SKILL.md"), "one");
+
+    let backups = backup_dirs(&sb, "work");
+    assert_eq!(backups.len(), 1, "{backups:?}");
+    let b = &backups[0];
+    assert!(
+        b.join("CLAUDE.md").exists(),
+        "edited CLAUDE.md missing from backup {}",
+        b.display()
+    );
+    assert_eq!(
+        std::fs::read_to_string(b.join("CLAUDE.md")).unwrap(),
+        "# my edited rules\n"
+    );
+    assert!(
+        b.join("skills/one/SKILL.md").exists(),
+        "edited skills/one/SKILL.md missing from backup {}",
+        b.display()
+    );
+    assert_eq!(
+        std::fs::read_to_string(b.join("skills/one/SKILL.md")).unwrap(),
+        "my edited one"
+    );
+    // Untouched files are not copied.
+    assert!(!b.join("skills/alpha").exists());
+}
+
+#[test]
+fn sync_prune_backs_up_removed_dirs() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    with_profile(&sb, "work", "--clone");
+    sb.write(".mcc/profiles/work/skills/mine/SKILL.md", "mine");
+    sb.write(".mcc/profiles/work/skills/mine/notes/todo.md", "todo");
+
+    sb.mcc()
+        .args(["sync", "work", "--prune", "--yes"])
+        .assert()
+        .success();
+    assert!(!sb.exists(".mcc/profiles/work/skills/mine"));
+
+    let backups = backup_dirs(&sb, "work");
+    assert_eq!(backups.len(), 1, "{backups:?}");
+    let mine = backups[0].join("skills/mine");
+    assert_eq!(
+        std::fs::read_to_string(mine.join("SKILL.md")).unwrap(),
+        "mine"
+    );
+    assert_eq!(
+        std::fs::read_to_string(mine.join("notes/todo.md")).unwrap(),
+        "todo"
+    );
+}
+
+#[test]
+fn sync_backs_up_a_file_standing_where_a_dir_goes() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    with_profile(&sb, "work", "--clone");
+    std::fs::remove_dir_all(sb.path(".mcc/profiles/work/plugins")).unwrap();
+    sb.write(".mcc/profiles/work/plugins", "my plugins notes");
+
+    sb.mcc().args(["sync", "work"]).assert().success();
+    assert!(sb.exists(".mcc/profiles/work/plugins/installed_plugins.json"));
+
+    let backups = backup_dirs(&sb, "work");
+    assert_eq!(backups.len(), 1, "{backups:?}");
+    let plugins = backups[0].join("plugins");
+    assert!(std::fs::symlink_metadata(&plugins).unwrap().is_file());
+    assert_eq!(
+        std::fs::read_to_string(&plugins).unwrap(),
+        "my plugins notes"
+    );
+}
+
 #[test]
 fn errors_without_a_specific_hint_get_a_fallback_hint() {
     let sb = Sandbox::new();
@@ -1060,6 +1162,26 @@ fn snapshot(dir: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
     out
 }
 
+#[cfg(unix)]
+#[test]
+fn sync_dry_run_writes_nothing_to_the_profile() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    with_profile(&sb, "work", "--clone");
+    sb.write(".mcc/profiles/work/CLAUDE.md", "# my edited rules\n");
+    sb.write(".mcc/profiles/work/skills/mine/SKILL.md", "mine");
+    let profile = sb.path(".mcc/profiles/work");
+    let before = snapshot(&profile);
+
+    sb.mcc()
+        .args(["sync", "work", "--prune", "--dry-run"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("nothing was written"));
+    assert_eq!(snapshot(&profile), before);
+    assert!(!sb.exists(".mcc/profiles/work/.mcc-backup"));
+}
+
 /// A profile dir that is a symlink into the default (`plugins -> ~/.claude/plugins`)
 /// must never be written or pruned through: the default is only ever a source.
 #[cfg(unix)]
@@ -1076,6 +1198,27 @@ fn sync_never_writes_through_symlinked_profile_dir() {
     relink();
     let default_before = snapshot(&sb.path(".claude/plugins"));
     assert!(!default_before.is_empty());
+    // A backup keeps the link itself; nothing is copied through it.
+    let link_backed_up = |backup: &std::path::Path| {
+        let saved = backup.join("plugins");
+        assert!(
+            std::fs::symlink_metadata(&saved)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "{}",
+            saved.display()
+        );
+        assert_eq!(
+            std::fs::read_link(&saved).unwrap(),
+            sb.path(".claude/plugins")
+        );
+        let below: Vec<_> = snapshot(backup)
+            .into_iter()
+            .filter(|(rel, _)| rel.starts_with("plugins") && rel != std::path::Path::new("plugins"))
+            .collect();
+        assert!(below.is_empty(), "{below:?}");
+    };
 
     // Replacing the link is a removal: needs confirmation.
     sb.mcc()
@@ -1090,9 +1233,13 @@ fn sync_never_writes_through_symlinked_profile_dir() {
             .is_symlink()
     );
     assert_eq!(snapshot(&sb.path(".claude/plugins")), default_before);
+    assert!(backup_dirs(&sb, "work").is_empty());
 
     sb.mcc().args(["sync", "work", "--yes"]).assert().success();
     assert_eq!(snapshot(&sb.path(".claude/plugins")), default_before);
+    let backups = backup_dirs(&sb, "work");
+    assert_eq!(backups.len(), 1, "{backups:?}");
+    link_backed_up(&backups[0]);
     let meta = std::fs::symlink_metadata(&link).unwrap();
     assert!(meta.is_dir() && !meta.file_type().is_symlink());
     let installed = sb.read(".mcc/profiles/work/plugins/installed_plugins.json");
@@ -1114,6 +1261,11 @@ fn sync_never_writes_through_symlinked_profile_dir() {
             .file_type()
             .is_symlink()
     );
+    let backups = backup_dirs(&sb, "work");
+    assert_eq!(backups.len(), 2, "{backups:?}");
+    for b in &backups {
+        link_backed_up(b);
+    }
 }
 
 #[test]
