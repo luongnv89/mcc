@@ -87,6 +87,7 @@ cargo install --git https://github.com/luongnv89/mcc --locked
 
 ```sh
 mcc init                    # detect your environment (also runs automatically the first time)
+mcc                         # status: this directory's profile, every account's usage, warnings
 mcc add work --clone        # new profile with your default setup → then log in
 work                        # start Claude Code as the "work" account
 mcc list                    # see all profiles
@@ -102,6 +103,7 @@ mcc delete job              # remove it completely
 
 | Command | What it does | Key options |
 |---|---|---|
+| `mcc` | With no command, once mcc is set up: the profile that applies in this directory and why, every profile's account, usage and drift, and warnings; read-only (see [Status at a glance](#status-at-a-glance-mcc)). Before setup it prints the help | |
 | `mcc init` | Detect OS, arch, terminal, shell, rc file, the `claude` binary, and whether `~/.local/bin` is on PATH (and offer to add it) | `--force`, `--shell zsh\|bash\|fish` |
 | `mcc add [ALIAS]` | Create the default profile, or a new profile with its own command; records the account and its organization, warns when another profile already uses that account, and asks for an optional label. A clone shares the default's plugins instead of copying them | `--clone`, `--fresh`, `--link ITEMS`, `--copy-plugins`, `--no-login`, `--label LABEL`, `--color COLOR`, `-y` |
 | `mcc list` (`ls`) | Show every profile with its account, 5-hour/weekly usage and sync state in a table that fits 120 columns; `--long` adds every metric | `--json`, `--json-v2`, `-l/--long`, `--no-usage`, `--show-email`, `--hide-email` |
@@ -598,6 +600,26 @@ mcc statusline uninstall          # put the previous statusLine back
 ```
 
 `mcc rename` moves a profile's `~/.mcc/state/<alias>/` with it and `mcc delete` removes it.
+
+### Status at a glance: `mcc`
+
+Once mcc is set up, `mcc` with no command shows one screen:
+
+```text
+Here: `work` (Acme) — the default for ~/code/app
+
+NAME       ACCOUNT   5H                   WEEK                 LAST USED  SYNC
+default ★  personal  ██░░░░░░░░ 18% (3h)  █░░░░░░░░░ 9% (5d)   2h ago     —
+work       Acme      ████░░░░░░ 42% (2h)  ██░░░░░░░░ 18% (4d)  3m ago     3 behind
+  ⚠ drift against the default: `work` (3 behind) — review with `mcc diff <alias>`, update with `mcc sync <alias>`
+    → run `mcc doctor` for a full check of every profile, with a fix for each problem
+```
+
+`Here:` is the profile `mcc run` (and `mcc env`) uses in the current directory and why: a project default set with `mcc project set`, or none (the default profile). The table is `mcc list`'s: each profile's account (its label, else its organization), its 5-hour and weekly usage as `mcc statusline` cached it, when it was last used, and its sync state. On stderr follow warnings for drift against the default, out-of-date launchers, missing profile directories and a project default naming no profile, then a pointer to `mcc doctor` when there is any.
+
+It is meant to be run often, so it is fast and read-only: no lock, no first-run setup, no log line, and nothing written. Usage is read from the statusline cache only, never looked up live (even with `[usage] live = true`, so no token is read and nothing goes over the network; `mcc usage` looks it up), and the counts and sizes on disk are left to `mcc list --long`. Account emails stay hidden unless `[privacy] show_email` is set. Colors follow `--no-color` and `NO_COLOR`; piped, it prints the same text without colors, so `mcc | grep` works.
+
+Before mcc is set up (no `~/.mcc/config.toml` with its `[env]`), bare `mcc` prints the help on stderr and exits 2, as it always did, and sets nothing up. `mcc help` and `mcc --help` print the help either way.
 
 ### Checking your setup: `mcc doctor`
 

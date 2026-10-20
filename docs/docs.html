@@ -149,6 +149,7 @@
         <div class="table-wrap"><table>
           <thead><tr><th>Command</th><th>What it does</th><th>Key options</th></tr></thead>
           <tbody>
+            <tr><td><a href="#cmd-status"><code>mcc</code></a></td><td>With no command, once mcc is set up: the profile that applies in this directory and why, every profile's account, usage and drift, and warnings; read-only (before setup, the help)</td><td></td></tr>
             <tr><td><a href="#cmd-init"><code>mcc init</code></a></td><td>Detect OS, terminal, shell, rc file and the <code>claude</code> binary</td><td><code>--force</code>, <code>--shell</code></td></tr>
             <tr><td><a href="#cmd-add"><code>mcc add [ALIAS]</code></a></td><td>Create the default profile, or a new profile with its own command</td><td><code>--clone</code>, <code>--fresh</code>, <code>--no-login</code>, <code>-y</code></td></tr>
             <tr><td><a href="#cmd-list"><code>mcc list</code></a> (<code>ls</code>)</td><td>Show every profile with metrics and usage</td><td><code>--json</code>, <code>--json-v2</code>, <code>-l</code>, <code>--no-usage</code></td></tr>
@@ -169,6 +170,16 @@
             <tr><td><code>mcc help [COMMAND]</code></td><td>Usage and examples for any command</td><td></td></tr>
           </tbody>
         </table></div>
+
+        <h3 id="cmd-status"><code>mcc</code> (no command) <a class="anchor" href="#cmd-status" aria-label="Link to mcc with no command">#</a></h3>
+        <p class="synopsis">mcc [-q] [--no-color]</p>
+        <p>Once mcc is set up (<code>[env]</code> in <code>~/.mcc/config.toml</code>, written by <code>mcc init</code> or the first-run setup), bare <code>mcc</code> shows one screen: <code>Here:</code> the profile <code>mcc run</code> starts in this directory and why (a project default, or none), then <code>mcc list</code>'s table of every profile with its account (label, else organization), cached 5-hour and weekly usage, last use and sync state. Warnings follow on stderr for drift against the default, out-of-date launchers, missing directories and a project default naming no profile, with a pointer to <code>mcc doctor</code> when there is any. It is read-only and fast: no lock, no first-run setup, no log line, nothing written; usage comes from the <code>mcc statusline</code> cache only, never looked up live (even with <code>[usage] live = true</code>), and counts and sizes are left to <code>mcc list --long</code>. Emails stay hidden unless <code>[privacy] show_email</code> is set. Piped, it prints the same text without colors. Before setup, bare <code>mcc</code> prints the help and exits 2, as it always did; <code>mcc help</code> and <code>mcc --help</code> print the help either way.</p>
+        <div class="code"><pre><span class="p">$ </span>mcc
+Here: `work` (Acme) — the default for ~/code/app
+
+NAME       ACCOUNT  5H                  WEEK                LAST USED  SYNC
+default ★  personal ██░░░░░░░░ 18% (3h) █░░░░░░░░░ 9% (5d)  2h ago     —
+work       Acme     ████░░░░░░ 42% (2h) ██░░░░░░░░ 18% (4d) 3m ago     3 behind</pre></div>
 
         <h3 id="cmd-init"><code>mcc init</code> <a class="anchor" href="#cmd-init" aria-label="Link to mcc init">#</a></h3>
         <p class="synopsis">mcc init [--force] [--shell zsh|bash|fish]</p>

@@ -52,6 +52,11 @@ fn main() -> ExitCode {
 /// Parse argv, turning off clap's own colors (help, usage errors) when
 /// `--no-color` or `NO_COLOR` is set. The flag has to be spotted before
 /// parsing because clap renders its output while it parses.
+///
+/// Without a command (bare `mcc`, or only global flags), mcc shows the
+/// status view once it is set up. Before that, clap behaves as it always
+/// did: bare `mcc` prints the help on stderr and exits 2, and global flags
+/// alone are a usage error.
 fn parse_args() -> Cli {
     let no_color = std::env::args_os().skip(1).any(|a| a == "--no-color")
         || std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
@@ -59,8 +64,28 @@ fn parse_args() -> Cli {
     if no_color {
         cmd = cmd.color(ColorChoice::Never);
     }
+    // Only argv without a word in it can lack a command; checking the
+    // config just then keeps every other command (the statusline shim runs
+    // on each refresh) from reading it here.
+    let flags_only = std::env::args_os()
+        .skip(1)
+        .all(|a| a.to_string_lossy().starts_with('-'));
+    if flags_only && set_up() {
+        cmd = cmd.arg_required_else_help(false);
+    } else {
+        cmd = cmd.subcommand_required(true);
+    }
     let matches = cmd.get_matches_mut();
     Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.format(&mut cmd).exit())
+}
+
+/// Whether mcc is set up: `~/.mcc/config.toml` loads and has its `[env]`
+/// (written by `mcc init`, or the first-run setup of any other command).
+/// Read-only; any error counts as not set up.
+fn set_up() -> bool {
+    paths::Paths::from_env()
+        .and_then(|p| config::Config::load(&p.config_file))
+        .is_ok_and(|c| c.env.is_some())
 }
 
 /// Hint for failures that carry no specific one (I/O errors, failed spawns).
@@ -72,7 +97,15 @@ fn fallback_hint() -> String {
 }
 
 fn run(cli: Cli) -> anyhow::Result<()> {
-    if let Command::Completions(args) = &cli.command {
+    let Some(command) = cli.command else {
+        // Bare `mcc` once set up (`parse_args` lets nothing else through):
+        // read-only, like `mcc doctor` but without even a log line — no
+        // lock, no first-run setup, no live usage lookup, nothing written.
+        let paths = paths::Paths::from_env()?;
+        let cfg = config::Config::load(&paths.config_file)?;
+        return commands::status::run(&paths, &cfg);
+    };
+    if let Command::Completions(args) = &command {
         // Log only into an existing ~/.mcc/logs: completions never create
         // state, and any logging failure stays silent.
         if let Ok(paths) = paths::Paths::from_env() {
@@ -81,21 +114,21 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         }
         return commands::completions::run(args);
     }
-    if let Command::Statusline(args) = &cli.command
+    if let Command::Statusline(args) = &command
         && args.action.is_none()
     {
         // The shim runs on every status-line refresh: no logging, no config
         // lock, no first-run setup, and it never writes config.toml.
         return commands::statusline::render(&paths::Paths::from_env()?, args.prefix);
     }
-    if let Command::LaunchBanner(args) = &cli.command {
+    if let Command::LaunchBanner(args) = &command {
         // Run by a launcher on every start: no logging, no lock, no
         // first-run setup, nothing written, and never an error.
         commands::banner::run(&args.alias);
         return Ok(());
     }
     let paths = paths::Paths::from_env()?;
-    if let Command::Doctor(args) = &cli.command {
+    if let Command::Doctor(args) = &command {
         // Read-only, even on first use: no lock, no first-run setup, and
         // logging only into an existing ~/.mcc/logs.
         log::init_if_present(paths.log_file.clone());
@@ -106,12 +139,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     log::init(paths.log_file.clone());
     log_invocation();
 
-    if let Command::Config(args) = &cli.command {
+    if let Command::Config(args) = &command {
         // No first-run setup, and the config isn't loaded here: `mcc config
         // edit` must be able to fix a file that doesn't parse, and `get` and
         // `path` only read. `set` holds the lock for its whole run; `edit`
         // takes it only to save (see commands/config.rs).
-        let _lock = if writes_config(&cli.command) {
+        let _lock = if writes_config(&command) {
             Some(config::lock(&paths)?)
         } else {
             None
@@ -119,18 +152,18 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         return commands::config::run(&paths, args);
     }
 
-    let explicit_init = matches!(cli.command, Command::Init(_));
+    let explicit_init = matches!(command, Command::Init(_));
     // `<alias> --mcc-share`, `mcc run` and `mcc env` (direnv) run on every
     // launch, and `mcc exec` must not hold the lock its command may need:
     // keep them free of setup.
-    let launch = matches!(&cli.command, Command::Share(a) if a.from_launch)
+    let launch = matches!(&command, Command::Share(a) if a.from_launch)
         || matches!(
-            cli.command,
+            command,
             Command::Run(_) | Command::Env(_) | Command::Exec(_)
         );
     // Held from before the config is loaded until mcc exits, so concurrent
     // runs never lose each other's changes.
-    let mut lock = if writes_config(&cli.command) {
+    let mut lock = if writes_config(&command) {
         Some(config::lock(&paths)?)
     } else {
         None
@@ -149,7 +182,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             commands::init::detect_and_save(&paths, &mut cfg, None)?;
         }
     }
-    if needs_live_disclosure(&cli.command, &cfg) {
+    if needs_live_disclosure(&command, &cfg) {
         // Recording the acknowledgement writes config.toml, so it takes the
         // lock like any other write (only for this, when the command doesn't
         // hold it already) and re-reads the config under it.
@@ -161,7 +194,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 Some(l)
             }
         };
-        if needs_live_disclosure(&cli.command, &cfg) {
+        if needs_live_disclosure(&command, &cfg) {
             eprintln!("{}", usage::LIVE_DISCLOSURE);
             cfg.usage.live_disclosed_at =
                 Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
@@ -171,7 +204,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     }
     let _lock = lock;
 
-    match cli.command {
+    match command {
         Command::Init(args) => commands::init::run(&paths, &mut cfg, &args),
         Command::Add(args) => commands::add::run(&paths, &mut cfg, &args),
         Command::List(args) => commands::list::run(&paths, &cfg, &args),
