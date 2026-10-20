@@ -104,13 +104,13 @@ mcc delete job              # remove it completely
 |---|---|---|
 | `mcc init` | Detect OS, arch, terminal, shell, rc file, the `claude` binary, and whether `~/.local/bin` is on PATH (and offer to add it) | `--force`, `--shell zsh\|bash\|fish` |
 | `mcc add [ALIAS]` | Create the default profile, or a new profile with its own command; records the account and its organization, warns when another profile already uses that account, and asks for an optional label | `--clone`, `--fresh`, `--no-login`, `--label LABEL`, `-y` |
-| `mcc list` (`ls`) | Show every profile with metrics and 5-hour/weekly usage | `--json`, `-l/--long`, `--no-usage` |
-| `mcc usage [PROFILE]` | Show each profile's 5-hour and weekly usage in a table (`default` or `claude` for the default profile) | `--json`, `--show-email`, `--hide-email` |
+| `mcc list` (`ls`) | Show every profile with metrics and 5-hour/weekly usage | `--json`, `--json-v2`, `-l/--long`, `--no-usage` |
+| `mcc usage [PROFILE]` | Show each profile's 5-hour and weekly usage in a table (`default` or `claude` for the default profile) | `--json`, `--json-v2`, `--show-email`, `--hide-email` |
 | `mcc sync [ALIAS]` | Copy the default's setup into a profile (default → profile only), keeping edits made in the profile | `--all`, `--dry-run`, `--prune`, `--force`, `--only ITEMS`, `-y` |
 | `mcc diff ALIAS` | Show how a profile differs from the default's setup, path by path, as `sync` classifies it | `--only ITEMS` |
 | `mcc rename ALIAS NEW` (`mv`) | Rename a profile and its command; directory and login are kept | |
 | `mcc share ALIAS` | Share the profile's sessions with the other sharing profiles of its group (off by default; see [Sharing sessions](#sharing-sessions-between-profiles)) | `--off`, `--group NAME`, `--allow-cross-org` |
-| `mcc project set PROFILE` | Make PROFILE the one `mcc run` starts in this project (see [Per-project profiles](#per-project-profiles-mcc-project-and-mcc-run)); also `unset` and `list` | `--path DIR`, `--allow PROFILE`, `list --json` |
+| `mcc project set PROFILE` | Make PROFILE the one `mcc run` starts in this project (see [Per-project profiles](#per-project-profiles-mcc-project-and-mcc-run)); also `unset` and `list` | `--path DIR`, `--allow PROFILE`, `list --json`, `list --json-v2` |
 | `mcc run [-- CLAUDE_ARGS]` | Start Claude Code with the current project's profile; at its limit, ask whether to wait (the default) or start it anyway | `--profile NAME`, `--dry-run` |
 | `mcc statusline install` | Opt-in: show the active profile in Claude Code's status line and cache each profile's rate limits (see [Status line](#status-line-mcc-statusline)); it edits the default profile's `settings.json`; also `uninstall` | `--prefix`, `-y/--yes` |
 | `mcc refresh-launchers [ALIAS...]` | Rewrite launchers and shell aliases from the current templates (all profiles when none are given); needed once so `<alias> --mcc-share` works for profiles made by an older mcc | |
@@ -131,6 +131,7 @@ mcc list --json | jq '.[] | {name, account, skills, plugins_installed}'
 mcc list --json | jq '.[] | {name, organization, organization_uuid, label}'
 mcc list --json | jq '.[] | {name, five_hour: .usage.five_hour.percent, weekly: .usage.weekly.percent}'
 mcc list --json | jq '.[] | {name, project_defaults}'   # the projects each profile starts in
+mcc list --json-v2 | jq '.profiles[] | .name'   # versioned: {"schema": 2, "profiles": [...]}
 mcc list --no-usage                   # offline: skip the usage lookup
 mcc usage                             # every profile's limits, the default included
 mcc usage work                        # only the `work` profile
@@ -155,6 +156,19 @@ mcc run --dry-run                     # print the profile `mcc run` would start,
 mcc refresh-launchers                 # update launchers made by an older mcc
 mcc delete sandbox --yes
 ```
+
+### JSON output and its schema version
+
+`mcc list`, `mcc usage` and `mcc project list` print JSON for scripts in two shapes:
+
+| Flag | Shape | Schema | Read it with |
+|---|---|---|---|
+| `--json` | a bare array, one object per profile (per project for `project list`) | 1, implicit | `jq '.[]'` |
+| `--json-v2` | `{"schema": 2, "profiles": [...]}` (`"projects"` for `project list`), the same objects as `--json` | 2, in the `schema` field | `jq '.profiles[]'`, `jq '.projects[]'` |
+
+The contract: within a schema, fields may be added to the objects but are never renamed, removed or given another type. A change that breaks a shape gets a new schema number and a new flag, and the old flag keeps working. Scripts that should notice such a change can use `--json-v2` and check `schema` first, e.g. `mcc list --json-v2 | jq -e '.schema == 2' >/dev/null`.
+
+**Deprecation path:** `--json` (schema 1) stays as it is in every 0.x release. If a future major release makes `--json` print the versioned object, the CHANGELOG will say so in an upgrade note, and `--json-v2` will keep printing schema 2 unchanged, so scripts written for it need no change.
 
 ### Shell completions
 

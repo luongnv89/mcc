@@ -120,9 +120,8 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
     }
 
     let mut out = std::io::stdout().lock();
-    if args.json {
-        serde_json::to_writer_pretty(&mut out, &entries)?;
-        writeln!(out)?;
+    if args.json || args.json_v2 {
+        super::write_json(&mut out, "profiles", &entries, args.json_v2)?;
     } else {
         let now = Utc::now();
         let layout = ui::fit_layout(
