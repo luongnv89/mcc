@@ -3,9 +3,12 @@
 //! The project's default profile (`mcc project set`) starts, or the default
 //! profile (~/.claude) outside any project. mcc never switches accounts on
 //! its own: when that profile is known to be at its 5-hour or weekly limit,
-//! `mcc run` shows every profile's usage and asks which one to start.
-//! `--profile` starts a given profile without checking usage. Only the
-//! default's usage is fetched unless it is at its limit.
+//! `mcc run` asks what to do, and waiting (starting nothing) is the default.
+//! The next choice starts the profile anyway; other profiles are offered
+//! only when the project allows them (`mcc project set --allow`), by name.
+//! Only that profile's usage is ever fetched. `--profile` starts a given
+//! profile without checking usage. Starting a profile other than the
+//! project's prints the terms-of-service note.
 
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -20,6 +23,9 @@ use crate::paths::Paths;
 use crate::pick;
 use crate::usage::{self, Usage};
 use crate::{claude, ui};
+
+/// Printed on stderr whenever a profile other than the project's starts.
+pub const RUN_TOS_NOTE: &str = crate::cli::run_tos_note!();
 
 /// A profile `mcc run` can start.
 struct Profile {
@@ -75,6 +81,14 @@ pub fn run(paths: &Paths, cfg: &Config, args: &RunArgs) -> Result<()> {
         let Some(p) = all.iter().find(|p| p.name == name) else {
             return Err(super::unknown_profile(name));
         };
+        // The project only decides the note: --profile starts even where the
+        // project default is broken.
+        let here = super::project::current_dir()
+            .ok()
+            .and_then(|cwd| super::project::lookup(cfg, &cwd).map(|(_, p)| p.profile.clone()));
+        if needs_tos_note(here.as_deref(), &p.name) {
+            eprintln!("{RUN_TOS_NOTE}");
+        }
         ui::info(&format!("{verb} `{}` — picked with --profile", p.name));
         return launch(paths, cfg, p, args);
     }
@@ -106,33 +120,55 @@ pub fn run(paths: &Paths, cfg: &Config, args: &RunArgs) -> Result<()> {
         return launch(paths, cfg, default, args);
     }
 
-    let limit = pick::limit_note(&default_usage, Utc::now());
+    let now = Utc::now();
+    let limit = pick::limit_note(&default_usage, now);
     ui::warn(&format!("`{}` ({why}) is at {limit}", default.name));
-    // Every other profile's usage, for you to choose from: mcc never
-    // switches accounts on its own.
-    let others: Vec<&Profile> = all.iter().filter(|p| p.name != default.name).collect();
-    let usages = fetch(paths, &others);
-    let items = choices(&default.name, &limit, &others, &usages);
-    let hint = format!(
-        "start a profile with `mcc run --profile <name>`, or wait until `{}` resets",
-        default.name
-    );
-    if args.dry_run || !ui::is_interactive() {
-        for item in &items[1..] {
-            ui::info(item);
+    // mcc never switches accounts on its own, and never fetches or shows
+    // another account's usage: waiting is the default, and only the
+    // profiles the project allows are offered, by name.
+    let mut allowed: Vec<String> = Vec::new();
+    for name in project.map_or(&[][..], |(_, p)| &p.allow) {
+        if *name != default.name && !allowed.contains(name) && all.iter().any(|p| p.name == *name) {
+            allowed.push(name.clone());
         }
     }
-    if args.dry_run {
-        ui::info(&format!(
-            "`mcc run` would ask which profile to start; {hint}"
+    let reset = pick::reset_time(&default_usage, now);
+    let items = choices(&default.name, reset.as_deref(), &allowed);
+    let mut hint = format!(
+        "wait until `{0}` resets, or start it anyway with `mcc run --profile {0}`",
+        default.name
+    );
+    if !allowed.is_empty() {
+        hint.push_str(&format!(
+            " (this project also allows {})",
+            super::project::ticked(&allowed)
         ));
+    }
+    if args.dry_run {
+        ui::info("`mcc run` would ask what to do; the default is to wait");
+        ui::hint(&hint);
         return launch(paths, cfg, default, args);
     }
-    let items: Vec<&str> = items.iter().map(String::as_str).collect();
-    let chosen = match ui::select("Which profile should start?", &items, 0, &hint)? {
-        0 => default,
-        i => {
-            let p = others[i - 1];
+    ui::require_interactive("a choice", &hint)?;
+    let labels: Vec<&str> = items.iter().map(|(label, _)| label.as_str()).collect();
+    let i = ui::select("Wait, or start a profile?", &labels, DEFAULT_CHOICE, &hint)?;
+    let chosen = match &items[i].1 {
+        Choice::Wait => {
+            ui::info(&format!(
+                "not starting anything — {}",
+                pick::reset_note(&default.name, reset.as_deref())
+            ));
+            return Ok(());
+        }
+        Choice::StartAnyway => default,
+        Choice::Other(name) => {
+            let p = all
+                .iter()
+                .find(|p| p.name == *name)
+                .expect("allowed profiles exist");
+            if needs_tos_note(project.map(|(_, p)| p.profile.as_str()), &p.name) {
+                eprintln!("{RUN_TOS_NOTE}");
+            }
             ui::info(&format!(
                 "starting `{}` — your pick (this project still defaults to `{}`)",
                 p.name, default.name
@@ -143,17 +179,41 @@ pub fn run(paths: &Paths, cfg: &Config, args: &RunArgs) -> Result<()> {
     launch(paths, cfg, chosen, args)
 }
 
-/// The prompt's choices: the default first (kept as is), then every other
-/// profile with its usage.
-fn choices(default: &str, limit: &str, others: &[&Profile], usages: &[Usage]) -> Vec<String> {
-    std::iter::once(format!("{default} — start it anyway (at {limit})"))
-        .chain(
-            others
-                .iter()
-                .zip(usages)
-                .map(|(p, u)| format!("{} — {}", p.name, pick::summary(u))),
+/// What the at-limit prompt does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Choice {
+    /// Start nothing, and exit 0.
+    Wait,
+    /// Start the project's profile although it is at its limit.
+    StartAnyway,
+    /// Start another profile the project allows.
+    Other(String),
+}
+
+/// The prompt's preselected choice: waiting.
+const DEFAULT_CHOICE: usize = 0;
+
+/// The prompt's choices: wait for `profile` to reset (the default), start it
+/// anyway, then each profile the project allows, by name only.
+fn choices(profile: &str, reset: Option<&str>, allowed: &[String]) -> Vec<(String, Choice)> {
+    [
+        (pick::wait_label(profile, reset), Choice::Wait),
+        (format!("Start `{profile}` anyway"), Choice::StartAnyway),
+    ]
+    .into_iter()
+    .chain(allowed.iter().map(|name| {
+        (
+            format!("Start `{name}` instead"),
+            Choice::Other(name.clone()),
         )
-        .collect()
+    }))
+    .collect()
+}
+
+/// Whether starting `chosen` prints the terms-of-service note: inside a
+/// project (`project` is its profile), for any profile but the project's.
+fn needs_tos_note(project: Option<&str>, chosen: &str) -> bool {
+    project.is_some_and(|p| p != chosen)
 }
 
 /// Print the profile's name (`--dry-run`), or replace this process with
@@ -187,45 +247,55 @@ fn launch(paths: &Paths, cfg: &Config, p: &Profile, args: &RunArgs) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::usage::Reason;
 
     #[test]
-    fn prompt_lists_the_default_first_then_every_profile() {
-        let (lab, side) = (
-            Profile {
-                name: "lab".into(),
-                config_dir: Some("/h/.mcc/profiles/lab".into()),
-            },
-            Profile {
-                name: "side".into(),
-                config_dir: Some("/h/.mcc/profiles/side".into()),
-            },
+    fn prompt_waits_by_default_then_offers_only_allowed_profiles_by_name() {
+        let allowed = ["lab".to_string(), "side".to_string()];
+        let items = choices("work", Some("35m"), &allowed);
+        let labels: Vec<&str> = items.iter().map(|(l, _)| l.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "Wait — `work` resets in 35m",
+                "Start `work` anyway",
+                "Start `lab` instead",
+                "Start `side` instead",
+            ]
         );
-        let full = Usage {
-            status: usage::Status::Ok,
-            reason: None,
-            five_hour: Some(usage::Window {
-                percent: 20.0,
-                resets_at: None,
-            }),
-            weekly: Some(usage::Window {
-                percent: 35.0,
-                resets_at: None,
-            }),
-        };
-        let items = choices(
-            "work",
-            "its 5-hour limit, resets in 35m",
-            &[&lab, &side],
-            &[full, Usage::unavailable(Reason::TokenExpired)],
+        // Waiting is preselected; starting anyway comes next.
+        assert_eq!(items[DEFAULT_CHOICE].1, Choice::Wait);
+        assert_eq!(items[DEFAULT_CHOICE + 1].1, Choice::StartAnyway);
+        let others: Vec<&Choice> = items[2..].iter().map(|(_, c)| c).collect();
+        assert_eq!(
+            others,
+            [&Choice::Other("lab".into()), &Choice::Other("side".into())]
         );
+        // No other account's usage.
+        assert!(labels.iter().all(|l| !l.contains('%')), "{labels:?}");
+
+        // Nothing allowed: only waiting or starting it anyway.
+        let items = choices("work", None, &[]);
         assert_eq!(
             items,
             [
-                "work — start it anyway (at its 5-hour limit, resets in 35m)",
-                "lab — 5h 20%, week 35% used",
-                "side — usage unknown: token expired; start the profile in Claude Code to refresh it",
+                (
+                    "Wait — `work` (reset time unknown)".to_string(),
+                    Choice::Wait
+                ),
+                ("Start `work` anyway".to_string(), Choice::StartAnyway),
             ]
         );
+    }
+
+    #[test]
+    fn the_note_is_for_another_profile_than_the_projects() {
+        assert!(needs_tos_note(Some("work"), "lab"));
+        assert!(needs_tos_note(Some("work"), "default"));
+        assert!(needs_tos_note(Some("default"), "work"));
+        assert!(!needs_tos_note(Some("work"), "work"));
+        assert!(!needs_tos_note(Some("default"), "default"));
+        // Outside every project, any profile starts without it.
+        assert!(!needs_tos_note(None, "lab"));
+        assert!(!needs_tos_note(None, "default"));
     }
 }

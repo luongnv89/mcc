@@ -16,6 +16,16 @@ macro_rules! share_tos_note {
 }
 pub(crate) use share_tos_note;
 
+/// The terms-of-service note printed whenever `mcc run` starts a profile
+/// other than the project's. A macro so the help text below can include it
+/// verbatim.
+macro_rules! run_tos_note {
+    () => {
+        "⚠ You chose to start an account other than this project's. Use only accounts you own, and don't use several accounts to get around usage limits — doing so can violate Anthropic's Consumer Terms (https://www.anthropic.com/legal/consumer-terms) and Usage Policy (https://www.anthropic.com/legal/aup)."
+    };
+}
+pub(crate) use run_tos_note;
+
 const ABOUT: &str = "mcc — run several Claude Code accounts side by side.
 
 Each profile is a separate Claude Code config directory (CLAUDE_CONFIG_DIR)
@@ -155,9 +165,31 @@ pub enum Command {
     Project(ProjectArgs),
 
     /// Start Claude Code with the current project's profile
-    #[command(
-        after_help = "Examples:\n  mcc run                       Start Claude Code with this project's profile\n  mcc run -- --resume           Pass arguments to claude after `--`\n  mcc run --profile lab         Start `lab` here instead (usage isn't checked)\n  mcc run --dry-run             Print the profile that would start, and why\n\nThe profile that starts is the project's default (`mcc project set`), or\nthe default profile (~/.claude) outside any project. mcc never switches\naccounts on its own: when that profile is at its 5-hour or weekly limit,\n`mcc run` shows every profile's usage and asks which one to start. Without\na terminal it stops instead (exit 2); start one with `--profile`.\n\nIf the profile's usage can't be read (offline, expired login,\nMCC_NO_USAGE=1), it starts. Sessions are kept per profile, so `--resume` in\nanother profile won't list this project's sessions unless both profiles\nshare sessions (`mcc help share`)."
-    )]
+    #[command(after_help = concat!(
+        "Examples:\n",
+        "  mcc run                       Start Claude Code with this project's profile\n",
+        "  mcc run -- --resume           Pass arguments to claude after `--`\n",
+        "  mcc run --profile lab         Start `lab` here instead (usage isn't checked)\n",
+        "  mcc run --dry-run             Print the profile that would start, and why\n",
+        "\n",
+        "The profile that starts is the project's default (`mcc project set`), or\n",
+        "the default profile (~/.claude) outside any project. mcc never switches\n",
+        "accounts on its own. When that profile is at its 5-hour or weekly limit,\n",
+        "`mcc run` asks what to do. Waiting (starting nothing) is the default, and\n",
+        "starting it anyway comes next. Other profiles are offered only when the\n",
+        "project allows them (`mcc project set work --allow lab`), by name and\n",
+        "without their usage. Without a terminal it stops instead (exit 2).\n",
+        "\n",
+        "Starting a profile other than the project's, from the prompt or with\n",
+        "`--profile`, prints this note on stderr:\n",
+        "\n",
+        run_tos_note!(),
+        "\n\n",
+        "If the profile's usage can't be read (offline, expired login,\n",
+        "MCC_NO_USAGE=1), it starts. Sessions are kept per profile, so `--resume` in\n",
+        "another profile won't list this project's sessions unless both profiles\n",
+        "share sessions (`mcc help share`)."
+    ))]
     Run(RunArgs),
 
     /// Rewrite profiles' launchers and shell aliases from the current templates

@@ -33,21 +33,57 @@ pub fn summary(u: &Usage) -> String {
     }
 }
 
+/// The windows at their limit, by name.
+fn full(u: &Usage) -> Vec<(&'static str, &Window)> {
+    [("5-hour", &u.five_hour), ("weekly", &u.weekly)]
+        .into_iter()
+        .filter_map(|(name, w)| Some((name, w.as_ref().filter(|w| w.percent >= LIMIT)?)))
+        .collect()
+}
+
+/// How long until a profile at its limit is usable again, once its last full
+/// window resets: "35m", or "now" once that time has passed. `None` when no
+/// reset time is known.
+pub fn reset_time(u: &Usage, now: DateTime<Utc>) -> Option<String> {
+    full(u)
+        .iter()
+        .filter_map(|(_, w)| w.resets_at)
+        .max()
+        .map(|t| usage::until(t, now))
+}
+
+/// "resets in 35m", or "should reset any moment" (never "resets in now").
+fn resets(reset: &str) -> String {
+    match reset {
+        "now" => "should reset any moment".into(),
+        left => format!("resets in {left}"),
+    }
+}
+
+/// When `profile` is usable again, from [`reset_time`]: "`work` resets in
+/// 35m", "`work` should reset any moment", "`work` (reset time unknown)".
+pub fn reset_note(profile: &str, reset: Option<&str>) -> String {
+    match reset {
+        Some(t) => format!("`{profile}` {}", resets(t)),
+        None => format!("`{profile}` (reset time unknown)"),
+    }
+}
+
+/// The at-limit prompt's default choice: "Wait — `work` resets in 35m".
+pub fn wait_label(profile: &str, reset: Option<&str>) -> String {
+    format!("Wait — {}", reset_note(profile, reset))
+}
+
 /// Which limit a profile at its limit has reached, and when it lifts:
 /// "its 5-hour limit, resets in 35m", "its 5-hour and weekly limits, …".
 pub fn limit_note(u: &Usage, now: DateTime<Utc>) -> String {
-    let full: Vec<(&str, &Window)> = [("5-hour", &u.five_hour), ("weekly", &u.weekly)]
-        .into_iter()
-        .filter_map(|(name, w)| Some((name, w.as_ref().filter(|w| w.percent >= LIMIT)?)))
-        .collect();
-    let names: Vec<&str> = full.iter().map(|(n, _)| *n).collect();
+    let names: Vec<&str> = full(u).iter().map(|(n, _)| *n).collect();
     let what = match names.as_slice() {
         [one] => format!("its {one} limit"),
         _ => format!("its {} limits", names.join(" and ")),
     };
-    // Usable again once the last full window resets.
-    match full.iter().filter_map(|(_, w)| w.resets_at).max() {
-        Some(t) => format!("{what}, resets in {}", usage::until(t, now)),
+    match reset_time(u, now) {
+        Some(t) => format!("{what}, {}", resets(&t)),
         None => what,
     }
 }
@@ -115,5 +151,42 @@ mod tests {
             "its 5-hour and weekly limits, resets in 3d 0h"
         );
         assert_eq!(limit_note(&ok(None, Some(100.0)), now), "its weekly limit");
+    }
+
+    #[test]
+    fn reset_time_is_the_last_full_window_and_never_says_resets_in_now() {
+        let now = DateTime::parse_from_rfc3339("2026-10-10T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let at = |secs| Some(now + chrono::Duration::seconds(secs));
+        let mut u = ok(Some(100.0), Some(40.0));
+        u.five_hour.as_mut().unwrap().resets_at = at(35 * 60);
+        u.weekly.as_mut().unwrap().resets_at = at(3 * 86400);
+        // Only full windows count: the weekly one isn't.
+        assert_eq!(reset_time(&u, now).as_deref(), Some("35m"));
+        assert_eq!(
+            wait_label("work", reset_time(&u, now).as_deref()),
+            "Wait — `work` resets in 35m"
+        );
+        u.weekly.as_mut().unwrap().percent = 100.0;
+        assert_eq!(reset_time(&u, now).as_deref(), Some("3d 0h"));
+
+        // No reset time known.
+        let unknown = ok(Some(100.0), None);
+        assert_eq!(reset_time(&unknown, now), None);
+        assert_eq!(
+            wait_label("work", None),
+            "Wait — `work` (reset time unknown)"
+        );
+
+        // Already past: never "resets in now".
+        let mut past = ok(Some(100.0), None);
+        past.five_hour.as_mut().unwrap().resets_at = at(-60);
+        assert_eq!(reset_time(&past, now).as_deref(), Some("now"));
+        let label = wait_label("work", reset_time(&past, now).as_deref());
+        assert_eq!(label, "Wait — `work` should reset any moment");
+        let note = limit_note(&past, now);
+        assert_eq!(note, "its 5-hour limit, should reset any moment");
+        assert!(!label.contains("in now") && !note.contains("in now"));
     }
 }
