@@ -28,6 +28,9 @@ pub struct ProfileMetrics {
     pub organization_uuid: Option<String>,
     /// The profile's label (`mcc add`); always null for the default profile.
     pub label: Option<String>,
+    /// The profile's color (`mcc add --color`); always null for the
+    /// default profile.
+    pub color: Option<String>,
     pub model: Option<String>,
     pub skills: usize,
     pub agents: usize,
@@ -202,6 +205,7 @@ fn collect(
         organization: account.organization,
         organization_uuid: account.organization_uuid,
         label: reg.and_then(|r| r.label.clone()),
+        color: reg.and_then(|r| r.color.clone()),
         model: s(&settings, "/model"),
         skills: count_skills(&dir.join("skills")),
         agents: count_md(&dir.join("agents")),

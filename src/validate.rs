@@ -384,6 +384,7 @@ mod tests {
                 share_group: None,
                 share_cross_org_allowed_at: None,
                 label: None,
+                color: None,
                 account: None,
                 settings: None,
                 link: Vec::new(),

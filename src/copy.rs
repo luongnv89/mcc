@@ -2218,6 +2218,7 @@ mod tests {
                 share_group: None,
                 share_cross_org_allowed_at: None,
                 label: None,
+                color: None,
                 account: None,
                 settings: Some(toml::from_str("model = \"sonnet\"").unwrap()),
                 link: Vec::new(),

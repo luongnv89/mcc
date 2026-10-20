@@ -275,10 +275,13 @@ fn table_lines(all: &[ProfileMetrics], bar: usize, now: DateTime<Utc>) -> Vec<St
     let rows: Vec<Vec<String>> = all
         .iter()
         .map(|m| {
+            // In the profile's color (stdout to a terminal only); the
+            // widths below measure without the escapes.
+            let name = ui::paint(&m.name, m.color.as_deref());
             let name = if m.is_default {
-                format!("{} ★", m.name)
+                format!("{name} ★")
             } else {
-                m.name.clone()
+                name
             };
             let name = match m.share_group.as_deref() {
                 Some(g) if m.share_sessions && g != "default" => format!("{name} (shared: {g})"),
@@ -359,7 +362,7 @@ fn project_lines(paths: &Paths, cfg: &Config, all: &[ProfileMetrics]) -> Vec<Str
             [
                 format!("{}{missing}", paths.display(Path::new(dir))),
                 match m {
-                    Some(_) => p.profile.clone(),
+                    Some(m) => ui::paint(&p.profile, m.color.as_deref()),
                     None => format!("{} (no such profile)", p.profile),
                 },
                 m.map_or_else(|| "—".into(), account_cell),
@@ -406,10 +409,11 @@ fn card(
     now: DateTime<Utc>,
     paths: &Paths,
 ) -> Result<()> {
+    let name = ui::paint(&m.name, m.color.as_deref());
     let title = if m.is_default {
-        format!("{} ★ (~/.claude)", m.name)
+        format!("{name} ★ (~/.claude)")
     } else {
-        m.name.clone()
+        name
     };
     writeln!(out, "{} {}", style("◆").cyan().bold(), style(title).bold())?;
     let row =
@@ -436,6 +440,9 @@ fn card(
     }
     if let Some(label) = &m.label {
         row(out, "Label", label.clone())?;
+    }
+    if let Some(color) = &m.color {
+        row(out, "Color", ui::paint(color, Some(color)))?;
     }
     for (k, v) in usage_rows(&m.usage, bar, now) {
         row(out, k, v)?;

@@ -109,7 +109,7 @@ pub enum Command {
 
     /// Add a Claude Code profile (creates the default one if ~/.claude is missing)
     #[command(
-        after_help = "Examples:\n  mcc add                       Interactive: asks for alias and setup\n  mcc add work --clone          Copy the default's setup (no credentials), then log in\n  mcc add lab --fresh --no-login\n  mcc add side --clone --label personal\n\nAfter logging in, mcc records the account's email and organization under\n[profiles.ALIAS.account] in ~/.mcc/config.toml (shown by `mcc list`) and\nwarns when another profile is already logged in to the same account. It\nthen asks for an optional label, such as \"personal\" or the work\norganization; --label sets it without asking, and -y skips it.\n\nAfter it finishes, start the profile with its alias, e.g. `work`."
+        after_help = "Examples:\n  mcc add                       Interactive: asks for alias and setup\n  mcc add work --clone          Copy the default's setup (no credentials), then log in\n  mcc add lab --fresh --no-login\n  mcc add side --clone --label personal\n  mcc add work --clone --label \"Acme (work)\" --color blue\n\nAfter logging in, mcc records the account's email and organization under\n[profiles.ALIAS.account] in ~/.mcc/config.toml (shown by `mcc list`) and\nwarns when another profile is already logged in to the same account. It\nthen asks for an optional label, such as \"personal\" or the work\norganization; --label sets it without asking, and -y skips it. --color\nshows the profile's name in that color in `mcc list`, `mcc run` and the\n`mcc statusline --prefix` segment. `mcc config set profiles.ALIAS.label`\nand `profiles.ALIAS.color` change either later.\n\nAfter it finishes, start the profile with its alias, e.g. `work`."
     )]
     Add(AddArgs),
 
@@ -321,7 +321,7 @@ pub enum Command {
 
     /// Show the active profile in Claude Code's status line and cache its rate limits (opt-in)
     #[command(
-        after_help = "Examples:\n  mcc statusline install         Wrap your statusLine in ~/.claude/settings.json\n  mcc statusline install --prefix\n                                 …and start the status line with the profile's name, e.g. [work]\n  mcc statusline uninstall       Put the previous statusLine back everywhere mcc installed it\n\n`install` and `uninstall` are the only mcc commands that change an existing\ndefault profile (~/.claude/settings.json; a symlinked file stays a symlink). It backs the file up to ~/.mcc/backups/ first,\nkeeps your statusLine command and sets `mcc statusline` in its place; running\nit again never wraps the shim twice. Profiles receive it with their next\n`mcc sync`; when [sync] exclude has \"settings\", install offers to add it to\neach profile directly (`--yes` accepts).\n\nClaude Code then runs `mcc statusline` on every status-line refresh, with the\nsession's JSON on stdin. The shim works out the profile from CLAUDE_CONFIG_DIR\n(unset means the default profile), saves the 5-hour and weekly rate limits in\nthat JSON to ~/.mcc/state/<profile>/usage.json, runs your previous statusLine\ncommand with the same stdin and prints its output. It never touches\ncredentials and never writes ~/.mcc/config.toml. Claude Code sends rate limits\nonly to Pro and Max subscribers, after the session's first response, so an idle\nprofile's file goes stale. A statusLine in a project's own .claude/settings.json\noverrides the shim there."
+        after_help = "Examples:\n  mcc statusline install         Wrap your statusLine in ~/.claude/settings.json\n  mcc statusline install --prefix\n                                 …and start the status line with the profile's name, e.g. [work]\n                                 ([work · Acme] with a label, in the profile's color)\n  mcc statusline uninstall       Put the previous statusLine back everywhere mcc installed it\n\n`install` and `uninstall` are the only mcc commands that change an existing\ndefault profile (~/.claude/settings.json; a symlinked file stays a symlink). It backs the file up to ~/.mcc/backups/ first,\nkeeps your statusLine command and sets `mcc statusline` in its place; running\nit again never wraps the shim twice. Profiles receive it with their next\n`mcc sync`; when [sync] exclude has \"settings\", install offers to add it to\neach profile directly (`--yes` accepts).\n\nClaude Code then runs `mcc statusline` on every status-line refresh, with the\nsession's JSON on stdin. The shim works out the profile from CLAUDE_CONFIG_DIR\n(unset means the default profile), saves the 5-hour and weekly rate limits in\nthat JSON to ~/.mcc/state/<profile>/usage.json, runs your previous statusLine\ncommand with the same stdin and prints its output. It never touches\ncredentials and never writes ~/.mcc/config.toml. Claude Code sends rate limits\nonly to Pro and Max subscribers, after the session's first response, so an idle\nprofile's file goes stale. A statusLine in a project's own .claude/settings.json\noverrides the shim there."
     )]
     Statusline(StatuslineArgs),
 
@@ -363,6 +363,7 @@ pub enum Command {
         "  mcc config set sync.exclude plugins,mcp\n",
         "  mcc config set sync.exclude \"\"     Exclude nothing\n",
         "  mcc config set profiles.work.label \"Acme (work)\"\n",
+        "  mcc config set profiles.work.color blue\n",
         "  mcc config edit                    Open the file in $VISUAL or $EDITOR\n",
         "  mcc config path                    Print the file's path\n",
         "\n",
@@ -372,6 +373,8 @@ pub enum Command {
         "  privacy.show_email     true or false (account emails in list and usage)\n",
         "  usage.live             true or false\n",
         "  profiles.ALIAS.label   1–64 characters (\"\" removes it)\n",
+        "  profiles.ALIAS.color   black, red, green, yellow, blue, magenta, cyan or\n",
+        "                         white (\"\" removes it)\n",
         "\n",
         "`get` reads any key, dotted as in TOML (projects.\"/Users/me/app\".profile).\n",
         "A value `set` rejects leaves the file unchanged, and comments are kept.\n",
@@ -436,6 +439,10 @@ pub struct AddArgs {
     /// Label the account, e.g. "personal" or the work organization (asked if omitted)
     #[arg(long, value_name = "LABEL")]
     pub label: Option<String>,
+
+    /// Show the profile's name in this color in `mcc list`, `mcc run` and the statusline: black, red, green, yellow, blue, magenta, cyan or white
+    #[arg(long, value_name = "COLOR")]
+    pub color: Option<String>,
 
     /// Accept defaults without prompting
     #[arg(short, long)]
@@ -689,7 +696,7 @@ pub struct StatuslineArgs {
     #[command(subcommand)]
     pub action: Option<StatuslineAction>,
 
-    /// Start the output with the active profile's name, e.g. `[work]` (set by `install --prefix`)
+    /// Start the output with the active profile's name and label in its color, e.g. `[work · Acme]` (set by `install --prefix`)
     #[arg(long)]
     pub prefix: bool,
 }
@@ -698,7 +705,7 @@ pub struct StatuslineArgs {
 pub enum StatuslineAction {
     /// Set the shim as the default profile's statusLine, keeping the previous one
     Install {
-        /// Start the status line with the active profile's name, e.g. `[work]`
+        /// Start the status line with the active profile's name and label in its color, e.g. `[work · Acme]`
         #[arg(long)]
         prefix: bool,
 

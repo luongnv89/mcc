@@ -20,6 +20,10 @@ pub struct Settings {
     pub verbose: bool,
     pub quiet: bool,
     pub color: bool,
+    /// Neither `--no-color` nor `NO_COLOR` is set. Unlike `color`, says
+    /// nothing about a terminal: `mcc statusline` writes to Claude Code,
+    /// which renders colors through a pipe.
+    pub color_allowed: bool,
     pub interactive: bool,
 }
 
@@ -37,6 +41,7 @@ pub fn init(verbose: bool, quiet: bool, no_color: bool) {
         verbose,
         quiet,
         color,
+        color_allowed: allowed,
         interactive,
     });
 }
@@ -46,6 +51,7 @@ pub fn settings() -> Settings {
         verbose: false,
         quiet: false,
         color: false,
+        color_allowed: false,
         interactive: false,
     })
 }
@@ -245,6 +251,73 @@ impl Drop for Step {
         if !self.finished {
             self.finish(style("✗").red().bold(), "failed", "");
         }
+    }
+}
+
+// ---- profile colors ---------------------------------------------------------
+
+/// The colors a profile can have (`color` under `[profiles.ALIAS]`): the
+/// eight standard terminal colors, so every terminal and theme shows them.
+pub const PROFILE_COLORS: &[&str] = &[
+    "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
+];
+
+/// A profile color as mcc stores it (trimmed, lowercase), or why it isn't
+/// one.
+pub fn check_color(color: &str) -> std::result::Result<String, String> {
+    let c = color.trim().to_ascii_lowercase();
+    if PROFILE_COLORS.contains(&c.as_str()) {
+        Ok(c)
+    } else {
+        Err(format!(
+            "unknown color \"{}\": use one of {}",
+            color.trim(),
+            PROFILE_COLORS.join(", ")
+        ))
+    }
+}
+
+fn console_color(color: &str) -> Option<console::Color> {
+    use console::Color;
+    Some(match color.trim().to_ascii_lowercase().as_str() {
+        "black" => Color::Black,
+        "red" => Color::Red,
+        "green" => Color::Green,
+        "yellow" => Color::Yellow,
+        "blue" => Color::Blue,
+        "magenta" => Color::Magenta,
+        "cyan" => Color::Cyan,
+        "white" => Color::White,
+        _ => return None,
+    })
+}
+
+/// `text` in the profile's color, bold, for stdout: plain when stdout gets
+/// no colors (not a terminal, `--no-color`, `NO_COLOR`) or the color is
+/// unset or unknown (a hand-edited file).
+pub fn paint(text: &str, color: Option<&str>) -> String {
+    match color.and_then(console_color) {
+        Some(c) => style(text).fg(c).bold().to_string(),
+        None => text.to_string(),
+    }
+}
+
+/// [`paint`] for stderr (`ui::info` lines and the like).
+pub fn paint_stderr(text: &str, color: Option<&str>) -> String {
+    match color.and_then(console_color) {
+        Some(c) => style(text).for_stderr().fg(c).bold().to_string(),
+        None => text.to_string(),
+    }
+}
+
+/// [`paint`] whatever stdout is, unless `--no-color` or `NO_COLOR` is set:
+/// for `mcc statusline`, whose stdout is always a pipe to Claude Code.
+pub fn paint_forced(text: &str, color: Option<&str>) -> String {
+    match color.and_then(console_color) {
+        Some(c) if settings().color_allowed => {
+            style(text).force_styling(true).fg(c).bold().to_string()
+        }
+        _ => text.to_string(),
     }
 }
 
@@ -485,6 +558,23 @@ fn choose_layout<L: Copy>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_colors_are_checked_and_normalized() {
+        assert_eq!(check_color(" Blue ").unwrap(), "blue");
+        for c in PROFILE_COLORS {
+            assert_eq!(check_color(c).unwrap(), *c);
+            assert!(console_color(c).is_some(), "{c}");
+        }
+        for bad in ["", "purple", "#00f", "bright-red"] {
+            let e = check_color(bad).unwrap_err();
+            assert!(e.contains("black, red, green"), "{e}");
+        }
+        // Unknown or unset colors paint nothing.
+        assert_eq!(paint("work", None), "work");
+        assert_eq!(paint("work", Some("teal")), "work");
+        assert_eq!(paint_forced("work", Some("teal")), "work");
+    }
 
     #[test]
     fn sizes() {

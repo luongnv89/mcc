@@ -44,6 +44,10 @@ pub const SETTABLE: &[(&str, &str)] = &[
         "profiles.ALIAS.label",
         "a label of 1–64 characters (\"\" removes it)",
     ),
+    (
+        "profiles.ALIAS.color",
+        "black, red, green, yellow, blue, magenta, cyan or white (\"\" removes it)",
+    ),
 ];
 
 /// A key `mcc config set` accepts, parsed.
@@ -54,6 +58,7 @@ enum Key {
     ShowEmail,
     Live,
     Label(String),
+    Color(String),
 }
 
 pub fn run(paths: &Paths, args: &ConfigArgs) -> Result<()> {
@@ -100,6 +105,7 @@ fn settable(key: &str, parts: &[String]) -> Result<Key> {
         ["privacy" | "usage", "show_email"] => Key::ShowEmail,
         ["usage", "live"] => Key::Live,
         ["profiles", alias, "label"] => Key::Label(alias.to_string()),
+        ["profiles", alias, "color"] => Key::Color(alias.to_string()),
         ["profiles", alias, f] if f.starts_with("share_") => {
             return Err(managed(&format!(
                 "session sharing is set with `mcc share {alias}` (see `mcc help share`)"
@@ -174,6 +180,12 @@ fn lookup(cfg: &Config, key: &str, parts: &[String]) -> Result<String> {
                 .into());
         }
         (None, Ok(Key::Label(alias))) => return Err(super::unknown_profile(&alias)),
+        (None, Ok(Key::Color(alias))) if cfg.profiles.contains_key(&alias) => {
+            return Err(CliError::runtime(format!("\"{key}\" is not set"))
+                .hint(format!("set it with `mcc config set {key} <COLOR>`"))
+                .into());
+        }
+        (None, Ok(Key::Color(alias))) => return Err(super::unknown_profile(&alias)),
         (None, _) => {
             return Err(CliError::runtime(format!("\"{key}\" is not set"))
                 .hint(format!(
@@ -248,6 +260,20 @@ fn apply(cfg: &mut Config, which: &Key, value: &str) -> Result<()> {
                 Some(trimmed.to_string())
             };
         }
+        Key::Color(alias) => {
+            let profile = cfg
+                .profiles
+                .get_mut(alias)
+                .ok_or_else(|| super::unknown_profile(alias))?;
+            profile.color = if value.trim().is_empty() {
+                None
+            } else {
+                Some(ui::check_color(value).map_err(|m| {
+                    CliError::usage(format!("invalid color: {m}"))
+                        .hint("example: mcc config set profiles.work.color blue")
+                })?)
+            };
+        }
     }
     Ok(())
 }
@@ -297,6 +323,10 @@ pub fn check(text: &str) -> Result<Config> {
         if let Some(label) = &p.label {
             super::add::check_label(label)
                 .map_err(|m| CliError::input(format!("profiles.{alias}.label: {m}")))?;
+        }
+        if let Some(color) = &p.color {
+            ui::check_color(color)
+                .map_err(|m| CliError::input(format!("profiles.{alias}.color: {m}")))?;
         }
         super::link::check_items(&p.link)
             .map_err(|e| CliError::input(format!("profiles.{alias}.link: {e}")))?;

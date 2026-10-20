@@ -73,6 +73,17 @@ fn fetch(paths: &Paths, cfg: &Config, profiles: &[&Profile]) -> Vec<Usage> {
     usage::lookup(paths, &targets, cfg.usage.live)
 }
 
+/// A profile as `mcc run` names it on stderr: `` `work` `` in the profile's
+/// color, then its label, e.g. `` `work` (Acme) `` — so the account in use
+/// is obvious before Claude Code starts.
+fn shown(cfg: &Config, name: &str) -> String {
+    let tick = ui::paint_stderr(&format!("`{name}`"), super::profile_color(cfg, name));
+    match super::shown_label(cfg, name) {
+        Some(label) => format!("{tick} ({label})"),
+        None => tick,
+    }
+}
+
 pub fn run(paths: &Paths, cfg: &Config, args: &RunArgs) -> Result<()> {
     let all = profiles(cfg);
     let verb = if args.dry_run {
@@ -84,7 +95,10 @@ pub fn run(paths: &Paths, cfg: &Config, args: &RunArgs) -> Result<()> {
     if let Some(name) = args.profile.as_deref() {
         let p = find(&all, name)?;
         note_if_not_the_projects(cfg, &p.name);
-        ui::info(&format!("{verb} `{}` — picked with --profile", p.name));
+        ui::info(&format!(
+            "{verb} {} — picked with --profile",
+            shown(cfg, &p.name)
+        ));
         return launch(paths, cfg, p, args);
     }
 
@@ -94,8 +108,8 @@ pub fn run(paths: &Paths, cfg: &Config, args: &RunArgs) -> Result<()> {
     let default_usage = fetch(paths, cfg, &[default]).remove(0);
     if !pick::at_limit(&default_usage) {
         ui::info(&format!(
-            "{verb} `{}` — {why} ({})",
-            default.name,
+            "{verb} {} — {why} ({})",
+            shown(cfg, &default.name),
             pick::summary(&default_usage, Utc::now())
         ));
         return launch(paths, cfg, default, args);
@@ -103,7 +117,10 @@ pub fn run(paths: &Paths, cfg: &Config, args: &RunArgs) -> Result<()> {
 
     let now = Utc::now();
     let limit = pick::limit_note(&default_usage, now);
-    ui::warn(&format!("`{}` ({why}) is at {limit}", default.name));
+    ui::warn(&format!(
+        "{} ({why}) is at {limit}",
+        shown(cfg, &default.name)
+    ));
     // mcc never switches accounts on its own, and never fetches or shows
     // another account's usage: waiting is the default, and only the
     // profiles the project allows are offered, by name.
@@ -151,8 +168,9 @@ pub fn run(paths: &Paths, cfg: &Config, args: &RunArgs) -> Result<()> {
                 eprintln!("{RUN_TOS_NOTE}");
             }
             ui::info(&format!(
-                "starting `{}` — your pick (this project still defaults to `{}`)",
-                p.name, default.name
+                "starting {} — your pick (this project still defaults to `{}`)",
+                shown(cfg, &p.name),
+                default.name
             ));
             p
         }

@@ -103,7 +103,7 @@ mcc delete job              # remove it completely
 | Command | What it does | Key options |
 |---|---|---|
 | `mcc init` | Detect OS, arch, terminal, shell, rc file, the `claude` binary, and whether `~/.local/bin` is on PATH (and offer to add it) | `--force`, `--shell zsh\|bash\|fish` |
-| `mcc add [ALIAS]` | Create the default profile, or a new profile with its own command; records the account and its organization, warns when another profile already uses that account, and asks for an optional label. A clone shares the default's plugins instead of copying them | `--clone`, `--fresh`, `--link ITEMS`, `--copy-plugins`, `--no-login`, `--label LABEL`, `-y` |
+| `mcc add [ALIAS]` | Create the default profile, or a new profile with its own command; records the account and its organization, warns when another profile already uses that account, and asks for an optional label. A clone shares the default's plugins instead of copying them | `--clone`, `--fresh`, `--link ITEMS`, `--copy-plugins`, `--no-login`, `--label LABEL`, `--color COLOR`, `-y` |
 | `mcc list` (`ls`) | Show every profile with its account, 5-hour/weekly usage and sync state in a table that fits 120 columns; `--long` adds every metric | `--json`, `--json-v2`, `-l/--long`, `--no-usage`, `--show-email`, `--hide-email` |
 | `mcc usage [PROFILE]` | Show each profile's 5-hour and weekly usage in a table (`default` or `claude` for the default profile) | `--json`, `--json-v2`, `--show-email`, `--hide-email` |
 | `mcc sync [ALIAS]` | Copy the default's setup into a profile (default → profile only), keeping edits made in the profile | `--all`, `--dry-run`, `--prune`, `--force`, `--only ITEMS`, `-y` |
@@ -131,6 +131,7 @@ Global flags: `-v/--verbose`, `-q/--quiet`, `--no-color` (mcc also honors `NO_CO
 mcc add                               # interactive: asks for the alias and clone/fresh
 mcc add lab --fresh --no-login        # empty profile; log in later by running `lab`
 mcc add side --clone --label personal # label the account instead of being asked
+mcc add work --clone --color blue     # show `work` in blue in list, run and the statusline
 mcc list --long                       # one detailed card per profile
 mcc list --json --show-email | jq '.[] | {name, account, skills, plugins_installed}'
 mcc list --json | jq '.[] | {name, organization, organization_uuid, label}'
@@ -238,13 +239,14 @@ mcc config get usage.live                         # false (lists print one item 
 mcc config set usage.live true
 mcc config set sync.exclude plugins,mcp           # comma-separated; "" excludes nothing
 mcc config set profiles.work.label "Acme (work)"  # "" removes the label
+mcc config set profiles.work.color blue           # "" removes the color
 mcc config edit                                   # open the file in $VISUAL or $EDITOR
 mcc config path                                   # print the file's path
 ```
 
-`set` accepts `sync.exclude`, `sync.extra`, `privacy.show_email` (also under its old name, `usage.show_email`), `usage.live` and `profiles.ALIAS.label`, and checks each value as the command that uses it would: an unknown sync item, a path outside the config dir, a value that isn't `true` or `false`, or an invalid label is refused with exit 2 or 3, and the file is left unchanged. Keys that other commands manage point you to them (`mcc share`, `mcc link`, `mcc project`, `mcc init --force`). `get` reads any key, dotted as in TOML (`projects."/Users/me/app".profile`); a key that isn't set exits 1. Comments and formatting are kept.
+`set` accepts `sync.exclude`, `sync.extra`, `privacy.show_email` (also under its old name, `usage.show_email`), `usage.live`, `profiles.ALIAS.label` and `profiles.ALIAS.color`, and checks each value as the command that uses it would: an unknown sync item, a path outside the config dir, a value that isn't `true` or `false`, an invalid label or an unknown color is refused with exit 2 or 3, and the file is left unchanged. Keys that other commands manage point you to them (`mcc share`, `mcc link`, `mcc project`, `mcc init --force`). `get` reads any key, dotted as in TOML (`projects."/Users/me/app".profile`); a key that isn't set exits 1. Comments and formatting are kept.
 
-`edit` opens a copy of the file and saves it only when it is valid mcc config (it parses, and sync items, `link` items, labels and `share_group` names pass the same checks); otherwise it offers to edit again, or leaves the file unchanged. mcc holds no lock while the editor is open, so other mcc commands, launches included, keep working; if one of them changes the file meanwhile, nothing is saved and your edited copy is kept next to it. `edit` also works on a file that no longer parses, so it can fix one. `get` and `path` never take the lock; `set` holds it like any other write.
+`edit` opens a copy of the file and saves it only when it is valid mcc config (it parses, and sync items, `link` items, labels, colors and `share_group` names pass the same checks); otherwise it offers to edit again, or leaves the file unchanged. mcc holds no lock while the editor is open, so other mcc commands, launches included, keep working; if one of them changes the file meanwhile, nothing is saved and your edited copy is kept next to it. `edit` also works on a file that no longer parses, so it can fix one. `get` and `path` never take the lock; `set` holds it like any other write.
 
 ### Customizing sync
 
@@ -480,13 +482,14 @@ mcc exec --all -- claude plugin marketplace update       # once per profile, the
 
 With `--all`, each profile's output comes under its name followed by its exit status, and mcc exits 0 only if the command succeeded everywhere (else with the first failing status). A command that can't be found counts as exit 127 (126 when it can't be run), and Ctrl+C stops at the current profile. mcc holds no lock while the command runs, so the command may run mcc itself.
 
-### Accounts, organizations and labels
+### Accounts, organizations, labels and colors
 
 After `mcc add` logs a profile in, it records the account under `[profiles.<alias>.account]` in `~/.mcc/config.toml`: its email, Claude Code's account UUID, and its organization's name and UUID, each when Claude Code reports it. If another profile (the default included) is already logged in to the same account in the same organization, `mcc add` warns: profiles on one account share its usage limits, so this is usually a mistake. The same login in another organization, such as a personal plan and a work seat, has limits of its own, so it only gets a note. It then asks for an optional label, such as `personal` or the account's organization; `--label LABEL` sets it without asking, and `-y` or a non-interactive run skips it.
 
 ```toml
 [profiles.work]
 label = "Corp (work)"
+color = "blue"
 
 [profiles.work.account]
 email = "work@corp.com"
@@ -496,6 +499,13 @@ recorded_at = "2026-10-20T09:00:00+02:00"
 ```
 
 `mcc list` shows the label in its `ACCOUNT` column, else the organization; `--long` shows the organization in its `Account` row and adds `Organization ID` and `Label` rows, and `--json` has `organization`, `organization_uuid` and `label` per profile. What the profile's `.claude.json` says now wins over what was recorded. Profiles added before mcc recorded accounts, or with `--no-login`, have no `account` table and show only what `.claude.json` says.
+
+A profile can also have a `color`, so the account in use is obvious at a glance: one of `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan` or `white` (`mcc add --color COLOR`). `mcc list` shows the profile's name in it (the `NAME` column, the project table and the `--long` card, which adds a `Color` row), `mcc run` names the profile it starts in it, followed by its label (``starting `work` (Corp (work)) — …``), and `mcc statusline --prefix` colors its segment, which also carries the label: `[work · Corp (work)]`. `--json` has `color` per profile (`null` when unset and for the default profile). Colors are left out with `--no-color`, `NO_COLOR`, or when the output isn't a terminal; the status line is the exception to the last rule, since Claude Code reads it through a pipe and renders the colors itself. As in `mcc list`, a label that contains an email is left out of `mcc run` and the status line while emails are hidden. To change either on an existing profile:
+
+```sh
+mcc config set profiles.work.label "Corp (work)"   # "" removes it
+mcc config set profiles.work.color green           # "" removes it
+```
 
 ### Usage limits: `mcc list` and `mcc usage`
 
@@ -564,13 +574,13 @@ Opt-in. Claude Code passes the session's 5-hour and weekly rate limits (`rate_li
 
 ```sh
 mcc statusline install            # wrap your statusLine in ~/.claude/settings.json
-mcc statusline install --prefix   # …and start it with the profile's name, e.g. [work]
+mcc statusline install --prefix   # …and start it with the profile's name, e.g. [work], or [work · Acme] with a label
 mcc statusline uninstall          # put the previous statusLine back
 ```
 
 - **Install writes to the default profile.** Apart from `mcc add` creating a missing `~/.claude`, `install` and `uninstall` are the only mcc commands that change your default profile. A symlinked `settings.json` (from a dotfiles manager, say) stays a symlink: its target is written. It copies `~/.claude/settings.json` to `~/.mcc/backups/settings.json.default.<timestamp>` first, records your current `statusLine` in `~/.mcc/state/default/statusline.json`, and sets `statusLine` to `mcc statusline` (keeping its other fields, such as `padding`). Running it again changes nothing: the shim is never wrapped twice. `--prefix` on an installed shim only switches the prefix.
 - **Profiles.** Profiles get the shim with their settings on the next `mcc sync` (e.g. `mcc sync --all --only settings`), unless their [settings overlay](#per-profile-settings-overlays) sets a `statusLine` of its own, which wins. When `[sync] exclude` has `"settings"`, profiles never receive the default's settings, so `install` offers to add the shim to each profile's own `settings.json` (with a backup, and that profile's own `statusLine` recorded in `~/.mcc/state/<alias>/statusline.json`); `--yes` adds it without asking, and without a terminal it is skipped with a hint.
-- **On every refresh** Claude Code runs the shim with the session's JSON on stdin. The shim works out the profile from `CLAUDE_CONFIG_DIR`, which Claude Code passes on to the status-line command (unset means the default profile), saves the rate limits to `~/.mcc/state/<profile>/usage.json`, runs your previous `statusLine` command with the same stdin and `CLAUDE_CONFIG_DIR`, and prints its output (after `[<profile>] ` with `--prefix`). A profile that got the shim through sync runs the default's previous command, with paths rewritten as sync rewrites them. The shim never takes mcc's lock, never writes `~/.mcc/config.toml` or the log, and a failure to cache never blanks the status line.
+- **On every refresh** Claude Code runs the shim with the session's JSON on stdin. The shim works out the profile from `CLAUDE_CONFIG_DIR`, which Claude Code passes on to the status-line command (unset means the default profile), saves the rate limits to `~/.mcc/state/<profile>/usage.json`, runs your previous `statusLine` command with the same stdin and `CLAUDE_CONFIG_DIR`, and prints its output (after `[<profile>] ` with `--prefix`, or `[<profile> · <label>] ` when the profile has a [label](#accounts-organizations-labels-and-colors), in the profile's color unless `NO_COLOR` is set). A profile that got the shim through sync runs the default's previous command, with paths rewritten as sync rewrites them. The shim never takes mcc's lock, never writes `~/.mcc/config.toml` or the log, and a failure to cache never blanks the status line.
 - **Uninstall** restores the recorded `statusLine` (or removes it, if there was none) in the default profile and in every profile where the shim is set, backing each file up first. A `statusLine` you changed by hand since is left alone, with a warning.
 - **Limits of the data.** Claude Code sends rate limits only to Pro and Max subscribers, and only after a session's first response. A profile you don't use keeps its last values, so check `updated_at`. A `statusLine` in a project's own `.claude/settings.json` overrides the user one, so the shim doesn't run (or cache) in such projects:
 

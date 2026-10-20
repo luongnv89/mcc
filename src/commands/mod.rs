@@ -70,3 +70,17 @@ pub fn unknown_profile(alias: &str) -> anyhow::Error {
         .hint("run `mcc list` to see your profiles")
         .into()
 }
+
+/// The label shown for profile `alias` outside `mcc list` (`mcc run`, the
+/// statusline): `None` when it has none (the default profile never has one),
+/// and while emails are hidden for a label containing one, as `mcc list`
+/// hides it.
+pub(crate) fn shown_label<'a>(cfg: &'a crate::config::Config, alias: &str) -> Option<&'a str> {
+    let label = cfg.profiles.get(alias)?.label.as_deref()?;
+    (cfg.show_email() || !label.contains('@')).then_some(label)
+}
+
+/// Profile `alias`'s color, as set; `None` for the default profile.
+pub(crate) fn profile_color<'a>(cfg: &'a crate::config::Config, alias: &str) -> Option<&'a str> {
+    cfg.profiles.get(alias)?.color.as_deref()
+}
