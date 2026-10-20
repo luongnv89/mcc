@@ -402,6 +402,24 @@ fn state_file_account_wins_over_the_recorded_one() {
     let w = &json(&out)[1];
     assert_eq!(w["organization"], "New Org");
     assert_eq!(w["organization_uuid"], "org-2");
+
+    // Logged in to another account whose state has no organization: the
+    // recorded organization (of the old account) is not shown.
+    sb.write(
+        ".mcc/profiles/work/.claude.json",
+        r#"{"oauthAccount":{"emailAddress":"new@example.com"}}"#,
+    );
+    let out = sb
+        .mcc()
+        .args(["list", "--json", "--no-usage"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let w = &json(&out)[1];
+    assert_eq!(w["account"], "new@example.com");
+    assert!(w["organization"].is_null(), "{w}");
 }
 
 #[test]

@@ -164,7 +164,7 @@ fn collect(
         .as_ref()
         .and_then(account_from_state)
         .unwrap_or_default()
-        .or(reg.and_then(|r| r.account.clone()).unwrap_or_default());
+        .or_recorded(reg.and_then(|r| r.account.clone()));
 
     let last_used_time = [dir.join("history.jsonl"), state_json.to_path_buf()]
         .iter()

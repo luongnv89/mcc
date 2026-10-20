@@ -189,7 +189,7 @@ fn other_accounts(paths: &Paths, cfg: &Config, alias: Option<&str>) -> Vec<(Stri
         }
         let a = metrics::account_info(&p.dir.join(".claude.json"))
             .unwrap_or_default()
-            .or(p.account.clone().unwrap_or_default());
+            .or_recorded(p.account.clone());
         if !a.is_anonymous() {
             out.push((name.clone(), a));
         }

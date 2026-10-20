@@ -135,6 +135,15 @@ impl Account {
         }
     }
 
+    /// Fill the fields this one lacks from `recorded` when it describes the
+    /// same login, or when this one can't be told apart (no email, no UUID).
+    pub fn or_recorded(self, recorded: Option<Account>) -> Account {
+        match recorded {
+            Some(r) if self.is_anonymous() || self.same_login(&r) => self.or(r),
+            _ => self,
+        }
+    }
+
     /// Fill the fields this one lacks from `other`.
     pub fn or(self, other: Account) -> Account {
         Account {
