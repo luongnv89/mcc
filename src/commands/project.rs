@@ -18,7 +18,11 @@ use crate::ui;
 
 pub fn run(paths: &Paths, cfg: &mut Config, args: &ProjectArgs) -> Result<()> {
     match &args.action {
-        ProjectAction::Set { profile, path } => set(paths, cfg, profile, path.as_deref()),
+        ProjectAction::Set {
+            profile,
+            path,
+            allow,
+        } => set(paths, cfg, profile, path.as_deref(), allow),
         ProjectAction::Unset { path } => unset(paths, cfg, path.as_deref()),
         ProjectAction::List { json } => list(paths, cfg, *json),
     }
@@ -67,35 +71,81 @@ fn key(dir: &Path) -> String {
     dir.to_string_lossy().into_owned()
 }
 
-fn set(paths: &Paths, cfg: &mut Config, profile: &str, path: Option<&Path>) -> Result<()> {
-    let profile = match profile {
-        "default" | "claude" => "default",
-        name if cfg.profiles.contains_key(name) => name,
-        name => return Err(super::unknown_profile(name)),
-    };
+/// A profile as projects store it (`claude` is `default`), or a usage
+/// error when there is no such profile.
+fn profile_name<'a>(cfg: &Config, name: &'a str) -> Result<&'a str> {
+    match name {
+        "default" | "claude" => Ok("default"),
+        name if cfg.profiles.contains_key(name) => Ok(name),
+        name => Err(super::unknown_profile(name)),
+    }
+}
+
+fn set(
+    paths: &Paths,
+    cfg: &mut Config,
+    profile: &str,
+    path: Option<&Path>,
+    allow: &[String],
+) -> Result<()> {
+    let profile = profile_name(cfg, profile)?;
+    let allow = allow
+        .iter()
+        .map(|name| profile_name(cfg, name).map(str::to_string))
+        .collect::<Result<Vec<_>>>()?;
     let dir = match path {
         Some(p) => existing_dir(p)?,
         None => project_root(&current_dir()?, &paths.home),
     };
-    let previous = cfg.projects.insert(
-        key(&dir),
-        config::Project {
-            profile: profile.to_string(),
-        },
-    );
+    // The whole entry is replaced: without --allow, the list is cleared.
+    let project = config::Project::new(profile, allow);
+    let (also, choices) = match project.allow.as_slice() {
+        [] => (String::new(), " or start it anyway"),
+        names => (
+            format!("; at its limit it can also offer {}", ticked(names)),
+            ", start it anyway, or start an allowed profile",
+        ),
+    };
+    let allowed = project.allow.clone();
+    let previous = cfg.projects.insert(key(&dir), project);
     cfg.save(&paths.config_file)?;
-    let was = match previous {
-        Some(p) if p.profile != profile => format!(" (was `{}`)", p.profile),
-        _ => String::new(),
+    // What changed: the profile, and the profiles it no longer allows.
+    let mut was = Vec::new();
+    if let Some(p) = &previous {
+        if p.profile != profile {
+            was.push(format!("was `{}`", p.profile));
+        }
+        let dropped: Vec<String> = p
+            .allow
+            .iter()
+            .filter(|n| *n != profile && !allowed.contains(n))
+            .cloned()
+            .collect();
+        if !dropped.is_empty() {
+            was.push(format!("no longer allows {}", ticked(&dropped)));
+        }
+    }
+    let was = match was.as_slice() {
+        [] => String::new(),
+        notes => format!(" ({})", notes.join("; ")),
     };
     ui::success(&format!(
-        "{}: `mcc run` starts `{profile}` here{was}",
+        "{}: `mcc run` starts `{profile}` here{was}{also}",
         paths.display(&dir)
     ));
-    ui::hint(
-        "when it is at its limit, `mcc run` asks which profile to start; `mcc list` shows every project",
-    );
+    ui::hint(&format!(
+        "when it is at its limit, `mcc run` asks whether to wait (the default){choices}; `mcc list` shows every project"
+    ));
     Ok(())
+}
+
+/// "`lab`, `side`".
+pub fn ticked(names: &[String]) -> String {
+    names
+        .iter()
+        .map(|n| format!("`{n}`"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn unset(paths: &Paths, cfg: &mut Config, path: Option<&Path>) -> Result<()> {
@@ -139,6 +189,7 @@ fn unset(paths: &Paths, cfg: &mut Config, path: Option<&Path>) -> Result<()> {
 struct Entry<'a> {
     path: &'a str,
     profile: &'a str,
+    allow: &'a [String],
 }
 
 fn list(paths: &Paths, cfg: &Config, json: bool) -> Result<()> {
@@ -150,6 +201,7 @@ fn list(paths: &Paths, cfg: &Config, json: bool) -> Result<()> {
             .map(|(path, p)| Entry {
                 path,
                 profile: &p.profile,
+                allow: &p.allow,
             })
             .collect();
         serde_json::to_writer_pretty(&mut out, &entries)?;
@@ -163,7 +215,7 @@ fn list(paths: &Paths, cfg: &Config, json: bool) -> Result<()> {
     }
     let here = current_dir().ok();
     let here = here.as_deref().and_then(|d| lookup(cfg, d)).map(|(p, _)| p);
-    let rows: Vec<(String, String)> = cfg
+    let rows: Vec<(String, &str, String, &str)> = cfg
         .projects
         .iter()
         .map(|(path, p)| {
@@ -172,21 +224,44 @@ fn list(paths: &Paths, cfg: &Config, json: bool) -> Result<()> {
             } else {
                 ""
             };
+            let allow = match p.allow.as_slice() {
+                [] => "—".to_string(),
+                names => names.join(","),
+            };
             (
                 paths.display(Path::new(path)),
-                format!("{}{mark}", p.profile),
+                p.profile.as_str(),
+                allow,
+                mark,
             )
         })
         .collect();
-    let width = rows
+    let w_path = rows
         .iter()
-        .map(|(p, _)| p.chars().count())
+        .map(|r| r.0.chars().count())
         .max()
         .unwrap_or(0)
         .max(7);
-    writeln!(out, "{:<width$}  PROFILE", "PROJECT")?;
-    for (path, profile) in rows {
-        writeln!(out, "{path:<width$}  {profile}")?;
+    let w_profile = rows
+        .iter()
+        .map(|r| r.1.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(7);
+    let w_allow = rows
+        .iter()
+        .map(|r| r.2.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(5);
+    writeln!(
+        out,
+        "{:<w_path$}  {:<w_profile$}  ALLOW",
+        "PROJECT", "PROFILE"
+    )?;
+    for (path, profile, allow, mark) in rows {
+        let line = format!("{path:<w_path$}  {profile:<w_profile$}  {allow:<w_allow$}{mark}");
+        writeln!(out, "{}", line.trim_end())?;
     }
     Ok(())
 }
@@ -198,12 +273,8 @@ mod tests {
     fn cfg_with(projects: &[(&str, &str)]) -> Config {
         let mut cfg = Config::default();
         for (dir, profile) in projects {
-            cfg.projects.insert(
-                dir.to_string(),
-                config::Project {
-                    profile: profile.to_string(),
-                },
-            );
+            cfg.projects
+                .insert(dir.to_string(), config::Project::new(profile, Vec::new()));
         }
         cfg
     }

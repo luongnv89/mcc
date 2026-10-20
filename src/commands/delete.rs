@@ -192,20 +192,29 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &DeleteArgs) -> Result<()> {
     let step = steps.start("Update registry");
     let registered = cfg.profiles.remove(alias).is_some();
     let projects = cfg.remove_project_defaults(alias);
-    if registered || !projects.is_empty() {
+    let allowing = cfg.remove_from_allow_lists(alias);
+    if registered || !projects.is_empty() || !allowing.is_empty() {
         cfg.save(&paths.config_file)?;
-        if projects.is_empty() {
-            step.ok("");
-        } else {
-            let dirs: Vec<String> = projects
-                .iter()
+        let dirs = |dirs: &[String]| {
+            dirs.iter()
                 .map(|d| paths.display(Path::new(d)))
-                .collect();
-            step.ok(&format!(
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let mut notes = Vec::new();
+        if !projects.is_empty() {
+            notes.push(format!(
                 "removed it as the project default of {}",
-                dirs.join(", ")
+                dirs(&projects)
             ));
         }
+        if !allowing.is_empty() {
+            notes.push(format!(
+                "removed it from the allowed profiles of {}",
+                dirs(&allowing)
+            ));
+        }
+        step.ok(&notes.join("; "));
     } else {
         step.skip("not registered");
     }

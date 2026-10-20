@@ -68,6 +68,27 @@ pub struct Profile {
 pub struct Project {
     /// An mcc profile's name, or `default` for ~/.claude.
     pub profile: String,
+    /// The other profiles `mcc run` may offer when `profile` is at its limit
+    /// (`mcc project set --allow`), by name. Left out of the file while empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow: Vec<String>,
+}
+
+impl Project {
+    /// A project that starts `profile` and also allows `allow`: each name
+    /// once, in order, and never `profile` itself.
+    pub fn new(profile: &str, allow: impl IntoIterator<Item = String>) -> Self {
+        let mut list: Vec<String> = Vec::new();
+        for name in allow {
+            if name != profile && !list.contains(&name) {
+                list.push(name);
+            }
+        }
+        Self {
+            profile: profile.to_string(),
+            allow: list,
+        }
+    }
 }
 
 impl Config {
@@ -107,6 +128,35 @@ impl Config {
             n += 1;
         }
         n
+    }
+
+    /// Rename `old` to `new` in the projects' allow lists (`mcc rename`).
+    /// Returns how many changed.
+    pub fn rename_in_allow_lists(&mut self, old: &str, new: &str) -> usize {
+        let mut n = 0;
+        for p in self.projects.values_mut() {
+            if p.allow.iter().any(|a| a == old) {
+                let allow = std::mem::take(&mut p.allow)
+                    .into_iter()
+                    .map(|a| if a == old { new.to_string() } else { a });
+                *p = Project::new(&p.profile, allow);
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// Remove `alias` from the projects' allow lists (`mcc delete`); the
+    /// projects stay. Returns the directories of those that changed.
+    pub fn remove_from_allow_lists(&mut self, alias: &str) -> Vec<String> {
+        let mut changed = Vec::new();
+        for (dir, p) in &mut self.projects {
+            if p.allow.iter().any(|a| a == alias) {
+                p.allow.retain(|a| a != alias);
+                changed.push(dir.clone());
+            }
+        }
+        changed
     }
 
     /// Remove the project defaults naming `alias` (`mcc delete`). Returns
@@ -191,12 +241,8 @@ mod tests {
             ("/src/b", "default"),
             ("/src/c", "work"),
         ] {
-            cfg.projects.insert(
-                dir.into(),
-                Project {
-                    profile: profile.into(),
-                },
-            );
+            cfg.projects
+                .insert(dir.into(), Project::new(profile, Vec::new()));
         }
         cfg.save(&path).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
@@ -213,6 +259,63 @@ mod tests {
         assert_eq!(back.remove_project_defaults("job"), ["/src/a", "/src/c"]);
         assert_eq!(back.projects.keys().collect::<Vec<_>>(), ["/src/b"]);
         assert!(back.remove_project_defaults("nope").is_empty());
+    }
+
+    /// A config with project defaults written before allow lists existed:
+    /// saving it again writes the same bytes (no `allow` key).
+    #[test]
+    fn legacy_project_defaults_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let legacy = "# mcc configuration — managed by `mcc`; safe to edit by hand.\n\n\
+            [sync]\nexclude = []\nextra = []\n\n\
+            [usage]\nshow_email = false\n\n\
+            [profiles]\n\n\
+            [projects.\"/src/a\"]\nprofile = \"work\"\n";
+        std::fs::write(&path, legacy).unwrap();
+        let cfg = Config::load(&path).unwrap();
+        assert!(cfg.projects["/src/a"].allow.is_empty());
+        cfg.save(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), legacy);
+    }
+
+    #[test]
+    fn allow_lists_round_trip_and_follow_profiles() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut cfg = Config::default();
+        let names = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // Each name once, never the project's own profile.
+        let a = Project::new("work", names(&["lab", "work", "lab"]));
+        assert_eq!(a.allow, ["lab"]);
+        cfg.projects.insert("/src/a".into(), a);
+        cfg.projects.insert(
+            "/src/b".into(),
+            Project::new("default", names(&["lab", "side"])),
+        );
+        cfg.projects
+            .insert("/src/c".into(), Project::new("lab", Vec::new()));
+        cfg.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("[projects.\"/src/a\"]\nprofile = \"work\"\nallow = [\"lab\"]\n"),
+            "{text}"
+        );
+        let mut back = Config::load(&path).unwrap();
+        assert_eq!(back.projects, cfg.projects);
+
+        // Renamed in every allow list; a project's own profile drops out.
+        assert_eq!(back.rename_in_allow_lists("lab", "work"), 2);
+        assert!(back.projects["/src/a"].allow.is_empty());
+        assert_eq!(back.projects["/src/b"].allow, ["work", "side"]);
+        assert_eq!(back.projects["/src/c"].profile, "lab");
+        assert_eq!(back.rename_in_allow_lists("nope", "x"), 0);
+
+        // Removed from the allow lists; the projects stay.
+        assert_eq!(back.remove_from_allow_lists("work"), ["/src/b"]);
+        assert_eq!(back.projects["/src/b"].allow, ["side"]);
+        assert_eq!(back.projects.len(), 3);
+        assert!(back.remove_from_allow_lists("nope").is_empty());
     }
 
     #[test]

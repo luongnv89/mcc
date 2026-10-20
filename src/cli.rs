@@ -16,6 +16,16 @@ macro_rules! share_tos_note {
 }
 pub(crate) use share_tos_note;
 
+/// The terms-of-service note printed whenever `mcc run` starts a profile
+/// other than the project's. A macro so the help text below can include it
+/// verbatim.
+macro_rules! run_tos_note {
+    () => {
+        "⚠ You chose to start an account other than this project's. Use only accounts you own, and don't use several accounts to get around usage limits — doing so can violate Anthropic's Consumer Terms (https://www.anthropic.com/legal/consumer-terms) and Usage Policy (https://www.anthropic.com/legal/aup)."
+    };
+}
+pub(crate) use run_tos_note;
+
 const ABOUT: &str = "mcc — run several Claude Code accounts side by side.
 
 Each profile is a separate Claude Code config directory (CLAUDE_CONFIG_DIR)
@@ -150,14 +160,36 @@ pub enum Command {
 
     /// Choose the profile `mcc run` starts with in a project
     #[command(
-        after_help = "Examples:\n  mcc project set work          `mcc run` starts `work` in this project\n  mcc project set default --path ~/code/site\n  mcc project list              Every project and its profile\n  mcc project unset             Remove the project default that applies here\n\nA project is a directory: by default the top of the git repository you are\nin, else the current directory. It covers everything below it, and the\ndeepest project containing the current directory applies. Project defaults\nare kept in ~/.mcc/config.toml:\n\n  [projects.\"/Users/me/code/app\"]\n  profile = \"work\"\n\n`mcc rename` updates them; `mcc delete` removes the ones naming the profile."
+        after_help = "Examples:\n  mcc project set work          `mcc run` starts `work` in this project\n  mcc project set work --allow lab\n  mcc project set default --path ~/code/site\n  mcc project list              Every project, its profile and allowed profiles\n  mcc project unset             Remove the project default that applies here\n\nA project is a directory: by default the top of the git repository you are\nin, else the current directory. It covers everything below it, and the\ndeepest project containing the current directory applies.\n\nWhen the project's profile is at its limit, `mcc run` asks whether to wait\n(the default) or start it anyway. It offers another profile only when the\nproject allows it with `--allow` (repeat it, or separate names with commas).\nRunning `set` again replaces the list: without `--allow`, it is cleared.\nProject defaults are kept in ~/.mcc/config.toml:\n\n  [projects.\"/Users/me/code/app\"]\n  profile = \"work\"\n  allow = [\"lab\"]\n\n`mcc rename` updates them; `mcc delete` removes the ones naming the profile\nand takes it off the allow lists."
     )]
     Project(ProjectArgs),
 
     /// Start Claude Code with the current project's profile
-    #[command(
-        after_help = "Examples:\n  mcc run                       Start Claude Code with this project's profile\n  mcc run -- --resume           Pass arguments to claude after `--`\n  mcc run --profile lab         Start `lab` here instead (usage isn't checked)\n  mcc run --dry-run             Print the profile that would start, and why\n\nThe profile that starts is the project's default (`mcc project set`), or\nthe default profile (~/.claude) outside any project. mcc never switches\naccounts on its own: when that profile is at its 5-hour or weekly limit,\n`mcc run` shows every profile's usage and asks which one to start. Without\na terminal it stops instead (exit 2); start one with `--profile`.\n\nIf the profile's usage can't be read (offline, expired login,\nMCC_NO_USAGE=1), it starts. Sessions are kept per profile, so `--resume` in\nanother profile won't list this project's sessions unless both profiles\nshare sessions (`mcc help share`)."
-    )]
+    #[command(after_help = concat!(
+        "Examples:\n",
+        "  mcc run                       Start Claude Code with this project's profile\n",
+        "  mcc run -- --resume           Pass arguments to claude after `--`\n",
+        "  mcc run --profile lab         Start `lab` here instead (usage isn't checked)\n",
+        "  mcc run --dry-run             Print the profile that would start, and why\n",
+        "\n",
+        "The profile that starts is the project's default (`mcc project set`), or\n",
+        "the default profile (~/.claude) outside any project. mcc never switches\n",
+        "accounts on its own. When that profile is at its 5-hour or weekly limit,\n",
+        "`mcc run` asks what to do. Waiting (starting nothing) is the default, and\n",
+        "starting it anyway comes next. Other profiles are offered only when the\n",
+        "project allows them (`mcc project set work --allow lab`), by name and\n",
+        "without their usage. Without a terminal it stops instead (exit 2).\n",
+        "\n",
+        "Starting a profile other than the project's, from the prompt or with\n",
+        "`--profile`, prints this note on stderr:\n",
+        "\n",
+        run_tos_note!(),
+        "\n\n",
+        "If the profile's usage can't be read (offline, expired login,\n",
+        "MCC_NO_USAGE=1), it starts. Sessions are kept per profile, so `--resume` in\n",
+        "another profile won't list this project's sessions unless both profiles\n",
+        "share sessions (`mcc help share`)."
+    ))]
     Run(RunArgs),
 
     /// Rewrite profiles' launchers and shell aliases from the current templates
@@ -292,6 +324,10 @@ pub enum ProjectAction {
         /// Project directory (default: the top of the current git repository, else the current directory)
         #[arg(long, value_name = "DIR")]
         path: Option<PathBuf>,
+
+        /// Another profile `mcc run` may offer here when PROFILE is at its limit (repeatable or comma-separated; replaces the list)
+        #[arg(long, value_name = "PROFILE", value_delimiter = ',')]
+        allow: Vec<String>,
     },
 
     /// Remove a project default (default: the one that applies here)
@@ -301,7 +337,7 @@ pub enum ProjectAction {
         path: Option<PathBuf>,
     },
 
-    /// List every project and its profile
+    /// List every project with its profile and allowed profiles
     #[command(visible_alias = "ls")]
     List {
         /// Output JSON (to stdout) instead of a table
