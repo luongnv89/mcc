@@ -300,6 +300,7 @@ fn launch(paths: &Paths, cfg: &Config, p: &Profile, args: &RunArgs) -> Result<()
     let mut cmd = std::process::Command::new(&bin);
     cmd.args(&args.args);
     profile_env(&mut cmd, paths, p);
+    super::banner::show_on_stderr(paths, cfg, &p.name);
     crate::log::write(
         "INFO",
         &format!("run: exec {} as profile {}", bin.display(), p.name),

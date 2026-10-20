@@ -24,7 +24,7 @@ pub fn run(paths: &Paths, cfg: &Config, args: &ListArgs) -> Result<()> {
     all.extend(
         cfg.profiles
             .iter()
-            .map(|(name, p)| metrics::mcc_profile(name, p, paths)),
+            .map(|(name, p)| metrics::mcc_profile(name, p, paths, cfg.launch.banner)),
     );
     for m in &mut all {
         m.project_defaults = cfg
@@ -90,7 +90,7 @@ pub fn run(paths: &Paths, cfg: &Config, args: &ListArgs) -> Result<()> {
             if all.len() == 1 { "" } else { "s" },
             ui::human_size(total)
         ));
-        sharing_notes(&all);
+        sharing_notes(&all, cfg.launch.banner);
         let names: Vec<&str> = all.iter().map(|m| m.name.as_str()).collect();
         let usages: Vec<&Usage> = all.iter().map(|m| &m.usage).collect();
         if let Some(hint) = usage::no_data_hint(&names, &usages) {
@@ -100,15 +100,22 @@ pub fn run(paths: &Paths, cfg: &Config, args: &ListArgs) -> Result<()> {
     Ok(())
 }
 
-/// Footnotes (stderr) for session sharing and launchers that predate it.
-fn sharing_notes(all: &[ProfileMetrics]) {
+/// Footnotes (stderr) for session sharing and out-of-date launchers.
+/// `banner` is `[launch] banner`: the launch banner is mentioned only then.
+fn sharing_notes(all: &[ProfileMetrics], banner: bool) {
     if all.iter().any(|m| m.share_sessions) {
         ui::info(
             "shared: sessions shared with every sharing profile of the same group (their session counts include all of them)",
         );
     }
     let stale = all.iter().filter(|m| !m.launcher_current).count();
-    if stale > 0 {
+    if stale > 0 && banner {
+        ui::hint(&format!(
+            "{stale} launcher{} {} out of date — run `mcc refresh-launchers` so `<alias> --mcc-share` and the launch banner work",
+            if stale == 1 { "" } else { "s" },
+            if stale == 1 { "is" } else { "are" },
+        ));
+    } else if stale > 0 {
         ui::hint(&format!(
             "{stale} launcher{} predate{} session sharing — run `mcc refresh-launchers` so `<alias> --mcc-share` works",
             if stale == 1 { "" } else { "s" },

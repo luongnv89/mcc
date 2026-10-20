@@ -653,6 +653,16 @@ fn check_launcher(d: &mut Doctor, name: &str, p: &Profile) {
             ),
             refresh,
         );
+    } else if d.cfg.launch.banner && !shell::launcher_shows_banner(w) {
+        ok = false;
+        d.push_cmd(
+            "launcher",
+            Level::Warn,
+            format!(
+                "the launcher {shown} doesn't show the launch banner, which `[launch] banner` turns on"
+            ),
+            refresh,
+        );
     }
     if ok {
         d.push(

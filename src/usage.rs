@@ -149,7 +149,7 @@ impl Usage {
         }
     }
 
-    fn ok(five_hour: Option<Window>, weekly: Option<Window>) -> Self {
+    pub(crate) fn ok(five_hour: Option<Window>, weekly: Option<Window>) -> Self {
         Self {
             status: Status::Ok,
             reason: None,

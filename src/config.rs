@@ -29,6 +29,10 @@ pub struct Config {
     /// Left out of the file while it has its defaults.
     #[serde(default, skip_serializing_if = "PrivacyConfig::is_default")]
     pub privacy: PrivacyConfig,
+    /// `[launch]`: what happens when a profile starts. Left out of the file
+    /// while it has its defaults.
+    #[serde(default, skip_serializing_if = "LaunchConfig::is_default")]
+    pub launch: LaunchConfig,
     #[serde(default)]
     pub profiles: BTreeMap<String, Profile>,
     /// Project directory (absolute, symlinks resolved) → the profile `mcc run`
@@ -57,6 +61,22 @@ pub struct PrivacyConfig {
 }
 
 impl PrivacyConfig {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LaunchConfig {
+    /// Print a one-line banner on stderr when a profile starts from its
+    /// launcher or `mcc run`: its name in its color, its label and its
+    /// cached usage, e.g. `▶ work · Acme · 5h 42%`. Off by default; only
+    /// when stderr is a terminal, and never from the network.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub banner: bool,
+}
+
+impl LaunchConfig {
     fn is_default(&self) -> bool {
         *self == Self::default()
     }

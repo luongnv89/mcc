@@ -124,8 +124,10 @@ pub fn default_profile(paths: &Paths) -> ProfileMetrics {
     )
 }
 
-pub fn mcc_profile(name: &str, p: &Profile, paths: &Paths) -> ProfileMetrics {
-    collect(
+/// `banner` is `[launch] banner`: with it on, a launcher without the banner
+/// block is out of date.
+pub fn mcc_profile(name: &str, p: &Profile, paths: &Paths, banner: bool) -> ProfileMetrics {
+    let mut m = collect(
         name,
         name,
         false,
@@ -133,7 +135,12 @@ pub fn mcc_profile(name: &str, p: &Profile, paths: &Paths) -> ProfileMetrics {
         &p.dir.join(".claude.json"),
         Some(p),
         paths,
-    )
+    );
+    m.launcher_current = p
+        .wrapper
+        .as_deref()
+        .is_none_or(|w| !shell::is_mcc_wrapper(w) || !shell::launcher_needs_refresh(w, banner));
+    m
 }
 
 fn collect(
@@ -239,9 +246,8 @@ fn collect(
         share_group: reg
             .filter(|r| r.share_sessions)
             .map(|r| r.share_group.clone().unwrap_or_else(|| "default".into())),
-        launcher_current: reg
-            .and_then(|r| r.wrapper.as_deref())
-            .is_none_or(|w| !shell::is_mcc_wrapper(w) || shell::launcher_is_current(w)),
+        // Set by `mcc_profile`, which knows whether the banner is on.
+        launcher_current: true,
         project_defaults: Vec::new(),
         sync: None,
         usage: Usage::default(),
@@ -424,10 +430,10 @@ mod tests {
             dir.to_str().unwrap()
         ))
         .unwrap();
-        assert_eq!(mcc_profile("work", &p, &paths).plugins_installed, 3);
+        assert_eq!(mcc_profile("work", &p, &paths, false).plugins_installed, 3);
         // With its own plugins it counts its own (none here).
         p.link.clear();
-        assert_eq!(mcc_profile("work", &p, &paths).plugins_installed, 0);
+        assert_eq!(mcc_profile("work", &p, &paths, false).plugins_installed, 0);
     }
 
     #[test]

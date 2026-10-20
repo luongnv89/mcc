@@ -30,6 +30,12 @@ fn end(id: &str) -> String {
 /// rewritten by `mcc refresh-launchers`.
 pub const LAUNCHER_MARKER: &str = "# mcc-launcher: 2";
 
+/// The version [`LAUNCHER_MARKER`] stands for.
+const LAUNCHER_VERSION: u32 = 2;
+
+/// Opens the launch-banner block, written only while `[launch] banner` is on.
+pub const BANNER_MARKER: &str = "# Show the launch banner ([launch] banner = true).";
+
 /// The launch flag that turns on session sharing. Only the wrapper knows it:
 /// it is stripped before claude starts.
 pub const SHARE_FLAG: &str = "--mcc-share";
@@ -44,6 +50,13 @@ pub const SHARE_FLAG: &str = "--mcc-share";
 /// exactly what launchers did before session sharing existed, and the
 /// `CLAUDE_CONFIG_DIR` line is unchanged: the keychain login is keyed on it.
 ///
+/// With `banner` (`[launch] banner` is on) the script also runs
+/// `mcc launch-banner <alias>` when its stderr is a terminal. mcc's stdout
+/// goes to the script's stderr and mcc's own errors are discarded, so the
+/// banner never reaches Claude Code's stdout (`<alias> -p … | jq`) and an mcc
+/// without the command stays quiet. Without `banner` the block is left out,
+/// so nothing but claude runs on a plain launch.
+///
 /// With `plugin_root` (a profile sharing the default's plugins) the script
 /// also exports `CLAUDE_CODE_PLUGIN_CACHE_DIR`; without it the script unsets
 /// that variable only when it holds the default's plugins root (mcc's own
@@ -55,6 +68,7 @@ pub fn wrapper_script(
     claude_bin: Option<&Path>,
     mcc_bin: Option<&Path>,
     plugin_root: Option<&Path>,
+    banner: bool,
 ) -> String {
     let fallback = match claude_bin {
         Some(bin) => format!("exec {} \"$@\"", sh_quote(&bin.to_string_lossy())),
@@ -65,6 +79,22 @@ pub fn wrapper_script(
         Some(bin) => format!("{} {share}", sh_quote(&bin.to_string_lossy())),
         None => "echo \"mcc not found on PATH\" >&2; exit 127".to_string(),
     };
+    let banner = if banner {
+        let call = format!("launch-banner {} >&2 2>/dev/null", sh_quote(alias));
+        let fallback = match mcc_bin {
+            Some(bin) => {
+                let bin = sh_quote(&bin.to_string_lossy());
+                format!("\n  elif [ -x {bin} ]; then {bin} {call}")
+            }
+            None => String::new(),
+        };
+        format!(
+            "{BANNER_MARKER}\nif [ -t 2 ]; then\n  \
+             if command -v mcc >/dev/null 2>&1; then mcc {call}{fallback}\n  fi\nfi\n"
+        )
+    } else {
+        String::new()
+    };
     format!(
         "#!/bin/sh\n{WRAPPER_MARKER}\n{LAUNCHER_MARKER}\n\
          # Claude Code profile \"{alias}\". Remove with: mcc delete {alias}\n\
@@ -74,6 +104,7 @@ pub fn wrapper_script(
          case \"$1\" in\n  {SHARE_FLAG})\n    shift\n    \
          if command -v mcc >/dev/null 2>&1; then mcc {share}\n    \
          else {mcc_fallback}; fi ;;\nesac\n\
+         {banner}\
          if command -v claude >/dev/null 2>&1; then exec claude \"$@\"; fi\n\
          {fallback}\n",
         dir = paths.shell_expr(profile_dir),
@@ -106,6 +137,7 @@ pub fn launcher_script(
     profile_dir: &Path,
     claude_bin: Option<&Path>,
     plugin_root: Option<&Path>,
+    banner: bool,
 ) -> String {
     let mcc_bin = std::env::current_exe().ok();
     wrapper_script(
@@ -115,6 +147,7 @@ pub fn launcher_script(
         claude_bin,
         mcc_bin.as_deref(),
         plugin_root,
+        banner,
     )
 }
 
@@ -130,11 +163,12 @@ pub fn write_wrapper(
     profile_dir: &Path,
     claude_bin: Option<&Path>,
     plugin_root: Option<&Path>,
+    banner: bool,
 ) -> Result<PathBuf> {
     let path = paths.wrapper(alias);
     install_launcher(
         &path,
-        &launcher_script(paths, alias, profile_dir, claude_bin, plugin_root),
+        &launcher_script(paths, alias, profile_dir, claude_bin, plugin_root, banner),
     )?;
     Ok(path)
 }
@@ -146,11 +180,37 @@ pub fn is_mcc_wrapper(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// True when the launcher at `path` was written from the current template.
-pub fn launcher_is_current(path: &Path) -> bool {
+/// The template version of the launcher at `path`, from its
+/// `# mcc-launcher: N` line: 0 for a launcher without one (or no file).
+pub fn launcher_version(path: &Path) -> u32 {
     std::fs::read_to_string(path)
-        .map(|s| s.lines().any(|l| l == LAUNCHER_MARKER))
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find_map(|l| l.strip_prefix("# mcc-launcher: ")?.trim().parse().ok())
+        })
+        .unwrap_or(0)
+}
+
+/// True when the launcher at `path` was written from the current template
+/// (it understands `--mcc-share`).
+pub fn launcher_is_current(path: &Path) -> bool {
+    launcher_version(path) >= LAUNCHER_VERSION
+}
+
+/// True when the launcher at `path` runs `mcc launch-banner`.
+pub fn launcher_shows_banner(path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .map(|s| s.lines().any(|l| l == BANNER_MARKER))
         .unwrap_or(false)
+}
+
+/// True when the mcc launcher at `path` should be rewritten by
+/// `mcc refresh-launchers`: it predates session sharing, or `[launch] banner`
+/// is on (`banner`) and it doesn't show the banner. A leftover banner block
+/// with the banner off is harmless (`mcc launch-banner` prints nothing).
+pub fn launcher_needs_refresh(path: &Path, banner: bool) -> bool {
+    !launcher_is_current(path) || (banner && !launcher_shows_banner(path))
 }
 
 /// The rc block body defining the alias for one profile. With a launcher the
@@ -459,12 +519,13 @@ mod tests {
             Some(Path::new("/opt/it's/claude")),
             Some(Path::new("/opt/bin/mcc")),
             None,
+            false,
         );
         assert!(w.starts_with("#!/bin/sh\n# managed-by: mcc\n# mcc-launcher: 2\n"));
         assert!(w.contains("export CLAUDE_CONFIG_DIR=\"$HOME/.mcc/profiles/work\"\n"));
         assert!(w.contains("if command -v claude >/dev/null 2>&1; then exec claude \"$@\"; fi\n"));
         assert!(w.contains("exec '/opt/it'\\''s/claude' \"$@\"\n"), "{w}");
-        assert!(wrapper_script(&paths, "work", &dir, None, None, None).contains("exit 127"));
+        assert!(wrapper_script(&paths, "work", &dir, None, None, None, false).contains("exit 127"));
         // Without shared plugins the launcher only clears mcc's own value.
         assert!(w.contains(
             "[ \"${CLAUDE_CODE_PLUGIN_CACHE_DIR:-}\" = \"$HOME/.claude/plugins\" ] && unset CLAUDE_CODE_PLUGIN_CACHE_DIR\n"
@@ -477,7 +538,7 @@ mod tests {
         let paths = Paths::new(PathBuf::from("/h"));
         let dir = paths.profile_dir("work");
         let root = crate::plugins::shared_root(&paths);
-        let w = wrapper_script(&paths, "work", &dir, None, None, Some(&root));
+        let w = wrapper_script(&paths, "work", &dir, None, None, Some(&root), false);
         assert!(
             w.contains(
                 "export CLAUDE_CONFIG_DIR=\"$HOME/.mcc/profiles/work\"\n\
@@ -505,6 +566,7 @@ mod tests {
             Some(Path::new("/opt/claude")),
             Some(Path::new("/opt/bin/mcc")),
             None,
+            false,
         );
         // The CLAUDE_CONFIG_DIR export (the keychain service is a hash of the
         // value it produces) and the exec lines are byte-identical to v0.2.0.
@@ -522,25 +584,60 @@ mod tests {
         );
         // The only additions on the launch path are clearing mcc's own
         // plugins root (#47) and the `--mcc-share` branch, placed between the
-        // export and the exec lines.
+        // export and the exec lines. With the banner off there is no banner
+        // block (#59): nothing but claude runs on a plain launch.
+        let shared = [
+            "# mcc-launcher: 2",
+            "# Start it with --mcc-share to share its sessions (see: mcc help share).",
+            "[ \"${CLAUDE_CODE_PLUGIN_CACHE_DIR:-}\" = \"$HOME/.claude/plugins\" ] && unset CLAUDE_CODE_PLUGIN_CACHE_DIR",
+            "case \"$1\" in",
+            "  --mcc-share)",
+            "    shift",
+            "    if command -v mcc >/dev/null 2>&1; then mcc share 'work' --from-launch || exit $?",
+            "    else '/opt/bin/mcc' share 'work' --from-launch || exit $?; fi ;;",
+            "esac",
+        ];
         let added: Vec<&str> = w.lines().filter(|l| !legacy.contains(l)).collect();
-        assert_eq!(
-            added,
-            [
-                "# mcc-launcher: 2",
-                "# Start it with --mcc-share to share its sessions (see: mcc help share).",
-                "[ \"${CLAUDE_CODE_PLUGIN_CACHE_DIR:-}\" = \"$HOME/.claude/plugins\" ] && unset CLAUDE_CODE_PLUGIN_CACHE_DIR",
-                "case \"$1\" in",
-                "  --mcc-share)",
-                "    shift",
-                "    if command -v mcc >/dev/null 2>&1; then mcc share 'work' --from-launch || exit $?",
-                "    else '/opt/bin/mcc' share 'work' --from-launch || exit $?; fi ;;",
-                "esac",
-            ],
-            "{w}"
+        assert_eq!(added, shared, "{w}");
+        assert!(!w.contains("launch-banner"), "{w}");
+
+        // With the banner on, the launch-banner block comes after the
+        // `--mcc-share` branch, and the launch lines are unchanged.
+        let on = wrapper_script(
+            &paths,
+            "work",
+            &dir,
+            Some(Path::new("/opt/claude")),
+            Some(Path::new("/opt/bin/mcc")),
+            None,
+            true,
         );
-        let no_mcc = wrapper_script(&paths, "work", &dir, None, None, None);
+        assert!(
+            on.ends_with(&format!("{}\n{}\n", legacy[4], legacy[5])),
+            "{on}"
+        );
+        let added: Vec<&str> = on.lines().filter(|l| !legacy.contains(l)).collect();
+        let mut expected = shared.to_vec();
+        expected.extend([
+            BANNER_MARKER,
+            "if [ -t 2 ]; then",
+            "  if command -v mcc >/dev/null 2>&1; then mcc launch-banner 'work' >&2 2>/dev/null",
+            "  elif [ -x '/opt/bin/mcc' ]; then '/opt/bin/mcc' launch-banner 'work' >&2 2>/dev/null",
+            "  fi",
+            "fi",
+        ]);
+        assert_eq!(added, expected, "{on}");
+
+        let no_mcc = wrapper_script(&paths, "work", &dir, None, None, None, false);
         assert!(no_mcc.contains("else echo \"mcc not found on PATH\" >&2; exit 127; fi ;;"));
+        assert!(!no_mcc.contains("launch-banner"), "{no_mcc}");
+        let no_mcc = wrapper_script(&paths, "work", &dir, None, None, None, true);
+        assert!(
+            no_mcc.contains(
+                "if [ -t 2 ]; then\n  if command -v mcc >/dev/null 2>&1; then mcc launch-banner 'work' >&2 2>/dev/null\n  fi\nfi\n"
+            ),
+            "{no_mcc}"
+        );
     }
 
     #[test]
@@ -551,9 +648,30 @@ mod tests {
         assert!(!launcher_is_current(&w));
         std::fs::write(&w, LEGACY_WRAPPER).unwrap();
         assert!(is_mcc_wrapper(&w) && !launcher_is_current(&w));
+        assert_eq!(launcher_version(&w), 0);
+        assert!(launcher_needs_refresh(&w, false) && launcher_needs_refresh(&w, true));
         let dir = paths.profile_dir("work");
-        std::fs::write(&w, wrapper_script(&paths, "work", &dir, None, None, None)).unwrap();
+        // With the banner off: current, no banner block, nothing to refresh.
+        std::fs::write(
+            &w,
+            wrapper_script(&paths, "work", &dir, None, None, None, false),
+        )
+        .unwrap();
         assert!(is_mcc_wrapper(&w) && launcher_is_current(&w));
+        assert_eq!(launcher_version(&w), 2);
+        assert!(!launcher_shows_banner(&w));
+        assert!(!launcher_needs_refresh(&w, false));
+        // ...until the banner is turned on.
+        assert!(launcher_needs_refresh(&w, true));
+        std::fs::write(
+            &w,
+            wrapper_script(&paths, "work", &dir, None, None, None, true),
+        )
+        .unwrap();
+        assert!(launcher_is_current(&w) && launcher_shows_banner(&w));
+        assert!(!launcher_needs_refresh(&w, true));
+        // A leftover block with the banner off is harmless.
+        assert!(!launcher_needs_refresh(&w, false));
 
         let rc = d.path().join(".zshrc");
         assert_eq!(block_body(&rc, "work"), None);

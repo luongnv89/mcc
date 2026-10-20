@@ -655,7 +655,14 @@ fn rewrite_launcher(
     let old = std::fs::read(wrapper).with_context(|| format!("reading {}", wrapper.display()))?;
     let env = cfg.env.as_ref();
     let claude_bin = crate::claude::find_binary(env.and_then(|e| e.claude_bin.as_deref()));
-    let script = shell::launcher_script(paths, alias, &p.dir, claude_bin.as_deref(), plugin_root);
+    let script = shell::launcher_script(
+        paths,
+        alias,
+        &p.dir,
+        claude_bin.as_deref(),
+        plugin_root,
+        cfg.launch.banner,
+    );
     if old != script.as_bytes() {
         undo.record(Undo::Launcher(wrapper.clone(), old));
         shell::install_launcher(wrapper, &script)?;

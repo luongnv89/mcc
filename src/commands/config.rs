@@ -40,6 +40,7 @@ pub const SETTABLE: &[(&str, &str)] = &[
     ),
     ("privacy.show_email", "true or false"),
     ("usage.live", "true or false"),
+    ("launch.banner", "true or false"),
     (
         "profiles.ALIAS.label",
         "a label of 1–64 characters (\"\" removes it)",
@@ -57,6 +58,7 @@ enum Key {
     SyncExtra,
     ShowEmail,
     Live,
+    Banner,
     Label(String),
     Color(String),
 }
@@ -104,6 +106,7 @@ fn settable(key: &str, parts: &[String]) -> Result<Key> {
         // `usage.show_email` is its name from before `[privacy]`.
         ["privacy" | "usage", "show_email"] => Key::ShowEmail,
         ["usage", "live"] => Key::Live,
+        ["launch", "banner"] => Key::Banner,
         ["profiles", alias, "label"] => Key::Label(alias.to_string()),
         ["profiles", alias, "color"] => Key::Color(alias.to_string()),
         ["profiles", alias, f] if f.starts_with("share_") => {
@@ -173,7 +176,7 @@ fn lookup(cfg: &Config, key: &str, parts: &[String]) -> Result<String> {
         (_, Ok(Key::ShowEmail)) => toml::Value::Boolean(cfg.show_email()),
         (Some(v), _) => v.clone(),
         // Left out of the file while it has its default.
-        (None, Ok(Key::Live)) => toml::Value::Boolean(false),
+        (None, Ok(Key::Live | Key::Banner)) => toml::Value::Boolean(false),
         (None, Ok(Key::Label(alias))) if cfg.profiles.contains_key(&alias) => {
             return Err(CliError::runtime(format!("\"{key}\" is not set"))
                 .hint(format!("set it with `mcc config set {key} <LABEL>`"))
@@ -214,6 +217,7 @@ fn set(paths: &Paths, key: &str, value: &str) -> Result<()> {
     let which = settable(key, &parts)?;
     // Held since main.rs took the lock, so nothing changes it meanwhile.
     let mut cfg = load(paths)?;
+    let banner = cfg.launch.banner;
     apply(&mut cfg, &which, value)?;
     cfg.save(&paths.config_file)?;
     crate::log::write("INFO", &format!("config: set {key} = {value:?}"));
@@ -221,6 +225,18 @@ fn set(paths: &Paths, key: &str, value: &str) -> Result<()> {
         "{key} set in {}",
         paths.display(&paths.config_file)
     ));
+    // Launchers include the banner call only while it is on; mcc never
+    // rewrites them on its own.
+    if which == Key::Banner && cfg.launch.banner != banner && !cfg.profiles.is_empty() {
+        ui::hint(&format!(
+            "run `mcc refresh-launchers` so profiles' launchers {} the launch banner",
+            if cfg.launch.banner {
+                "show"
+            } else {
+                "stop calling"
+            }
+        ));
+    }
     Ok(())
 }
 
@@ -244,6 +260,7 @@ fn apply(cfg: &mut Config, which: &Key, value: &str) -> Result<()> {
         }
         Key::ShowEmail => cfg.privacy.show_email = Some(parse_bool(value)?),
         Key::Live => cfg.usage.live = parse_bool(value)?,
+        Key::Banner => cfg.launch.banner = parse_bool(value)?,
         Key::Label(alias) => {
             let profile = cfg
                 .profiles
@@ -474,6 +491,7 @@ mod tests {
     fn settable_keys_parse() {
         assert_eq!(key("sync.exclude").unwrap(), Key::SyncExclude);
         assert_eq!(key("usage.live").unwrap(), Key::Live);
+        assert_eq!(key("launch.banner").unwrap(), Key::Banner);
         assert_eq!(
             key("profiles.work.label").unwrap(),
             Key::Label("work".into())
