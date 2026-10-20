@@ -68,16 +68,32 @@ brew install luongnv89/tap/mcc
 
 Homebrew builds mcc from source with its own Rust, so you don't need Rust installed. It also installs bash, zsh and fish completions. Update with `brew upgrade mcc`.
 
-### From source
-
-You need Rust (`cargo`).
+### Install script (prebuilt binary)
 
 ```sh
-# one-liner
 curl -fsSL https://raw.githubusercontent.com/luongnv89/mcc/main/install.sh | sh
+```
 
-# or from a clone
+The script downloads the prebuilt `mcc` for your platform (macOS or Linux, x86_64 or arm64) from the latest [GitHub release](https://github.com/luongnv89/mcc/releases), checks it against the release's SHA-256 checksum, and installs it into `~/.local/bin` (override with `MCC_INSTALL_DIR`). If `~/.local/bin` is not on your `PATH` (it isn't by default on macOS), the script tells you; add it with `export PATH="$HOME/.local/bin:$PATH"` in your shell profile. You don't need Rust. A checksum mismatch stops the install with nothing installed. `MCC_VERSION=v0.4.0` installs a given release. When the release has no binary for your platform (releases up to v0.3.0 have none), the script builds from source with `cargo` instead (at the `MCC_VERSION` tag when one is set). Older versions of the script installed into `~/.cargo/bin`; if an old `mcc` there still comes first on your `PATH`, the script warns you, and `cargo uninstall mcc` removes it.
+
+Each release lists `mcc-<target>.tar.gz` archives (`x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`; the Linux builds are static) with a `.sha256` file each and a `SHA256SUMS`, if you'd rather download one by hand:
+
+```sh
+curl -fsSLO https://github.com/luongnv89/mcc/releases/latest/download/mcc-aarch64-apple-darwin.tar.gz
+curl -fsSLO https://github.com/luongnv89/mcc/releases/latest/download/mcc-aarch64-apple-darwin.tar.gz.sha256
+shasum -a 256 -c mcc-aarch64-apple-darwin.tar.gz.sha256 && tar -xzf mcc-aarch64-apple-darwin.tar.gz mcc
+```
+
+### From source
+
+You need Rust (`cargo`, 1.88 or newer).
+
+```sh
+# from a clone (installs into ~/.cargo/bin)
 git clone https://github.com/luongnv89/mcc && cd mcc && ./install.sh
+
+# or force a source build with the one-liner
+curl -fsSL https://raw.githubusercontent.com/luongnv89/mcc/main/install.sh | MCC_FROM_SOURCE=1 sh
 
 # or directly with cargo
 cargo install --git https://github.com/luongnv89/mcc --locked
@@ -684,8 +700,9 @@ An alias must be 1–32 characters: lowercase letters, digits, `-` or `_`, start
 
 ```sh
 for p in $(mcc list --json | jq -r '.[] | select(.is_default | not) | .name'); do mcc delete "$p" --yes; done
-brew uninstall mcc    # if you installed with Homebrew
-cargo uninstall mcc   # if you installed from source
+brew uninstall mcc      # if you installed with Homebrew
+cargo uninstall mcc     # if you built from source with cargo
+rm -f ~/.local/bin/mcc  # if you used the install script
 rm -rf ~/.mcc
 ```
 
