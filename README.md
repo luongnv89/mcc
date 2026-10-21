@@ -1,8 +1,13 @@
-# mcc — multiple Claude Code profiles
-
+[![CI](https://github.com/luongnv89/mcc/actions/workflows/ci.yml/badge.svg)](https://github.com/luongnv89/mcc/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/luongnv89/mcc)](https://github.com/luongnv89/mcc/releases/latest)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Platform: macOS | Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](#install)
 
-Run several Claude Code accounts side by side, each with its own login, its own command, and the same setup as your main one.
+# One command per Claude Code account, same setup in each
+
+**mcc** — multiple Claude Code profiles. Run several Claude Code accounts side by side, each with its own login, its own command, and the same setup as your main one.
+
+[**Get started →**](#quick-start) · [Docs site](https://luongnv89.github.io/mcc/docs.html) · [Changelog](CHANGELOG.md)
 
 Output captured from a sandbox run (small demo setup; `claude` login shown with a test account):
 
@@ -38,9 +43,139 @@ $ work          # Claude Code with the "work" account
 $ claude        # Claude Code with your default account, unchanged
 ```
 
+## The problem
+
+Claude Code keeps one login and one setup in `~/.claude`. A second account, such as a work seat next to a personal plan, means doing this by hand:
+
+| By hand | With mcc |
+|---|---|
+| `CLAUDE_CONFIG_DIR=~/.claude-work claude` on every start | `work` |
+| Copy skills, agents, settings and MCP servers into each directory | `mcc add work --clone` copies them, never the credentials |
+| Fix every `~/.claude/...` path in hooks and settings | Paths to copied items are rewritten per profile |
+| Copies drift, with no record of what changed where | `mcc list` shows `3 behind`; `mcc sync` catches up, keeping local edits |
+| Open `/usage` in each account to see its limits | `mcc usage`: every account's 5-hour and weekly limits in one table |
+| Remember which repository belongs to which account | `mcc project set work` once, then `mcc run` |
+
+## How it works
+
 Claude Code reads its config from `CLAUDE_CONFIG_DIR`, which defaults to `~/.claude`. mcc gives each extra account its own directory and a command that sets the variable for you. It also keeps these profiles in sync with your default setup.
 
+```mermaid
+graph LR
+    C["claude"] --> D["~/.claude<br/>default account"]
+    W["work"] --> L["launcher<br/>~/.local/bin/work"]
+    L -->|"CLAUDE_CONFIG_DIR"| P["~/.mcc/profiles/work<br/>work account"]
+    R["mcc run<br/>in a project"] -->|"project's profile"| P
+```
+
+Setup flows one way, from the default profile into each profile. Credentials, history and sessions are never copied.
+
+```mermaid
+graph LR
+    D["~/.claude<br/>skills, agents, commands,<br/>settings, hooks, MCP servers"] -->|"mcc add --clone<br/>mcc sync"| W["work"]
+    D -->|"mcc add --clone<br/>mcc sync"| L["lab"]
+    W -.->|"mcc diff / mcc list"| S["behind · local edits · conflicts"]
+```
+
+`mcc run` starts the project's profile and never switches accounts on its own:
+
+```mermaid
+graph TD
+    R["mcc run"] --> Q{"Project's profile<br/>at its limit?"}
+    Q -->|"no, or unknown"| S["Start the project's profile"]
+    Q -->|"yes"| A["Ask: wait (default),<br/>start it anyway,<br/>or a profile the project allows"]
+```
+
+Where each file lives, and what clone and sync copy: [How it works in detail](#how-it-works-in-detail).
+
 ## Features
+
+| Feature | What you get |
+|---|---|
+| One command per account | `work`, `lab` and so on start Claude Code with their own login |
+| Clone without credentials | Skills, agents, settings and MCP servers copied; logins never |
+| Three-way sync | Keeps profile edits, reports conflicts, backs up everything it replaces |
+| Drift at a glance | `mcc list` and `mcc diff` show what is behind, edited or conflicting |
+| Usage in one table | 5-hour and weekly limits per account, read from the opt-in statusline cache |
+| Per-project profiles | `mcc run` starts the project's account; `mcc env` covers IDEs and direnv |
+| Shared plugins | Clones reuse the default's plugins (about 88 MB per profile, one real setup) |
+| Settings overlays | A profile keeps its own `model`, permissions or `env` through every sync |
+| Opt-in session sharing | `--resume` across your own profiles; mixing organizations refused by default |
+| `mcc doctor` | Checks every profile and prints a fix for each problem |
+| Safe changes | Failed `add` rolls back; rc file and sync overwrites are backed up first |
+
+macOS and Linux. Use mcc only with accounts you own. Every feature in full: [All features](#all-features).
+
+## Quick start
+
+You need [Claude Code](https://docs.claude.com/en/docs/claude-code). Install mcc:
+
+```sh
+brew install luongnv89/tap/mcc
+```
+
+Without Homebrew, the install script fetches a checksummed prebuilt binary:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/luongnv89/mcc/main/install.sh | sh
+```
+
+Add a profile with your default setup, then log in to the second account in the browser:
+
+```sh
+mcc add work --clone
+```
+
+Start Claude Code as that account:
+
+```sh
+work
+```
+
+See every profile, its account, usage and sync state:
+
+```sh
+mcc list
+```
+
+Later, pull new skills, plugins and settings from the default:
+
+```sh
+mcc sync work
+```
+
+The main commands in order: [Command tour](#command-tour).
+
+## FAQ
+
+**Does mcc switch to another account when one hits its limit?**
+No. `mcc run` asks you to wait (the default), start it anyway, or pick a profile the project allows. Anthropic's seat rules and terms rule out automatic switching; see [Per-project profiles](#per-project-profiles-mcc-project-and-mcc-run).
+
+**Does mcc read my Claude Code logins?**
+Not by default: usage comes from the opt-in `mcc statusline` cache. Live lookup (`[usage] live = true` or `mcc usage --all`) reads tokens and says so; see [Live usage lookup](#live-usage-lookup-opt-in).
+
+**Does mcc change my default `~/.claude`?**
+Only `mcc statusline install` and `uninstall` write to it, with a backup, and `mcc add` creates it if missing. Linked items and shared plugins write through to it by design.
+
+**How do I remove everything?**
+See [Uninstall](#uninstall).
+
+## Get started
+
+```sh
+brew install luongnv89/tap/mcc
+```
+
+[**Docs site →**](https://luongnv89.github.io/mcc/docs.html) · [Releases](https://github.com/luongnv89/mcc/releases) · [Changelog](CHANGELOG.md) · Apache-2.0 licensed
+
+## Reference
+
+The full documentation, one collapsed section per topic. `mcc help COMMAND` prints usage and examples in your terminal.
+
+### All features
+
+<details>
+<summary>Every feature, in full</summary>
 
 - **First-run detection.** mcc detects your OS, terminal, shell (zsh, bash, fish) and the right rc file, so new commands work in your shell.
 - **`add`.** If `~/.claude` doesn't exist yet, `add` creates your default profile. Otherwise it asks for an alias and checks that the name isn't already taken by a command, alias, function, shell builtin, or existing profile. You then either **clone** the default's setup (without credentials) or start **fresh**, and the new profile's login opens.
@@ -60,11 +195,16 @@ Claude Code reads its config from `CLAUDE_CONFIG_DIR`, which defaults to `~/.cla
 
 Supports **macOS and Linux**.
 
-## Install
+</details>
+
+### Install
+
+<details>
+<summary>Homebrew, install script, prebuilt archives, building from source</summary>
 
 You need [Claude Code](https://docs.claude.com/en/docs/claude-code).
 
-### Homebrew (macOS and Linux)
+#### Homebrew (macOS and Linux)
 
 ```sh
 brew install luongnv89/tap/mcc
@@ -72,7 +212,7 @@ brew install luongnv89/tap/mcc
 
 Homebrew builds mcc from source with its own Rust, so you don't need Rust installed. It also installs bash, zsh and fish completions. Update with `brew upgrade mcc`.
 
-### Install script (prebuilt binary)
+#### Install script (prebuilt binary)
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/luongnv89/mcc/main/install.sh | sh
@@ -88,7 +228,7 @@ curl -fsSLO https://github.com/luongnv89/mcc/releases/latest/download/mcc-aarch6
 shasum -a 256 -c mcc-aarch64-apple-darwin.tar.gz.sha256 && tar -xzf mcc-aarch64-apple-darwin.tar.gz mcc
 ```
 
-### From source
+#### From source
 
 You need Rust (`cargo`, 1.88 or newer).
 
@@ -103,7 +243,12 @@ curl -fsSL https://raw.githubusercontent.com/luongnv89/mcc/main/install.sh | MCC
 cargo install --git https://github.com/luongnv89/mcc --locked
 ```
 
-## Quick start
+</details>
+
+### Command tour
+
+<details>
+<summary>The main commands in order</summary>
 
 ```sh
 mcc init                    # detect your environment (also runs automatically the first time)
@@ -119,7 +264,12 @@ mcc run                     # start Claude Code with this project's profile
 mcc delete job              # remove it completely
 ```
 
-## Commands
+</details>
+
+### Commands
+
+<details>
+<summary>Every command and its key options</summary>
 
 | Command | What it does | Key options |
 |---|---|---|
@@ -147,7 +297,12 @@ mcc delete job              # remove it completely
 
 Global flags: `-v/--verbose`, `-q/--quiet`, `--no-color` (mcc also honors `NO_COLOR`), `--version`, `-h/--help`.
 
-### Examples
+</details>
+
+#### Examples
+
+<details>
+<summary>Annotated command lines</summary>
 
 ```sh
 mcc add                               # interactive: asks for the alias and clone/fresh
@@ -189,7 +344,12 @@ mcc doctor                            # check every profile's setup; prints a fi
 mcc delete sandbox --yes
 ```
 
-### JSON output and its schema version
+</details>
+
+#### JSON output and its schema version
+
+<details>
+<summary>--json and --json-v2 shapes, compatibility contract</summary>
 
 `mcc list`, `mcc usage`, `mcc project list` and `mcc doctor` print JSON for scripts in two shapes:
 
@@ -202,7 +362,12 @@ The contract: within a schema, fields may be added to the objects but are never 
 
 **Deprecation path:** `--json` (schema 1) stays as it is in every 0.x release. If a future major release makes `--json` print the versioned object, the CHANGELOG will say so in an upgrade note, and `--json-v2` will keep printing schema 2 unchanged, so scripts written for it need no change.
 
-### Shell completions
+</details>
+
+#### Shell completions
+
+<details>
+<summary>bash, zsh and fish</summary>
 
 Homebrew installs completions for you. Otherwise, write the script for your shell:
 
@@ -212,7 +377,12 @@ mcc completions bash > ~/.local/share/bash-completion/completions/mcc
 mcc completions fish > ~/.config/fish/completions/mcc.fish
 ```
 
-## How it works
+</details>
+
+### How it works in detail
+
+<details>
+<summary>Where profiles, launchers, aliases and state live</summary>
 
 | What | Where |
 |---|---|
@@ -225,7 +395,12 @@ mcc completions fish > ~/.config/fish/completions/mcc.fish
 | Statusline state | `~/.mcc/state/<profile>/usage.json` (rate limits cached by `mcc statusline`, or saved by `mcc usage --all`) and `statusline.json` (the `statusLine` it replaced, only after `mcc statusline install`) |
 | mcc state | `~/.mcc/config.toml` (environment + registry; safe to edit by hand, mcc keeps your comments and formatting), `~/.mcc/.lock` (held while a command writes the config), `~/.mcc/logs/mcc.log` (rotated to `mcc.log.1` at about 1 MB), `~/.mcc/backups/` (rc file backups, session-merge conflicts, `settings.json` backups from `mcc statusline`) |
 
-### What clone and sync copy
+</details>
+
+#### What clone and sync copy
+
+<details>
+<summary>Copied items, never-copied items, path rewriting, three-way sync</summary>
 
 **Copied** from the default profile:
 
@@ -253,7 +428,12 @@ mcc completions fish > ~/.config/fish/completions/mcc.fish
 
 `--dry-run` shows the same classification and writes nothing, not even the record. A profile without a record yet (created `--fresh` or by an older mcc), or with one that can't be read, is compared two-way once: every difference is taken from the default, as before, and the record starts with that sync. Because that sync can't tell your edits from the default's changes, it first warns with each path and MCP server it will replace and where they are backed up (`<profile>/.mcc-backup/`); `--dry-run` lists the same paths, and the warning shows even with `--quiet`. A sync that only adds files prints no warning. The record belongs to its profile and is never copied. `mcc diff ALIAS` lists each differing path with its class and a line diff (`---` default, `+++` profile), and `mcc list` sums it up in its `SYNC` column (`--json`: `sync.behind`, `sync.local_edits`, `sync.conflicts`).
 
-### Changing settings: `mcc config`
+</details>
+
+#### Changing settings: `mcc config`
+
+<details>
+<summary>mcc config get, set, edit and path</summary>
 
 `mcc config` reads and changes `~/.mcc/config.toml` so you don't have to edit TOML by hand:
 
@@ -271,7 +451,12 @@ mcc config path                                   # print the file's path
 
 `edit` opens a copy of the file and saves it only when it is valid mcc config (it parses, and sync items, `link` items, labels, colors and `share_group` names pass the same checks); otherwise it offers to edit again, or leaves the file unchanged. mcc holds no lock while the editor is open, so other mcc commands, launches included, keep working; if one of them changes the file meanwhile, nothing is saved and your edited copy is kept next to it. `edit` also works on a file that no longer parses, so it can fix one. `get` and `path` never take the lock; `set` holds it like any other write.
 
-### Customizing sync
+</details>
+
+#### Customizing sync
+
+<details>
+<summary>[sync] exclude and extra</summary>
 
 In `~/.mcc/config.toml`:
 
@@ -281,7 +466,12 @@ exclude = ["plugins"]          # built-in items to skip
 extra = ["my-tool/config.yml"] # additional paths (relative to the config dir) to copy
 ```
 
-### Linking read-mostly items: `mcc link`
+</details>
+
+#### Linking read-mostly items: `mcc link`
+
+<details>
+<summary>Symlink skills, agents, commands, output styles or CLAUDE.md</summary>
 
 Clone and sync give every profile its own copy of the default's `skills/`, `agents/`, `commands/`, `output-styles/` and `CLAUDE.md`, so the copies drift apart until the next sync. **Link mode** (opt-in per item, off by default) replaces a profile's copy with a symlink to the default's, so every linking profile sees the same files with nothing duplicated:
 
@@ -307,7 +497,12 @@ The setting is kept per profile in `~/.mcc/config.toml`; set it with `mcc link`,
 link = ["skills", "agents"]   # default: none
 ```
 
-### Sharing plugins: `mcc link ALIAS plugins`
+</details>
+
+#### Sharing plugins: `mcc link ALIAS plugins`
+
+<details>
+<summary>CLAUDE_CODE_PLUGIN_CACHE_DIR, what is shared, trade-offs</summary>
 
 A full copy of the default's plugin files in every profile adds up (about 88 MB per profile on one real setup). Instead, a profile can use the default's plugins directly. **`mcc add --clone` does this by default** (`--copy-plugins` gives the clone its own copy, as before); profiles made by an older mcc keep their copy until you opt in:
 
@@ -330,7 +525,12 @@ Trade-offs:
 
 **Moving an existing profile over is opt-in and keeps a backup.** `mcc link work plugins` moves the profile's own `plugins/` (it may hold plugins or plugin data the default lacks) to `<profile>/.mcc-backup/<timestamp>/plugins` with a rename, so nothing is copied or deleted, then rewrites the launcher and records `"plugins"` in `link`. The space is freed when you remove that backup folder; mcc prints its path and size. If a step fails, the move and the launcher are undone. Profiles whose shell alias predates launchers need `mcc refresh-launchers <alias>` once (mcc says so). `--off` moves any `plugins/` the profile has to a backup, copies the default's plugins in (paths rewritten, recorded for three-way sync), and removes the variable from the launcher. Restart the profile's running sessions after either.
 
-### Per-profile settings overlays
+</details>
+
+#### Per-profile settings overlays
+
+<details>
+<summary>Merge rules, order, how sync keeps them</summary>
 
 `settings.json` is copied from the default, so on its own a profile can't keep a `model`, `env`, `permissions` or `statusLine` of its own. An **overlay** fixes that: clone and every `sync` write the default's `settings.json` (paths rewritten first), then deep-merge the profile's overlay onto it. Give a profile an overlay in either or both places:
 
@@ -355,7 +555,12 @@ ANTHROPIC_DEFAULT_SONNET_MODEL = "claude-sonnet-5"
 - **Status line.** An overlay `statusLine` replaces the default's, the `mcc statusline` shim included, so that profile's rate limits are no longer cached. To keep the shim with a profile-specific command, leave `statusLine` out of the overlay, or exclude `settings` and use `mcc statusline install`, which wraps each profile's own `statusLine`. `mcc sync` warns when an overlay replaces the shim this way.
 - `settings.mcc.json` belongs to its profile: it is never copied, pruned or backed up by sync, and a `[sync] extra` entry naming it is rejected. An overlay that isn't a JSON object, or a default `settings.json` that isn't valid JSON while an overlay is set, stops the sync before anything is written.
 
-### Showing account emails
+</details>
+
+#### Showing account emails
+
+<details>
+<summary>[privacy] show_email</summary>
 
 `mcc list` and `mcc usage` hide account emails by default, so their output is safe to share on screen. To show them every time, set in `~/.mcc/config.toml` (or `mcc config set privacy.show_email true`):
 
@@ -366,7 +571,12 @@ show_email = true
 
 `--show-email` and `--hide-email` override it for one run. `show_email` under `[usage]`, where mcc 0.3 and earlier read it, still works: `true` there is moved to `[privacy]` the next time mcc saves the config, and `[privacy]` wins when both are set.
 
-### Live usage lookup (opt-in)
+</details>
+
+#### Live usage lookup (opt-in)
+
+<details>
+<summary>[usage] live = true and mcc usage --all, with the risk notice</summary>
 
 By default `mcc list`, `mcc usage` and `mcc run` read usage only from what `mcc statusline` cached, and never read a login. To have them look usage up live with each profile's login instead, opt in:
 
@@ -385,7 +595,12 @@ What `--all` finds is saved to the statusline cache (`~/.mcc/state/<profile>/usa
 
 `--all` can't be combined with a profile name (`mcc usage work --all` is a usage error, exit 2), and `MCC_NO_USAGE=1` still turns usage off: no lookup and no notice. `mcc list` and `mcc run` have no `--all`; they read the cache unless `live = true`.
 
-### Sharing sessions between profiles
+</details>
+
+#### Sharing sessions between profiles
+
+<details>
+<summary>Groups, organizations, what is and isn't shared, terms notes</summary>
 
 Each profile keeps its sessions to itself unless you turn sharing on. Sharing is a per-profile setting and is **off by default**. Sharing profiles are put in groups: once two or more profiles of a group share, `claude --resume` and `/resume` in any of them list the sessions of all of them, and of no profile outside the group.
 
@@ -430,7 +645,12 @@ Editing the key by hand does nothing on its own. `mcc share <alias>` does the ac
 
 **Upgrading from an older mcc:** profiles that already share keep using `~/.mcc/shared/projects`, which is now the `default` group's store: nothing is moved, and the config is not rewritten. If they mix organizations (or a work and a personal account), `mcc share` and `--mcc-share` warn on every run but never cut them off; to separate them, run `mcc share <alias> --off` (the profile keeps a copy of every shared session) and then `mcc share <alias> --group <name>`, or keep them together with `mcc share <alias> --allow-cross-org`. Existing launchers and shell aliases are left exactly as they were. `<alias> --mcc-share` needs the current launcher, and an alias that runs it. To get both, run `mcc refresh-launchers` once (or `mcc refresh-launchers work` for a single profile). `CLAUDE_CONFIG_DIR` stays the same, so logins are kept. `mcc share <alias>` works without it, and `mcc list` reminds you while a launcher is out of date (`"launcher_current": false` in `mcc list --json`).
 
-### Per-project profiles: `mcc project` and `mcc run`
+</details>
+
+#### Per-project profiles: `mcc project` and `mcc run`
+
+<details>
+<summary>mcc project set, mcc run at the limit, why there is no automatic switching</summary>
 
 To keep a project on one account, give it a default profile and start Claude Code there with `mcc run` instead of `claude` or the profile's command:
 
@@ -483,7 +703,12 @@ profile = "work"  # an mcc profile, or "default" for ~/.claude
 allow = ["lab"]   # optional: other profiles `mcc run` may offer at the limit
 ```
 
-### Using a project's profile everywhere: `mcc env` and `mcc exec`
+</details>
+
+#### Using a project's profile everywhere: `mcc env` and `mcc exec`
+
+<details>
+<summary>eval "$(mcc env)", direnv, mcc exec --all</summary>
 
 `mcc run` only covers Claude Code started through it. `mcc env` prints the shell line that points `CLAUDE_CONFIG_DIR` at the profile `mcc run` would start here (the project's default, else the default profile), so plain `claude`, IDE extensions and scripts use it too:
 
@@ -513,7 +738,12 @@ mcc exec --all -- claude plugin marketplace update       # once per profile, the
 
 With `--all`, each profile's output comes under its name followed by its exit status, and mcc exits 0 only if the command succeeded everywhere (else with the first failing status). A command that can't be found counts as exit 127 (126 when it can't be run), and Ctrl+C stops at the current profile. mcc holds no lock while the command runs, so the command may run mcc itself.
 
-### Accounts, organizations, labels and colors
+</details>
+
+#### Accounts, organizations, labels and colors
+
+<details>
+<summary>Recorded accounts, --email and --sso, labels, colors</summary>
 
 After `mcc add` logs a profile in, it records the account under `[profiles.<alias>.account]` in `~/.mcc/config.toml`: its email, Claude Code's account UUID, and its organization's name and UUID, each when Claude Code reports it. If another profile (the default included) is already logged in to the same account in the same organization, `mcc add` warns: profiles on one account share its usage limits, so this is usually a mistake. The same login in another organization, such as a personal plan and a work seat, has limits of its own, so it only gets a note. It then asks for an optional label, such as `personal` or the account's organization; `--label LABEL` sets it without asking, and `-y` or a non-interactive run skips it.
 
@@ -540,11 +770,21 @@ mcc config set profiles.work.label "Corp (work)"   # "" removes it
 mcc config set profiles.work.color green           # "" removes it
 ```
 
-#### Launch banner (opt-in)
+</details>
+
+##### Launch banner (opt-in)
+
+<details>
+<summary>[launch] banner = true, one line on stderr at each start</summary>
 
 With `[launch] banner = true` (`mcc config set launch.banner true`), starting a profile from its command (its launcher, `~/.local/bin/<alias>`) or with `mcc run` prints one line on stderr naming it: its name in its color, its label, and the 5-hour and weekly usage `mcc statusline` (or the last `mcc usage --all`) cached, e.g. `▶ work · Acme · 5h 42% · week 18%`. Parts that aren't known are left out, and labels are shown as `mcc run` shows them. It is off by default. The banner is printed only when stderr is a terminal (and not with `mcc run --quiet`), and never on stdout, so `work -p "…" | jq` sees only Claude Code's output. Starting a profile stays fast and offline: the banner reads only `~/.mcc/config.toml` and the usage cache, never the network, a token or the Keychain, even with `[usage] live = true`, and `MCC_NO_USAGE` leaves the usage out. Launchers include the banner call only while it is on, so a plain launch with the banner off runs nothing but Claude Code. After turning it on, run `mcc refresh-launchers` once so existing launchers show it (profiles added later get it straight away; `mcc doctor` says which launchers lack it); after turning it off, `mcc refresh-launchers` takes the call out again (a launcher that still has it just prints nothing). `mcc config set launch.banner` reminds you.
 
-### Usage limits: `mcc list` and `mcc usage`
+</details>
+
+#### Usage limits: `mcc list` and `mcc usage`
+
+<details>
+<summary>Columns, bars, data sources, JSON fields, unavailable reasons</summary>
 
 The `5H` and `WEEK` columns of `mcc list` show how much of each account's 5-hour and weekly limit is used, and how long until it resets, for every profile including the default. The table keeps to what fits 120 columns: `NAME`, `ACCOUNT` (the profile's label, else its organization; the email comes first only when [emails are shown](#showing-account-emails), and a long cell is cut with `…`), `5H`, `WEEK`, `LAST USED` and `SYNC`. Bars shrink when the terminal is narrower than the table:
 
@@ -605,7 +845,12 @@ In `mcc list --json`, every profile has a `usage` object. `mcc usage --json` pri
 
 The other reasons only come from the live lookup.
 
-### Status line: `mcc statusline`
+</details>
+
+#### Status line: `mcc statusline`
+
+<details>
+<summary>Install, the shim, what it caches</summary>
 
 Opt-in. Claude Code passes the session's 5-hour and weekly rate limits (`rate_limits.five_hour` and `rate_limits.seven_day`, each with `used_percentage` and `resets_at`) to its [status-line command](https://code.claude.com/docs/en/statusline) on stdin. `mcc statusline` is a small shim for that slot: it records them per profile, without reading any login, and can show which profile you're in.
 
@@ -632,7 +877,12 @@ mcc statusline uninstall          # put the previous statusLine back
 
 `mcc rename` moves a profile's `~/.mcc/state/<alias>/` with it and `mcc delete` removes it.
 
-### Status at a glance: `mcc`
+</details>
+
+#### Status at a glance: `mcc`
+
+<details>
+<summary>What bare mcc prints</summary>
 
 Once mcc is set up, `mcc` with no command shows one screen:
 
@@ -652,7 +902,12 @@ It is meant to be run often, so it is fast and read-only: no lock, no first-run 
 
 Before mcc is set up (no `~/.mcc/config.toml` with its `[env]`), bare `mcc` prints the help on stderr and exits 2, as it always did, and sets nothing up. `mcc help` and `mcc --help` print the help either way.
 
-### Checking your setup: `mcc doctor`
+</details>
+
+#### Checking your setup: `mcc doctor`
+
+<details>
+<summary>Every check and the fix it prints</summary>
 
 `mcc doctor` checks every profile, the default included, and prints a fix for each problem it finds. It doesn't change your setup: it never writes `~/.mcc/config.toml` (not even the first-run setup), takes no lock, and writes no file except its line in `~/.mcc/logs/mcc.log`, and that only when the log folder already exists. `mcc doctor work` checks one profile.
 
@@ -675,7 +930,12 @@ Before mcc is set up (no `~/.mcc/config.toml` with its `[env]`), bare `mcc` prin
 
 Each finding is `ok`, `warn`, `problem` or `skipped` (with the reason). mcc exits 1 when there is at least one problem, after printing them all; warnings don't fail it. `--json` prints the findings as a bare array of `{"profile", "check", "status", "message", "fix"}` objects (`profile` is `null` for the checks every profile shares, `fix` is `null` when there is nothing to do), and `--json-v2` wraps it as `{"schema": 2, "checks": [...]}`.
 
-### Alias validation
+</details>
+
+#### Alias validation
+
+<details>
+<summary>Rules for profile names</summary>
 
 An alias must be 1–32 characters: lowercase letters, digits, `-` or `_`, starting with a letter. It is rejected if any of these already uses the name:
 
@@ -686,7 +946,12 @@ An alias must be 1–32 characters: lowercase letters, digits, `-` or `_`, start
 - aliases and functions in your rc files (`.zshrc`, `.bashrc`, `.bash_profile`, `.profile`, fish config, …)
 - anything your interactive shell resolves with `type <name>`, which catches plugin-defined aliases
 
-## Environment variables
+</details>
+
+### Environment variables
+
+<details>
+<summary>MCC_HOME, MCC_NO_USAGE, MCC_USAGE_URL and more</summary>
 
 | Variable | Effect |
 |---|---|
@@ -699,7 +964,12 @@ An alias must be 1–32 characters: lowercase letters, digits, `-` or `_`, start
 | `MCC_SECURITY_BIN` | Test/debug override for the macOS `security` binary used to read Keychain logins with `[usage] live = true` or `mcc usage --all` (default `/usr/bin/security`, macOS only) |
 | `NO_COLOR` | Disable colors |
 
-## Exit codes
+</details>
+
+### Exit codes
+
+<details>
+<summary>0, 1, 2, 3, 130</summary>
 
 | Code | Meaning |
 |---|---|
@@ -709,7 +979,12 @@ An alias must be 1–32 characters: lowercase letters, digits, `-` or `_`, start
 | 3 | Invalid input (corrupt `config.toml` or JSON) |
 | 130 | Interrupted (Ctrl+C) |
 
-## Uninstall
+</details>
+
+### Uninstall
+
+<details>
+<summary>Remove profiles, the binary and ~/.mcc</summary>
 
 ```sh
 mcc statusline uninstall  # if you ran mcc statusline install: puts your previous statusLine back
@@ -720,7 +995,12 @@ rm -f ~/.local/bin/mcc  # if you used the install script
 rm -rf ~/.mcc
 ```
 
-## Development
+</details>
+
+### Development
+
+<details>
+<summary>Tests and lints</summary>
 
 ```sh
 cargo test       # unit + integration tests; all run in a temp HOME with a fake `claude`
@@ -728,6 +1008,8 @@ cargo clippy --all-targets
 ```
 
 The tests never touch your real `~/.claude`, rc files, or keychain, and never reach the network. The integration suite sets `MCC_HOME` to a temp dir, puts a fake `claude` script on `PATH`, points `MCC_SECURITY_BIN` at a fake `security` script, and points `MCC_USAGE_URL` at a refused loopback port or a local stub server.
+
+</details>
 
 ## Contributing
 
