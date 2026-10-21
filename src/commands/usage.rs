@@ -15,6 +15,10 @@ use crate::paths::Paths;
 use crate::ui;
 use crate::usage::{self, Reason, Status, Usage, Window};
 
+/// Printed on stderr each time `mcc usage --all` looks every account's
+/// usage up live (even with `--quiet`; never with `MCC_NO_USAGE`).
+pub const USAGE_ALL_NOTE: &str = crate::cli::usage_all_note!();
+
 /// How the table is laid out: the bar width of the usage cells (0 = no bar)
 /// and whether the absolute reset time follows the relative one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,6 +107,13 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
     if usage::disabled_by_env() {
         crate::log::write("INFO", "usage not fetched: MCC_NO_USAGE is set");
     } else {
+        // `--all`: every account looked up live for this run only, the
+        // default included, whatever `[usage] live` says.
+        if args.all {
+            eprintln!("{USAGE_ALL_NOTE}");
+            crate::log::write("INFO", "mcc usage --all: live lookup for every profile");
+        }
+        let live = cfg.usage.live || args.all;
         let targets: Vec<usage::Target> = entries
             .iter()
             .map(|e| usage::Target {
@@ -111,10 +122,7 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
                 is_default: e.is_default,
             })
             .collect();
-        for (e, u) in entries
-            .iter_mut()
-            .zip(usage::lookup(paths, &targets, cfg.usage.live))
-        {
+        for (e, u) in entries.iter_mut().zip(usage::lookup(paths, &targets, live)) {
             e.usage = u;
         }
     }

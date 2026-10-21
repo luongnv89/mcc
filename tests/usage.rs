@@ -672,3 +672,138 @@ fn live_lookup_reads_the_keychain_without_user() {
         "{calls}"
     );
 }
+
+// ---- `mcc usage --all`: every account looked up live, on demand (#94) ------
+
+/// The risk notice `mcc usage --all` prints each time, verbatim (issue #94).
+const ALL_NOTE: &str = "⚠ --all looks usage up live for every account, the default included: mcc reads each profile's Claude Code login (its OAuth access token, from .credentials.json or the macOS Keychain) and sends it to Anthropic's undocumented, rate-limited usage endpoint (https://api.anthropic.com/api/oauth/usage). Anthropic says third-party tools may not collect or intermediate Claude.ai credentials (https://code.claude.com/docs/en/legal-and-compliance), so use this at your own discretion, only with accounts you own, and never to get around usage limits. Without --all, `mcc usage` reads the `mcc statusline` cache (unless `[usage] live = true`).";
+
+/// True when `stderr` carries the `--all` notice as a line of its own.
+fn has_all_note(stderr: &str) -> bool {
+    stderr.lines().any(|l| l == ALL_NOTE)
+}
+
+/// `mcc usage --all` with the stub as the usage endpoint: (stdout, stderr).
+fn usage_all(sb: &common::Sandbox, stub: &common::UsageStub, args: &[&str]) -> (String, String) {
+    let o = sb
+        .mcc()
+        .env("MCC_USAGE_URL", &stub.url)
+        .args(args)
+        .assert()
+        .success();
+    let out = o.get_output();
+    (
+        String::from_utf8(out.stdout.clone()).unwrap(),
+        String::from_utf8(out.stderr.clone()).unwrap(),
+    )
+}
+
+#[test]
+fn usage_all_looks_every_account_up_live_with_a_risk_notice() {
+    // The live lookup is off in the config: --all alone turns it on.
+    let sb = cache_sandbox();
+    let stub = usage_stub();
+    let cfg = sb.read(".mcc/config.toml");
+    let (out, err) = usage_all(&sb, &stub, &["usage", "--all"]);
+
+    // Every account, the default included, with its own login.
+    assert_eq!(stub.tokens(), ["test-token-default", "test-token-work"]);
+    // Live numbers: no UPDATED column, work's 5-hour window (not cached),
+    // and the logged-out `lab` is unavailable rather than uncached.
+    assert!(!out.contains("UPDATED"), "{out}");
+    assert_match(
+        &format!(
+            r"(?m)^default ★  ████░░░░░░ 42%  2h 14m {LOCAL_TIME}  ██░░░░░░░░ 18%  3d 4h {LOCAL_TIME}$"
+        ),
+        &out,
+    );
+    assert_match(
+        &format!(
+            r"(?m)^work       █░░░░░░░░░ 7%   2h 14m {LOCAL_TIME}  ██████░░░░ 64%  3d 4h {LOCAL_TIME}$"
+        ),
+        &out,
+    );
+    assert_match(r"(?m)^lab        unavailable \(not logged in\)$", &out);
+
+    // The risk notice, on a line of its own; not the config's disclosure,
+    // and nothing written: no opt-in, no acknowledgement.
+    assert!(has_all_note(&err), "{err}");
+    assert!(!err.contains("Live usage lookup is on"), "{err}");
+    assert_eq!(sb.read(".mcc/config.toml"), cfg);
+
+    // Each time, not once.
+    let (_, err) = usage_all(&sb, &stub, &["usage", "--all"]);
+    assert!(has_all_note(&err), "{err}");
+    assert_eq!(stub.tokens().len(), 4);
+}
+
+#[test]
+fn usage_all_keeps_the_notice_off_stdout_and_on_with_quiet() {
+    let sb = cache_sandbox();
+    let stub = usage_stub();
+    // --json: the notice goes to stderr only, so stdout stays parseable.
+    let (out, err) = usage_all(&sb, &stub, &["usage", "--all", "--json"]);
+    let arr = usage_json(&out);
+    assert_eq!(arr.len(), 3, "{out}");
+    let d = &by_name(&arr, "default")["usage"];
+    assert_eq!(d["source"], "live");
+    assert_eq!(d["updated_at"], serde_json::Value::Null);
+    assert_eq!(by_name(&arr, "work")["usage"]["five_hour"]["percent"], 7.0);
+    assert_eq!(by_name(&arr, "lab")["usage"]["reason"], "not_logged_in");
+    assert!(!out.contains('⚠'), "{out}");
+    assert!(has_all_note(&err), "{err}");
+
+    // --quiet drops hints, never the notice.
+    let (out, err) = usage_all(&sb, &stub, &["-q", "usage", "--all"]);
+    assert!(out.contains("42%"), "{out}");
+    assert!(has_all_note(&err), "{err}");
+}
+
+#[test]
+fn usage_all_respects_mcc_no_usage_and_takes_no_profile() {
+    let sb = cache_sandbox();
+    let stub = usage_stub();
+    // MCC_NO_USAGE wins: no lookup, so no notice either.
+    let o = sb
+        .mcc()
+        .env("MCC_USAGE_URL", &stub.url)
+        .env("MCC_NO_USAGE", "1")
+        .args(["usage", "--all"])
+        .assert()
+        .success();
+    let out = String::from_utf8(o.get_output().stdout.clone()).unwrap();
+    let err = String::from_utf8(o.get_output().stderr.clone()).unwrap();
+    assert_eq!(
+        out.matches("  — (not fetched: --no-usage or MCC_NO_USAGE)\n")
+            .count(),
+        3,
+        "{out}"
+    );
+    assert!(!err.contains("⚠ --all"), "{err}");
+
+    // One profile, or every account: not both (a usage error).
+    sb.mcc()
+        .env("MCC_USAGE_URL", &stub.url)
+        .args(["usage", "work", "--all"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--all").and(predicate::str::contains("⚠").not()));
+    assert_no_token_lookup(&sb, &stub);
+}
+
+#[test]
+fn usage_help_documents_all_and_its_notice() {
+    let sb = common::Sandbox::new();
+    let help = stdout_of(sb.mcc().args(["usage", "--help"]));
+    for needle in [
+        "--all",
+        "mcc usage --all",
+        "risk notice",
+        "MCC_NO_USAGE=1 still skips usage",
+    ] {
+        assert!(help.contains(needle), "missing {needle:?} in:\n{help}");
+    }
+    // clap wraps long lines; the note's words are all there, in order.
+    let words = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(words(&help).contains(&words(ALL_NOTE)), "{help}");
+}

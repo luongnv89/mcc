@@ -6,7 +6,8 @@
 //! obsolete and dropped; a profile with nothing left shows [`Reason::NoData`].
 //!
 //! The live lookup ([`fetch_all`]) runs only with `[usage] live = true`, after
-//! a one-time [`LIVE_DISCLOSURE`]. It sends each profile's own OAuth access
+//! a one-time [`LIVE_DISCLOSURE`], or for one `mcc usage --all`, which prints
+//! its own risk notice each time. It sends each profile's own OAuth access
 //! token — from `<config dir>/.credentials.json`, or the macOS login Keychain —
 //! to Anthropic's OAuth usage endpoint, the one Claude Code's `/usage` screen
 //! reads. That endpoint is undocumented, so every response field is optional
@@ -47,7 +48,7 @@ pub const LIVE_DISCLOSURE: &str = "⚠ Live usage lookup is on ([usage] live = t
 pub enum Source {
     /// The rate limits `mcc statusline` cached.
     Cache,
-    /// The OAuth usage endpoint (`[usage] live = true`).
+    /// The OAuth usage endpoint (`[usage] live = true`, or `mcc usage --all`).
     Live,
 }
 
@@ -408,7 +409,8 @@ pub struct Target {
 }
 
 /// Every target's usage, in target order: looked up live with `live`
-/// (`[usage] live = true`), else read from the statusline cache.
+/// (`[usage] live = true`, or `mcc usage --all`), else read from the
+/// statusline cache.
 pub fn lookup(paths: &Paths, targets: &[Target], live: bool) -> Vec<Usage> {
     if live {
         fetch_all(targets)
