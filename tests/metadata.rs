@@ -175,6 +175,159 @@ fn release_workflow_pins_actions_and_limits_permissions() {
     assert!(!wf.contains("github.event."), "{RELEASE_WORKFLOW}");
 }
 
+/// The publish step's branch for a draft release: replacing its assets is safe.
+const DRAFT_GUARD: &str = "if [ \"$is_draft\" = true ]; then";
+const PUBLISH_DRAFT: &str = "--draft=false";
+
+/// Byte offset of every occurrence of `needle` in `haystack`.
+fn positions(haystack: &str, needle: &str) -> Vec<usize> {
+    haystack.match_indices(needle).map(|(i, _)| i).collect()
+}
+
+/// Byte offset of `needle`, which must occur exactly once in the workflow.
+fn position_of_only(wf: &str, needle: &str) -> usize {
+    match positions(wf, needle)[..] {
+        [at] => at,
+        ref all => panic!(
+            "{RELEASE_WORKFLOW} has {needle:?} {} times, expected once",
+            all.len()
+        ),
+    }
+}
+
+#[test]
+fn release_workflow_publishes_a_draft_only_after_its_assets_are_attached() {
+    let wf = repo_file(RELEASE_WORKFLOW);
+    // Every release with the tag is listed, drafts included; the tag reaches
+    // jq through the environment, not the program text.
+    for needle in ["repos/$GH_REPO/releases", "select(.tag_name == $ENV.TAG)"] {
+        assert!(
+            wf.contains(needle),
+            "{RELEASE_WORKFLOW} is missing {needle:?}"
+        );
+    }
+    assert!(
+        !wf.contains("gh release view \"$TAG\" >/dev/null 2>&1"),
+        "{RELEASE_WORKFLOW} still hides release lookup errors"
+    );
+    // A new release starts as a draft, and only the draft branch publishes it,
+    // after its uploads.
+    assert_eq!(
+        wf.matches("gh release create").count(),
+        1,
+        "{RELEASE_WORKFLOW} must create the release in one place"
+    );
+    let create = position_of_only(&wf, "gh release create \"$TAG\" --draft --verify-tag");
+    let guard = position_of_only(&wf, DRAFT_GUARD);
+    let publish = position_of_only(&wf, PUBLISH_DRAFT);
+    assert!(
+        create < guard && guard < publish,
+        "{RELEASE_WORKFLOW}: create the draft, then attach, then publish"
+    );
+    let uploads = &wf[guard..publish];
+    assert!(
+        uploads.contains("gh release upload \"$TAG\" --clobber SHA256SUMS"),
+        "{RELEASE_WORKFLOW}: the draft branch must attach SHA256SUMS before publishing"
+    );
+    assert_eq!(
+        wf[publish..].lines().nth(1).map(str::trim),
+        Some("exit 0"),
+        "{RELEASE_WORKFLOW}: the draft branch must stop once it has published"
+    );
+}
+
+#[test]
+fn release_workflow_never_replaces_the_assets_of_a_published_release() {
+    let wf = repo_file(RELEASE_WORKFLOW);
+    let guard = position_of_only(&wf, DRAFT_GUARD);
+    let publish = position_of_only(&wf, PUBLISH_DRAFT);
+    // Assets are replaced only while the release is still a draft.
+    let clobbers = positions(&wf, "--clobber");
+    assert!(
+        !clobbers.is_empty(),
+        "{RELEASE_WORKFLOW}: a draft's assets should be replaceable"
+    );
+    for at in clobbers {
+        assert!(
+            guard < at && at < publish,
+            "{RELEASE_WORKFLOW} replaces assets outside the draft branch (byte {at})"
+        );
+    }
+    // A published release: compare SHA256SUMS first, upload only what is missing.
+    let published = &wf[publish..];
+    for needle in [
+        "gh release download \"$TAG\" --pattern SHA256SUMS",
+        "cmp -s",
+        "::error::",
+        "gh release upload",
+    ] {
+        assert!(
+            published.contains(needle),
+            "{RELEASE_WORKFLOW}: the published-release branch is missing {needle:?}"
+        );
+    }
+    let compare = published.find("cmp -s").unwrap();
+    let upload = published.find("gh release upload").unwrap();
+    assert!(
+        compare < upload,
+        "{RELEASE_WORKFLOW}: compare SHA256SUMS before uploading anything"
+    );
+}
+
+/// `x.y` or `x.y.z` as a comparable triple (a missing patch is 0).
+fn version_triple(v: &str) -> (u32, u32, u32) {
+    let parts: Vec<u32> = v
+        .split('.')
+        .map(|p| p.parse().unwrap_or_else(|_| panic!("not a version: {v:?}")))
+        .collect();
+    match parts[..] {
+        [major, minor] => (major, minor, 0),
+        [major, minor, patch] => (major, minor, patch),
+        _ => panic!("not a version: {v:?}"),
+    }
+}
+
+#[test]
+fn release_workflow_builds_with_a_pinned_rust_toolchain() {
+    let wf = repo_file(RELEASE_WORKFLOW);
+    let pins: Vec<&str> = wf
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("RUST_TOOLCHAIN: \""))
+        .collect();
+    let [pin] = pins[..] else {
+        panic!("{RELEASE_WORKFLOW} needs one RUST_TOOLCHAIN: \"x.y.z\" line, found {pins:?}");
+    };
+    let pinned = pin
+        .strip_suffix('"')
+        .unwrap_or_else(|| panic!("RUST_TOOLCHAIN is not quoted: {pin:?}"));
+    assert_eq!(
+        pinned.split('.').count(),
+        3,
+        "RUST_TOOLCHAIN must name an exact x.y.z release: {pinned:?}"
+    );
+    let msrv = env!("CARGO_PKG_RUST_VERSION");
+    assert!(
+        version_triple(pinned) >= version_triple(msrv),
+        "RUST_TOOLCHAIN {pinned} is older than rust-version {msrv}"
+    );
+    for needle in [
+        "rustup toolchain install \"$RUST_TOOLCHAIN\"",
+        "rustup default \"$RUST_TOOLCHAIN\"",
+        "\"rustc $RUST_TOOLCHAIN \"*)",
+    ] {
+        assert!(
+            wf.contains(needle),
+            "{RELEASE_WORKFLOW} is missing {needle:?}"
+        );
+    }
+    for needle in ["toolchain install stable", "default stable"] {
+        assert!(
+            !wf.contains(needle),
+            "{RELEASE_WORKFLOW} must not build with the moving stable channel: {needle:?}"
+        );
+    }
+}
+
 #[test]
 fn install_script_verifies_the_checksum_of_prebuilt_binaries() {
     let script = repo_file("install.sh");
