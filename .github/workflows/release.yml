@@ -18,6 +18,7 @@ name: Release
 # Re-running for a tag whose release is already published never replaces its
 # assets: Rust builds are not reproducible, so when the new SHA256SUMS differs
 # from the published one the job stops with an error and uploads nothing.
+# Release builds use the exact Rust toolchain in RUST_TOOLCHAIN below.
 
 on:
   push:
@@ -37,6 +38,10 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Release builds use this exact toolchain rather than whatever the moving
+  # stable channel is that day, so a rebuild uses the same compiler. Bump it
+  # on purpose; it must stay at or above rust-version in Cargo.toml.
+  RUST_TOOLCHAIN: "1.99.1"
 
 jobs:
   check-version:
@@ -102,9 +107,13 @@ jobs:
           echo "TARGET_CC=musl-gcc" >> "$GITHUB_ENV"
       - name: Install the Rust toolchain
         run: |
-          rustup toolchain install stable --profile minimal --target "$TARGET"
-          rustup default stable
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target "$TARGET"
+          rustup default "$RUST_TOOLCHAIN"
           rustc --version
+          case "$(rustc --version)" in
+            "rustc $RUST_TOOLCHAIN "*) ;;
+            *) echo "::error::rustc is not $RUST_TOOLCHAIN"; exit 1 ;;
+          esac
       - name: cargo test
         if: matrix.run_tests
         run: cargo test --locked --target "$TARGET"
