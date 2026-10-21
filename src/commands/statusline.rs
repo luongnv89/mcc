@@ -386,7 +386,7 @@ fn read_record(paths: &Paths, profile: &str) -> Option<Record> {
     serde_json::from_slice(&bytes).ok()
 }
 
-fn write_json(path: &Path, v: &Value) -> Result<()> {
+pub(crate) fn write_json(path: &Path, v: &Value) -> Result<()> {
     let mut text = serde_json::to_string_pretty(v).context("serializing JSON")?;
     text.push('\n');
     fsutil::write_atomic(path, text.as_bytes())

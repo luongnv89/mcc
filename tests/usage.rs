@@ -726,7 +726,7 @@ fn usage_all_looks_every_account_up_live_with_a_risk_notice() {
     assert_match(r"(?m)^lab        unavailable \(not logged in\)$", &out);
 
     // The risk notice, on a line of its own; not the config's disclosure,
-    // and nothing written: no opt-in, no acknowledgement.
+    // and the config untouched: no opt-in, no acknowledgement.
     assert!(has_all_note(&err), "{err}");
     assert!(!err.contains("Live usage lookup is on"), "{err}");
     assert_eq!(sb.read(".mcc/config.toml"), cfg);
@@ -735,6 +735,49 @@ fn usage_all_looks_every_account_up_live_with_a_risk_notice() {
     let (_, err) = usage_all(&sb, &stub, &["usage", "--all"]);
     assert!(has_all_note(&err), "{err}");
     assert_eq!(stub.tokens().len(), 4);
+}
+
+#[test]
+fn usage_all_saves_what_it_finds_for_the_next_plain_usage() {
+    let sb = cache_sandbox();
+    let stub = usage_stub();
+    // `lab` is logged out, so its live lookup fails: its own cache stays.
+    common::seed_usage_cache(&sb, "lab", None, Some((12.0, 86400)), 600);
+    let lab = sb.read(".mcc/state/lab/usage.json");
+    usage_all(&sb, &stub, &["usage", "--all"]);
+    assert_eq!(sb.read(".mcc/state/lab/usage.json"), lab);
+
+    // Plain `mcc usage` now shows the live numbers from the cache, with their
+    // age: work's 5-hour window was never cached before --all.
+    let requests = stub.requests().len();
+    let keychain = || sb.exists("security.log").then(|| sb.read("security.log"));
+    let keychain_before = keychain();
+    let out = stdout_of(sb.mcc().env("MCC_USAGE_URL", &stub.url).arg("usage"));
+    assert_match(r"(?m)^PROFILE .* RESETS IN\s+UPDATED$", &out);
+    assert_match(
+        &format!(
+            r"(?m)^default ★  ████░░░░░░ 42%  2h 14m {LOCAL_TIME}  ██░░░░░░░░ 18%  3d 4h {LOCAL_TIME}  just now$"
+        ),
+        &out,
+    );
+    assert_match(
+        &format!(
+            r"(?m)^work       █░░░░░░░░░ 7%   2h 14m {LOCAL_TIME}  ██████░░░░ 64%  3d 4h {LOCAL_TIME}  just now$"
+        ),
+        &out,
+    );
+    assert_match(
+        &format!(r"(?m)^lab        —\s+█░░░░░░░░░ 12%  1d 0h {LOCAL_TIME}  10m ago$"),
+        &out,
+    );
+    // Read from the cache: no token, no request.
+    assert_eq!(stub.requests().len(), requests);
+    assert_eq!(keychain(), keychain_before);
+
+    let arr = usage_json(&stdout_of(sb.mcc().args(["usage", "--json"])));
+    let w = &by_name(&arr, "work")["usage"];
+    assert_eq!(w["source"], "cache");
+    assert_eq!(w["five_hour"]["percent"], 7.0);
 }
 
 #[test]

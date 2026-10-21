@@ -150,9 +150,9 @@ pub enum Command {
         "time when it fits). `!` marks 80% or more and `!!` 95% or more. On a narrow\n",
         "terminal the reset time goes first, then bars shrink; under 80 columns bars\n",
         "are dropped when nothing fits. UPDATED is how old the numbers cached by\n",
-        "`mcc statusline` are; a profile with nothing current cached shows \"—\"\n",
-        "(run /usage in Claude Code), and one whose usage can't be read shows\n",
-        "\"unavailable\" and why. MCC_NO_USAGE=1 skips usage entirely.\n",
+        "`mcc statusline` (or the last --all) are; a profile with nothing current\n",
+        "cached shows \"—\" (run /usage in Claude Code), and one whose usage can't\n",
+        "be read shows \"unavailable\" and why. MCC_NO_USAGE=1 skips usage entirely.\n",
         "\n",
         "Account emails are hidden by default (also `null` in --json). To always\n",
         "show them, or to look usage up live with each profile's login (off by\n",
@@ -170,7 +170,10 @@ pub enum Command {
         "--all looks every account's usage up live for this one run, the default\n",
         "included, with each profile's login instead of the statusline cache: no\n",
         "config change, and `[usage] live` isn't needed. It can't be combined with\n",
-        "PROFILE, and MCC_NO_USAGE=1 still skips usage (no lookup, no note). Each\n",
+        "PROFILE, and MCC_NO_USAGE=1 still skips usage (no lookup, no note). What\n",
+        "it finds is saved to the statusline cache, so `mcc usage`, `mcc list` and\n",
+        "`mcc run` show it afterwards with its age, until a window resets or newer\n",
+        "numbers are cached; an account it can't read keeps what was cached. Each\n",
         "time it looks usage up, it prints this note on stderr:\n",
         "\n",
         usage_all_note!()
@@ -561,7 +564,7 @@ pub struct UsageArgs {
     /// Only this profile (`default` or `claude` for ~/.claude)
     pub profile: Option<String>,
 
-    /// Look up every account's usage live with its login, the default included, instead of the statusline cache (prints a risk notice)
+    /// Look up every account's usage live with its login, the default included, and save it to the statusline cache (prints a risk notice)
     #[arg(long, conflicts_with = "profile")]
     pub all: bool,
 

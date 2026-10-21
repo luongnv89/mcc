@@ -222,7 +222,7 @@ mcc completions fish > ~/.config/fish/completions/mcc.fish
 | Shell alias | a managed block in your rc file, between `# >>> mcc:<alias> >>>` and `# <<< mcc:<alias> <<<`, that runs the launcher |
 | Shared sessions | `~/.mcc/shared/projects` (the `default` group) and `~/.mcc/shared/groups/<name>/projects` (`--group <name>`), only for profiles that opted in with `mcc share` (their `projects/` links there) |
 | Project defaults | `[projects."<dir>"]` tables in `~/.mcc/config.toml`, written by `mcc project set` |
-| Statusline state | `~/.mcc/state/<profile>/usage.json` (rate limits cached by `mcc statusline`) and `statusline.json` (the `statusLine` it replaced), only after `mcc statusline install` |
+| Statusline state | `~/.mcc/state/<profile>/usage.json` (rate limits cached by `mcc statusline`, or saved by `mcc usage --all`) and `statusline.json` (the `statusLine` it replaced, only after `mcc statusline install`) |
 | mcc state | `~/.mcc/config.toml` (environment + registry; safe to edit by hand, mcc keeps your comments and formatting), `~/.mcc/.lock` (held while a command writes the config), `~/.mcc/logs/mcc.log` (rotated to `mcc.log.1` at about 1 MB), `~/.mcc/backups/` (rc file backups, session-merge conflicts, `settings.json` backups from `mcc statusline`) |
 
 ### What clone and sync copy
@@ -380,6 +380,8 @@ The first command that looks usage up live prints a one-time disclosure on stder
 To check every account once without turning this on, run `mcc usage --all`: it looks every profile's usage up live for that run only, the default profile included, and changes nothing in the config. It reads and sends each profile's login just as `live = true` does, so it prints this risk notice on stderr **every time** it runs (with `-q` too; `--json` on stdout stays clean):
 
 > ⚠ --all looks usage up live for every account, the default included: mcc reads each profile's Claude Code login (its OAuth access token, from .credentials.json or the macOS Keychain) and sends it to Anthropic's undocumented, rate-limited usage endpoint (https://api.anthropic.com/api/oauth/usage). Anthropic says third-party tools may not collect or intermediate Claude.ai credentials (https://code.claude.com/docs/en/legal-and-compliance), so use this at your own discretion, only with accounts you own, and never to get around usage limits. Without --all, `mcc usage` reads the `mcc statusline` cache (unless `[usage] live = true`).
+
+What `--all` finds is saved to the statusline cache (`~/.mcc/state/<profile>/usage.json`), so the next `mcc usage` without `--all`, and `mcc list` and `mcc run`, show those numbers with their age (`UPDATED`) until a window resets or `mcc statusline` caches newer ones. An account it can't read (logged out, expired token, rate limited) keeps whatever was cached. Only the percentages and reset times are saved, never the token.
 
 `--all` can't be combined with a profile name (`mcc usage work --all` is a usage error, exit 2), and `MCC_NO_USAGE=1` still turns usage off: no lookup and no notice. `mcc list` and `mcc run` have no `--all`; they read the cache unless `live = true`.
 
@@ -555,7 +557,7 @@ lab        —         —                      —                      1d ago 
 
 `mcc list --long` has the rest: the command, the organization, the counts of skills, agents, commands, plugins, MCP servers and hooks, the size, and how old cached usage is. It spells usage out (`5h usage: ████████░░░░░░░░░░░░ 42% (resets in 2h 14m)`, `Usage updated: 12m ago (statusline cache)`), or says why there is none (`Usage: — (no recent usage cached; run /usage in Claude Code)`).
 
-`mcc usage` shows only usage, as a compact table with one row per profile: for each window a bar with the percent used, the time until it resets, and the reset time in your local time zone. `mcc usage work` shows one profile (`mcc usage default` for `~/.claude`); an unknown name is a usage error (exit 2). Account emails are hidden by default, so the output is safe to share on screen; `--show-email` adds an `ACCOUNT` column for one run, and `show_email = true` under `[privacy]` in `~/.mcc/config.toml` shows it every time (`--hide-email` then hides it again). The same setting applies to `mcc list`. `mcc usage --all` looks every account's usage up live for that run instead of reading the cache, with a risk notice each time (see **Live lookup** below).
+`mcc usage` shows only usage, as a compact table with one row per profile: for each window a bar with the percent used, the time until it resets, and the reset time in your local time zone. `mcc usage work` shows one profile (`mcc usage default` for `~/.claude`); an unknown name is a usage error (exit 2). Account emails are hidden by default, so the output is safe to share on screen; `--show-email` adds an `ACCOUNT` column for one run, and `show_email = true` under `[privacy]` in `~/.mcc/config.toml` shows it every time (`--hide-email` then hides it again). The same setting applies to `mcc list`. `mcc usage --all` looks every account's usage up live for that run instead of reading the cache, with a risk notice each time, and saves what it finds to the cache for later runs (see **Live lookup** below).
 
 ```console
 $ mcc usage
@@ -565,7 +567,7 @@ lab        — (no recent usage cached; run /usage in Claude Code)
 work       █████████░ 85%!  35m (Sat Oct 10 14:21)     ██████████ 96%!!  3d 4h (Wed Oct 14 00:00)  just now
 ```
 
-- **Where it comes from (default).** The rate limits [`mcc statusline`](#status-line-mcc-statusline) caches in `~/.mcc/state/<profile>/usage.json` while you use Claude Code. No login is read and nothing touches the network. `UPDATED` (and `· 12m ago` in `mcc run`) is how old the cached numbers are. A window whose reset time has passed is obsolete and shown as `—`. A profile with nothing current cached (an idle profile, a Team or Enterprise seat that reports no rate limits, or no `mcc statusline install` yet) shows `—` and a hint to run `/usage` inside Claude Code.
+- **Where it comes from (default).** The rate limits [`mcc statusline`](#status-line-mcc-statusline) caches in `~/.mcc/state/<profile>/usage.json` while you use Claude Code. No login is read and nothing touches the network. `UPDATED` (and `· 12m ago` in `mcc run`) is how old the cached numbers are; the last `mcc usage --all` saves to the same cache. A window whose reset time has passed is obsolete and shown as `—`. A profile with nothing current cached (an idle profile, a Team or Enterprise seat that reports no rate limits, or no `mcc statusline install` yet) shows `—` and a hint to run `/usage` inside Claude Code.
 
 - **Reading the bars.** Each bar is the share of the limit used. `!` after the percent marks 80% or more and `!!` 95% or more. In a colour terminal the bar is also green, yellow (80%+) or red (95%+), but the markers carry the same meaning, so nothing depends on colour alone (`--no-color`, `NO_COLOR`, or piped output).
 - **Narrow terminals.** When the output would not fit the terminal's width, bars shrink (`mcc usage` first drops the absolute reset time, keeping the time until the reset, then shrinks its bar in the same 10/5/0 steps as the `mcc list` table). From 80 columns up a compact bar always stays, even if the `mcc list` table has to wrap; below 80 columns bars disappear (leaving just the percent, such as `42%`) when nothing fits. Set `COLUMNS` to override the detected width. Piped output gets full-size bars unless `COLUMNS` is set, and `--json` never has bars or colour.
@@ -587,7 +589,7 @@ In `mcc list --json`, every profile has a `usage` object. `mcc usage --json` pri
 }
 ```
 
-`status` is `ok` or `unavailable`. `five_hour` and `weekly` are `null` when there is no data (`resets_at` can be `null` too). `source` is `cache` (the statusline cache), `live` (`[usage] live = true` or `mcc usage --all`) or `null` (not looked up); `updated_at` is when the statusline cached the numbers (`null` for live lookups). When `status` is `unavailable`, `reason` is one of:
+`status` is `ok` or `unavailable`. `five_hour` and `weekly` are `null` when there is no data (`resets_at` can be `null` too). `source` is `cache` (the statusline cache), `live` (`[usage] live = true` or `mcc usage --all`) or `null` (not looked up); `updated_at` is when the numbers were cached, by the statusline or the last `mcc usage --all` (`null` for live lookups). When `status` is `unavailable`, `reason` is one of:
 
 | `reason` | Meaning |
 |---|---|

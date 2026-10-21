@@ -7,7 +7,8 @@
 //!
 //! The live lookup ([`fetch_all`]) runs only with `[usage] live = true`, after
 //! a one-time [`LIVE_DISCLOSURE`], or for one `mcc usage --all`, which prints
-//! its own risk notice each time. It sends each profile's own OAuth access
+//! its own risk notice each time and saves what it finds to the statusline
+//! cache ([`save_to_cache`]). It sends each profile's own OAuth access
 //! token — from `<config dir>/.credentials.json`, or the macOS login Keychain —
 //! to Anthropic's OAuth usage endpoint, the one Claude Code's `/usage` screen
 //! reads. That endpoint is undocumented, so every response field is optional
@@ -47,7 +48,7 @@ pub const LIVE_DISCLOSURE: &str = "⚠ Live usage lookup is on ([usage] live = t
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Source {
-    /// The rate limits `mcc statusline` cached.
+    /// The rate limits `mcc statusline` (or the last `mcc usage --all`) cached.
     Cache,
     /// The OAuth usage endpoint (`[usage] live = true`, or `mcc usage --all`).
     Live,
@@ -134,7 +135,7 @@ pub struct Usage {
     pub weekly: Option<Window>,
     /// `None` when nothing was looked up (`disabled`).
     pub source: Option<Source>,
-    /// When the statusline cached these numbers (`None` for live lookups).
+    /// When these numbers were cached (`None` for live lookups).
     #[serde(serialize_with = "ser_time")]
     pub updated_at: Option<DateTime<Utc>>,
 }
@@ -470,6 +471,48 @@ fn read_cached(path: &Path, now: DateTime<Utc>) -> Usage {
     let mut u = Usage::ok(five_hour, weekly).with_source(Source::Cache);
     u.updated_at = updated_at;
     u
+}
+
+/// Save each live result that has usage to the statusline cache
+/// (`~/.mcc/state/<name>/usage.json`), as the record `mcc statusline` writes,
+/// so a later `mcc usage` without `--all` shows it with its age. An
+/// unavailable result leaves that profile's cache as it was. Best effort: a
+/// failed write is logged, never an error.
+pub fn save_to_cache(paths: &Paths, targets: &[Target], all: &[Usage]) {
+    let now = Utc::now();
+    for (t, u) in targets.iter().zip(all) {
+        let Some(record) = cache_record(&t.name, u, now) else {
+            continue;
+        };
+        let path = paths.profile_state_dir(&t.name).join(USAGE_FILE);
+        match crate::commands::statusline::write_json(&path, &record) {
+            Ok(()) => crate::log::write("INFO", &format!("usage {}: saved to the cache", t.name)),
+            Err(e) => crate::log::write(
+                "WARN",
+                &format!("usage {}: not saved to the cache: {e:#}", t.name),
+            ),
+        }
+    }
+}
+
+/// The cache record for `u`, built the way the statusline shim builds it from
+/// Claude Code's `rate_limits`; `None` unless `u` has a window to save.
+fn cache_record(name: &str, u: &Usage, now: DateTime<Utc>) -> Option<Value> {
+    if u.status != Status::Ok {
+        return None;
+    }
+    let limit = |w: &Option<Window>| {
+        w.as_ref().map(|w| {
+            serde_json::json!({
+                "used_percentage": w.percent,
+                "resets_at": w.resets_at.map(|t| t.timestamp()),
+            })
+        })
+    };
+    let status = serde_json::json!({
+        "rate_limits": {"five_hour": limit(&u.five_hour), "seven_day": limit(&u.weekly)},
+    });
+    crate::commands::statusline::usage_record(name, &status, now)
 }
 
 /// A time as Claude Code's status line gives it (epoch seconds) or as an
@@ -1203,6 +1246,39 @@ mod tests {
                 "{body}"
             );
         }
+    }
+
+    #[test]
+    fn live_usage_saved_to_the_cache_reads_back() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("usage.json");
+        let now = at("2026-10-10T12:00:00Z");
+        let live = Usage::ok(
+            Some(Window {
+                percent: 42.4,
+                resets_at: Some(at("2026-10-10T14:14:00Z")),
+            }),
+            None,
+        )
+        .with_source(Source::Live);
+        let record = cache_record("work", &live, now).unwrap();
+        assert_eq!(record["profile"], "work");
+        assert_eq!(record["updated_at"], "2026-10-10T12:00:00Z");
+        assert_eq!(record["seven_day"], Value::Null);
+        crate::commands::statusline::write_json(&path, &record).unwrap();
+
+        let later = at("2026-10-10T12:10:00Z");
+        let u = read_cached(&path, later);
+        assert_eq!(u.status, Status::Ok);
+        assert_eq!(u.source, Some(Source::Cache));
+        assert_eq!(u.five_hour, live.five_hour);
+        assert_eq!(u.weekly, None);
+        assert_eq!(u.age(later).as_deref(), Some("10m ago"));
+
+        // Nothing to save: unavailable, or OK without a window.
+        let failed = Usage::unavailable(Reason::RateLimited).with_source(Source::Live);
+        assert_eq!(cache_record("work", &failed, now), None);
+        assert_eq!(cache_record("work", &Usage::ok(None, None), now), None);
     }
 
     #[test]
