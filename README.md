@@ -743,7 +743,7 @@ With `--all`, each profile's output comes under its name followed by its exit st
 #### Accounts, organizations, labels and colors
 
 <details>
-<summary>Recorded accounts, --email and --sso, labels, colors, launch banner</summary>
+<summary>Recorded accounts, --email and --sso, labels, colors</summary>
 
 After `mcc add` logs a profile in, it records the account under `[profiles.<alias>.account]` in `~/.mcc/config.toml`: its email, Claude Code's account UUID, and its organization's name and UUID, each when Claude Code reports it. If another profile (the default included) is already logged in to the same account in the same organization, `mcc add` warns: profiles on one account share its usage limits, so this is usually a mistake. The same login in another organization, such as a personal plan and a work seat, has limits of its own, so it only gets a note. It then asks for an optional label, such as `personal` or the account's organization; `--label LABEL` sets it without asking, and `-y` or a non-interactive run skips it.
 
@@ -770,7 +770,12 @@ mcc config set profiles.work.label "Corp (work)"   # "" removes it
 mcc config set profiles.work.color green           # "" removes it
 ```
 
+</details>
+
 ##### Launch banner (opt-in)
+
+<details>
+<summary>[launch] banner = true, one line on stderr at each start</summary>
 
 With `[launch] banner = true` (`mcc config set launch.banner true`), starting a profile from its command (its launcher, `~/.local/bin/<alias>`) or with `mcc run` prints one line on stderr naming it: its name in its color, its label, and the 5-hour and weekly usage `mcc statusline` (or the last `mcc usage --all`) cached, e.g. `▶ work · Acme · 5h 42% · week 18%`. Parts that aren't known are left out, and labels are shown as `mcc run` shows them. It is off by default. The banner is printed only when stderr is a terminal (and not with `mcc run --quiet`), and never on stdout, so `work -p "…" | jq` sees only Claude Code's output. Starting a profile stays fast and offline: the banner reads only `~/.mcc/config.toml` and the usage cache, never the network, a token or the Keychain, even with `[usage] live = true`, and `MCC_NO_USAGE` leaves the usage out. Launchers include the banner call only while it is on, so a plain launch with the banner off runs nothing but Claude Code. After turning it on, run `mcc refresh-launchers` once so existing launchers show it (profiles added later get it straight away; `mcc doctor` says which launchers lack it); after turning it off, `mcc refresh-launchers` takes the call out again (a launcher that still has it just prints nothing). `mcc config set launch.banner` reminds you.
 
