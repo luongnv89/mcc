@@ -10,13 +10,23 @@ name: Release
 #   mcc-<target>.tar.gz          the `mcc` binary, LICENSE and README.md
 #   mcc-<target>.tar.gz.sha256   "<sha256>  mcc-<target>.tar.gz"
 # plus SHA256SUMS with every archive's line.
+#
+# The publish job creates the release as a draft, attaches every asset, then
+# publishes it, so releases/latest/download/<asset> never reaches a release
+# without its binaries. A draft that already exists for the tag (written by
+# hand, or left by a failed run) is reused, and its title and notes are kept.
+# Re-running for a tag whose release is already published never replaces its
+# assets: Rust builds are not reproducible, so when the new SHA256SUMS differs
+# from the published one the job stops with an error and uploads nothing.
+# Release builds use the exact Rust toolchain in RUST_TOOLCHAIN below.
 
 on:
   push:
     tags:
       - "v*"
   # Re-run for an existing tag from the Actions tab: pick the tag in the
-  # "Use workflow from" menu. No inputs, so nothing is interpolated.
+  # "Use workflow from" menu. No inputs, so nothing is interpolated. A re-run
+  # finishes a draft release; it never replaces a published one's assets.
   workflow_dispatch:
 
 permissions:
@@ -28,6 +38,10 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Release builds use this exact toolchain rather than whatever the moving
+  # stable channel is that day, so a rebuild uses the same compiler. Bump it
+  # on purpose; it must stay at or above rust-version in Cargo.toml.
+  RUST_TOOLCHAIN: "1.99.1"
 
 jobs:
   check-version:
@@ -93,9 +107,13 @@ jobs:
           echo "TARGET_CC=musl-gcc" >> "$GITHUB_ENV"
       - name: Install the Rust toolchain
         run: |
-          rustup toolchain install stable --profile minimal --target "$TARGET"
-          rustup default stable
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target "$TARGET"
+          rustup default "$RUST_TOOLCHAIN"
           rustc --version
+          case "$(rustc --version)" in
+            "rustc $RUST_TOOLCHAIN "*) ;;
+            *) echo "::error::rustc is not $RUST_TOOLCHAIN"; exit 1 ;;
+          esac
       - name: cargo test
         if: matrix.run_tests
         run: cargo test --locked --target "$TARGET"
@@ -158,15 +176,75 @@ jobs:
           cat SHA256SUMS
       - name: Attach the assets to the release
         working-directory: dist
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            # No release yet: create one; the maintainer edits its notes.
-            gh release create "$TAG" --verify-tag --title "mcc $TAG" \
-              --notes "See [CHANGELOG.md](https://github.com/$GH_REPO/blob/$TAG/CHANGELOG.md)."
+          set -euo pipefail
+
+          # List every release with this tag, drafts included: looking the tag
+          # up directly can miss a draft, and GitHub allows several drafts per
+          # tag. One line per release: id, draft (true/false), asset names.
+          # The tag reaches jq through the environment, never the program text.
+          # shellcheck disable=SC2016 # $ENV.TAG is read by jq, not by the shell
+          matches="$(gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
+            --jq '.[] | select(.tag_name == $ENV.TAG) | [(.id | tostring), (.draft | tostring), ([.assets[].name] | join(" "))] | @tsv')"
+          if [ -z "$matches" ]; then
+            count=0
+          else
+            count=$(($(printf '%s\n' "$matches" | wc -l)))
           fi
-          gh release upload "$TAG" --clobber \
-            mcc-*.tar.gz mcc-*.tar.gz.sha256 SHA256SUMS
+          if [ "$count" -gt 1 ]; then
+            echo "::error::$count releases (drafts included) use tag $TAG; delete the extra ones, then re-run"
+            exit 1
+          fi
+
+          if [ "$count" -eq 0 ]; then
+            # A draft is private and is never the latest release, so nobody
+            # sees this one (and install.sh's releases/latest keeps pointing
+            # at the previous release) until every asset is attached.
+            gh release create "$TAG" --draft --verify-tag --title "mcc $TAG" \
+              --notes "See [CHANGELOG.md](https://github.com/$GH_REPO/blob/$TAG/CHANGELOG.md)."
+            is_draft=true
+            existing=""
+          else
+            IFS=$'\t' read -r _ is_draft existing <<<"$matches"
+          fi
+
+          if [ "$is_draft" = true ]; then
+            # A draft (new, written by hand, or left by a failed run) is
+            # private, so replacing what is already attached is safe.
+            # SHA256SUMS goes last, in its own call, so a release that has
+            # SHA256SUMS has every asset. Then publish the draft; its title
+            # and notes are left as they are.
+            gh release upload "$TAG" --clobber mcc-*.tar.gz mcc-*.tar.gz.sha256
+            gh release upload "$TAG" --clobber SHA256SUMS
+            gh release edit "$TAG" --draft=false
+            exit 0
+          fi
+
+          # The release is published: never replace an asset it already has.
+          # Every check comes before the first upload.
+          has() { case " $existing " in *" $1 "*) return 0 ;; esac; return 1; }
+          if has SHA256SUMS; then
+            gh release download "$TAG" --pattern SHA256SUMS -O "$RUNNER_TEMP/published.SHA256SUMS"
+            if cmp -s "$RUNNER_TEMP/published.SHA256SUMS" SHA256SUMS; then
+              echo "::notice::$TAG already has these exact assets; nothing to upload"
+              exit 0
+            fi
+            echo "::error::$TAG is already published with different checksums, and its assets are not replaced. Rust builds are not reproducible, so a re-run usually ends here. To replace them on purpose, delete the release's assets (or the release) first, then re-run."
+            diff -u "$RUNNER_TEMP/published.SHA256SUMS" SHA256SUMS || true
+            exit 1
+          fi
+          for f in mcc-*.tar.gz mcc-*.tar.gz.sha256; do
+            if has "$f"; then
+              echo "::error::$TAG is published with some mcc assets ($f) but no SHA256SUMS; delete them (or the release), then re-run"
+              exit 1
+            fi
+          done
+          # Published by hand with none of our assets: add them, never
+          # replacing anything, SHA256SUMS last.
+          gh release upload "$TAG" mcc-*.tar.gz mcc-*.tar.gz.sha256
+          gh release upload "$TAG" SHA256SUMS

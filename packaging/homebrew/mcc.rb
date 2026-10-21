@@ -6,6 +6,8 @@
 #   1. In the release commit, point `url` below at the new tag (tests/metadata.rs
 #      checks it matches Cargo.toml) and set `sha256` to 64 zeros.
 #   2. Tag and push the release: git tag vX.Y.Z && git push origin vX.Y.Z
+#      (don't publish a GitHub release for the tag by hand before the Release
+#      workflow finishes: it would be public without binaries until then)
 #   3. Get the checksum of the source tarball:
 #        curl -fsSL https://github.com/luongnv89/mcc/archive/refs/tags/vX.Y.Z.tar.gz | shasum -a 256
 #   4. Set `sha256` below, then copy this file to
@@ -14,9 +16,11 @@
 #                brew install --build-from-source luongnv89/tap/mcc && brew test mcc
 #
 # Prebuilt binaries: pushing the tag also runs .github/workflows/release.yml,
-# which attaches mcc-<target>.tar.gz, a .sha256 per archive and SHA256SUMS to
-# the release (targets: {x86_64,aarch64}-apple-darwin and
-# {x86_64,aarch64}-unknown-linux-musl). This formula still builds from source.
+# which creates the tag's release as a draft, attaches mcc-<target>.tar.gz, a
+# .sha256 per archive and SHA256SUMS, then publishes it (targets:
+# {x86_64,aarch64}-apple-darwin and {x86_64,aarch64}-unknown-linux-musl). A
+# re-run never replaces a published release's assets, so its SHA256SUMS
+# values stay the same. This formula still builds from source.
 # Once a release has those assets, the tap's copy can install them instead,
 # so users never download Rust: replace `url`/`sha256` and `depends_on "rust"`
 # with `on_macos`/`on_linux` + `on_arm`/`on_intel` blocks whose `url` is
