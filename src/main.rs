@@ -289,9 +289,32 @@ fn log_invocation() {
         &format!(
             "mcc {} — {:?}",
             env!("CARGO_PKG_VERSION"),
-            std::env::args().skip(1).collect::<Vec<_>>()
+            redact_args(std::env::args().skip(1))
         ),
     );
+}
+
+/// The command line as logged: the value of `--email` (`--email ADDRESS` or
+/// `--email=ADDRESS`) becomes `<redacted>`, so the address given to
+/// `mcc add --email` never reaches mcc.log (#88). clap accepts only the exact
+/// long option (no prefixes, no short form). Arguments after `--` are
+/// redacted the same way, which only hides more.
+fn redact_args(args: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut redact_next = false;
+    args.into_iter()
+        .map(|arg| {
+            if std::mem::take(&mut redact_next) {
+                "<redacted>".to_string()
+            } else if arg == "--email" {
+                redact_next = true;
+                arg
+            } else if arg.starts_with("--email=") {
+                "--email=<redacted>".to_string()
+            } else {
+                arg
+            }
+        })
+        .collect()
 }
 
 /// Ctrl+C exits with 130, except while `claude auth login` owns the terminal
@@ -308,4 +331,41 @@ fn install_ctrlc_handler() {
         eprintln!("\n✗ interrupted");
         std::process::exit(error::EXIT_INTERRUPTED);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_args;
+
+    fn redact(args: &[&str]) -> Vec<String> {
+        redact_args(args.iter().map(|a| a.to_string()))
+    }
+
+    #[test]
+    fn redacts_the_email_value_in_both_forms() {
+        assert_eq!(
+            redact(&["add", "work", "--email", "a@b.c", "--sso"]),
+            ["add", "work", "--email", "<redacted>", "--sso"]
+        );
+        assert_eq!(
+            redact(&["add", "--email=a@b.c", "--yes"]),
+            ["add", "--email=<redacted>", "--yes"]
+        );
+        assert_eq!(redact(&["add", "--email="]), ["add", "--email=<redacted>"]);
+    }
+
+    #[test]
+    fn a_trailing_email_flag_has_nothing_to_redact() {
+        assert_eq!(
+            redact(&["add", "work", "--email"]),
+            ["add", "work", "--email"]
+        );
+    }
+
+    #[test]
+    fn leaves_other_arguments_alone() {
+        let args = ["usage", "--show-email", "--emailx", "a@b.c", "--", "x"];
+        assert_eq!(redact(&args), args);
+        assert!(redact(&[]).is_empty());
+    }
 }
