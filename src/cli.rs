@@ -406,7 +406,8 @@ pub enum Command {
         "Each finding is ok, warn, problem or skipped; warnings and problems come\n",
         "with a fix. mcc exits 1 when there is a problem. Nothing is written: not\n",
         "~/.mcc/config.toml, not even on first use. Token expiry is checked only\n",
-        "with `[usage] live = true`, the one setting that lets mcc read tokens."
+        "with `[usage] live = true`, the one setting that lets mcc doctor read\n",
+        "tokens."
     ))]
     Doctor(DoctorArgs),
 

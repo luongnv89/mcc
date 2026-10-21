@@ -665,7 +665,7 @@ Before mcc is set up (no `~/.mcc/config.toml` with its `[env]`), bare `mcc` prin
 | Its alias block is in the rc file it was added to | the block to paste (no command adds it back) |
 | `claude auth status` reports the profile's directory as `configDirectory` (Claude Code 2.1.268 or later; skipped before), run through the profile's launcher | `mcc refresh-launchers ALIAS` |
 | It is logged in | `mcc exec ALIAS -- claude auth login` (`claude auth login` for the default) |
-| Its OAuth token hasn't expired (a warning), checked only with `[usage] live = true` and `MCC_NO_USAGE` unset, the setting under which mcc reads tokens | `mcc exec ALIAS -- claude auth login` |
+| Its OAuth token hasn't expired (a warning), checked only with `[usage] live = true` and `MCC_NO_USAGE` unset, the setting under which `mcc doctor` reads tokens | `mcc exec ALIAS -- claude auth login` |
 | Its `projects/` links to its sharing group's store exactly when sharing is on, and the store exists | `mcc share ALIAS`, `mcc share ALIAS --off` |
 | No `.projects.mcc-share-*` or `.projects.mcc-unshare-*` left by an interrupted `mcc share` | `mcc share ALIAS` for a sharing profile, else what to move or remove |
 | Drift against the default, as `mcc list` shows it (a warning; local edits are kept by design and linked items, overlays and shared plugins never count) | `mcc sync ALIAS`, or `mcc sync ALIAS --force` for conflicts |
