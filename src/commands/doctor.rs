@@ -854,7 +854,7 @@ fn check_token(
             if d.cfg.usage.live {
                 "token expiry not checked: MCC_NO_USAGE is set".into()
             } else {
-                "token expiry not checked: mcc reads tokens only with `[usage] live = true` in ~/.mcc/config.toml".into()
+                "token expiry not checked: mcc doctor reads tokens only with `[usage] live = true` in ~/.mcc/config.toml".into()
             },
         );
         return;
