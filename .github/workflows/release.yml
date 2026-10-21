@@ -26,7 +26,7 @@ on:
       - "v*"
   # Re-run for an existing tag from the Actions tab: pick the tag in the
   # "Use workflow from" menu. No inputs, so nothing is interpolated. A re-run
-  # finishes a draft release; it never changes a published one's assets.
+  # finishes a draft release; it never replaces a published one's assets.
   workflow_dispatch:
 
 permissions:
