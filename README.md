@@ -293,7 +293,7 @@ mcc add lab --clone --link skills      # clone, linking skills/ instead of copyi
 - `mcc sync` and `mcc diff` leave linked items alone: they are never compared, copied, pruned (not even with `--prune`) or recorded, so they never show up as behind, local edits or conflicts in `mcc list`. A sync warns when a linked item is no longer the link.
 - `--off` removes only the symlink, never the default's files it points at, copies the default's item in its place, and records it so the next sync is three-way again.
 - Each run is all or nothing: if a step fails, what was already changed is undone. `plugins` (see below) is applied as a separate step after the other items, so a run like `mcc link work skills plugins` that fails while sharing plugins keeps `skills` linked.
-- `settings` can't be linked (each profile's `settings.json` is merged with its [overlay](#per-profile-settings-overlays)), and neither can `keybindings`, `statusline`, `hooks` or `mcp`. `plugins` is shared a different way, described next.
+- `settings` can't be linked (each profile's `settings.json` is merged with its [overlay](#per-profile-settings-overlays)), and neither can `keybindings`, `statusline`, `hooks` or `mcp`. `plugins` is shared a different way, described next. A hand-written `link` entry that can't be linked (`link = ["settings"]`, say) is ignored: `sync`, `diff` and `list` warn about it, naming the profile and the entry, and keep syncing that item as a copy. Remove the entry with `mcc config edit`.
 
 The setting is kept per profile in `~/.mcc/config.toml`; set it with `mcc link`, which also creates the symlinks (editing the key by hand does nothing on its own):
 
