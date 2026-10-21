@@ -19,7 +19,9 @@
 //! what frees the space) and makes the profile's launcher export the
 //! variable, set to the default's `~/.claude/plugins`. No symlink is made.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 
@@ -44,12 +46,50 @@ pub fn write_through_note(alias: &str, items: &[String]) -> String {
 }
 
 /// The items linked in the profile whose dir is `dir` (none for a dir no
-/// profile has, such as the default's).
-pub fn linked<'a>(cfg: &'a Config, dir: &Path) -> &'a [String] {
+/// profile has, such as the default's). An entry that can't be linked (a
+/// hand edit, e.g. `settings`) is left out, with a warning: sync, diff and
+/// list treat that item as a copied one.
+pub fn linked(cfg: &Config, dir: &Path) -> Vec<String> {
     cfg.profiles
-        .values()
-        .find(|p| p.dir == dir)
-        .map_or(&[], |p| p.link.as_slice())
+        .iter()
+        .find(|(_, p)| p.dir == dir)
+        .map_or_else(Vec::new, |(alias, p)| usable(alias, &p.link))
+}
+
+/// Whether `item` can be in a profile's `link`: a [`copy::LINKABLE`] item
+/// or the plugins.
+pub fn can_link(item: &str) -> bool {
+    copy::LINKABLE.contains(&item) || item == plugins::ITEM
+}
+
+/// A profile's `link` split into the entries that can be linked and those
+/// that can't, each in order. Entries are taken as written (untrimmed), as
+/// sync matches them.
+fn split_link(link: &[String]) -> (Vec<String>, Vec<String>) {
+    link.iter().cloned().partition(|l| can_link(l))
+}
+
+/// The (profile, entry) pairs [`usable`] has warned about, so a command
+/// that reads a profile's links more than once warns once.
+static WARNED: Mutex<BTreeSet<(String, String)>> = Mutex::new(BTreeSet::new());
+
+/// The entries of `alias`'s `link` that can be linked. Each other one is
+/// ignored, with a warning naming it.
+fn usable(alias: &str, link: &[String]) -> Vec<String> {
+    let (keep, ignored) = split_link(link);
+    for item in ignored {
+        let first = WARNED
+            .lock()
+            .map_or(true, |mut w| w.insert((alias.to_string(), item.clone())));
+        if first {
+            ui::warn(&format!(
+                "\"{alias}\": link entry \"{item}\" can't be linked, so it is ignored (sync treats the item as not linked); remove it with `mcc config edit` (items that can be linked: {}, {})",
+                copy::LINKABLE.join(", "),
+                plugins::ITEM
+            ));
+        }
+    }
+    keep
 }
 
 /// The sync items named in `items`, each once, or a usage error naming the
@@ -71,7 +111,7 @@ pub fn check_items(items: &[String]) -> Result<Vec<String>> {
             ))
             .into());
         }
-        if !copy::LINKABLE.contains(&item) && item != plugins::ITEM {
+        if !can_link(item) {
             let why = if copy::group_names().contains(&item) {
                 format!("\"{item}\" can't be linked")
             } else {
@@ -878,10 +918,9 @@ fn report(paths: &Paths, cfg: &Config, alias: &str, spec: &Spec, what: &str) {
     let Some(profile) = cfg.profiles.get(alias) else {
         return;
     };
-    let linked: Vec<&String> = profile
-        .link
-        .iter()
-        .filter(|l| spec.items.iter().any(|i| &i.group == *l))
+    let linked: Vec<String> = usable(alias, &profile.link)
+        .into_iter()
+        .filter(|l| spec.items.iter().any(|i| &i.group == l))
         .collect();
     if linked.is_empty() {
         return;
@@ -927,6 +966,25 @@ mod tests {
         for item in copy::LINKABLE {
             assert!(copy::group_path(item).is_some(), "{item}");
         }
+    }
+
+    #[test]
+    fn link_entries_that_cant_be_linked_are_split_off() {
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        for item in copy::LINKABLE.iter().chain([&plugins::ITEM]) {
+            assert!(can_link(item), "{item}");
+        }
+        for item in ["settings", "hooks", "mcp", "nope", " skills", ""] {
+            assert!(!can_link(item), "{item:?}");
+        }
+        assert_eq!(
+            split_link(&s(&["plugins", "settings", "skills", "hooks", " skills"])),
+            (
+                s(&["plugins", "skills"]),
+                s(&["settings", "hooks", " skills"])
+            )
+        );
+        assert_eq!(split_link(&[]), (vec![], vec![]));
     }
 
     #[test]

@@ -128,7 +128,7 @@ pub fn plan_for(
     let rw = Rewriter::for_profile(paths, cfg, dir)?;
     // Linked items are the default's own files: never compared, written,
     // pruned or recorded in the manifest.
-    let spec = spec.without(super::link::linked(cfg, dir));
+    let spec = spec.without(&super::link::linked(cfg, dir));
     copy::plan_with(
         &paths.default_dir,
         &paths.default_json,
