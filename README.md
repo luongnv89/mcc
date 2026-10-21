@@ -86,6 +86,8 @@ graph TD
     Q -->|"yes"| A["Ask: wait (default),<br/>start it anyway,<br/>or a profile the project allows"]
 ```
 
+Where each file lives, and what clone and sync copy: [How it works in detail](#how-it-works-in-detail).
+
 ## Features
 
 | Feature | What you get |
@@ -102,7 +104,7 @@ graph TD
 | `mcc doctor` | Checks every profile and prints a fix for each problem |
 | Safe changes | Failed `add` rolls back; rc file and sync overwrites are backed up first |
 
-macOS and Linux. Use mcc only with accounts you own.
+macOS and Linux. Use mcc only with accounts you own. Every feature in full: [All features](#all-features).
 
 ## Quick start
 
@@ -142,6 +144,8 @@ Later, pull new skills, plugins and settings from the default:
 mcc sync work
 ```
 
+The main commands in order: [Command tour](#command-tour).
+
 ## FAQ
 
 **Does mcc switch to another account when one hits its limit?**
@@ -168,7 +172,7 @@ brew install luongnv89/tap/mcc
 
 The full documentation, one collapsed section per topic. `mcc help COMMAND` prints usage and examples in your terminal.
 
-### Features
+### All features
 
 <details>
 <summary>Every feature, in full</summary>
@@ -375,7 +379,7 @@ mcc completions fish > ~/.config/fish/completions/mcc.fish
 
 </details>
 
-### How it works
+### How it works in detail
 
 <details>
 <summary>Where profiles, launchers, aliases and state live</summary>
