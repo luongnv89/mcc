@@ -47,9 +47,13 @@ Claude Code reads its config from `CLAUDE_CONFIG_DIR`, which defaults to `~/.cla
 - **`list`.** One row per profile, in a table that fits 120 columns: account (label or organization; emails are hidden unless you ask for them), 5-hour and weekly usage (with a usage bar), last used, and a `SYNC` column saying how the profile compares with the default (`✓`, `3 behind`, `2 local edits`, `1 conflict`). Profiles that share sessions are marked `(shared)`, and a hint names `mcc refresh-launchers` while a launcher is out of date. A second table lists your projects and the profile (and account) `mcc run` starts in each. `--long` adds the command, skills, agents, commands, plugins, MCP servers, hooks, size and last sync; `--json` has everything.
 - **`usage`.** Every profile's 5-hour and weekly limits in one compact table: a usage bar with the percent used, time until reset and the reset time. Near-limit accounts stand out with `!` / `!!` markers and colour. Account emails are hidden unless you ask for them. `--json` for scripts.
 - **`rename`.** Gives a profile a new name, and with it a new command. The new name is checked like an alias in `add`. The profile's directory, login and setup stay as they are.
-- **`sync`.** A one-way copy of setup from the default profile into a profile, with `--dry-run`, `--prune`, `--only`, and `--all`.
-- **Opt-in session sharing.** Off by default. `mcc share work` (or starting a profile with `work --mcc-share`) lets that profile's `--resume` see the sessions of every other sharing profile. Credentials and account files are never shared.
-- **Per-project profiles.** `mcc project set work` makes `work` the profile `mcc run` starts in this repository, so a project stays on one account. mcc never switches accounts on its own: if that account is at its 5-hour or weekly limit, `mcc run` asks whether to wait (the default) or start it anyway, and offers another profile only when the project allows it (`--allow`).
+- **`sync`.** A one-way copy of setup from the default profile into a profile, with `--dry-run`, `--prune`, `--only`, and `--all`. It keeps edits made in the profile and reports a path changed on both sides as a conflict (`--force` overwrites it), once the profile has a sync record (a profile cloned by mcc 0.4.0 or later has one; any other profile gets it from its first sync). Everything it replaces is backed up first, and `mcc diff` shows what differs.
+- **Opt-in session sharing.** Off by default. `mcc share work` (or starting a profile with `work --mcc-share`) lets that profile's `--resume` see the sessions of the other sharing profiles in its group (`--group NAME`, else the `default` group). Joining a group whose profiles are in another organization is refused unless you pass `--allow-cross-org`. Credentials and account files are never shared.
+- **Per-project profiles.** `mcc project set work` makes `work` the profile `mcc run` starts in this repository, so a project stays on one account. mcc never switches accounts on its own: if that account is at its 5-hour or weekly limit, `mcc run` asks whether to wait (the default) or start it anyway, and offers another profile only when the project allows it (`--allow`). `mcc env` and `mcc exec` let plain `claude`, IDE extensions and scripts use a profile too.
+- **Linked items, shared plugins and settings overlays.** `mcc link` replaces a profile's copy of the default's skills, agents, commands, output styles or `CLAUDE.md` with a symlink (opt-in), and a clone shares the default's plugins instead of copying them (`mcc link ALIAS plugins` moves an older profile over). A settings overlay keeps a profile's own `model`, permissions or other settings through every sync.
+- **Usage without reading your logins.** The opt-in `mcc statusline` caches each profile's 5-hour and weekly rate limits as you use Claude Code, for `list`, `usage` and `run`, and `--prefix` puts the active profile's name in the status line. Looking usage up live with each profile's login is opt-in too (`[usage] live = true`).
+- **`doctor` and `config`.** `mcc doctor` checks every profile's setup and prints a fix for each problem it finds; `mcc config` reads and changes mcc's settings without hand-editing TOML.
+- **Profiles you can tell apart.** A label and a color per profile, `mcc` on its own for a one-screen status of every profile, and an opt-in launch banner that names the profile and its usage as it starts.
 - **`delete`.** Logs the profile out (clearing its keychain entry), then removes its directory, launcher, shell alias, and registry entry. It refuses the old name of a renamed profile, so that profile's files are never removed by mistake.
 - **Clear progress everywhere.** Steps are numbered with a status and timing. Every run is logged to `~/.mcc/logs/mcc.log`, which is rotated to `mcc.log.1` at about 1 MB.
 - **Safe by design.** Changes are rolled back if `add` fails. Your rc file is backed up before mcc edits it, and `sync` backs up every file it overwrites or removes. mcc only removes what it created.
@@ -218,7 +222,7 @@ mcc completions fish > ~/.config/fish/completions/mcc.fish
 | Shared sessions | `~/.mcc/shared/projects` (the `default` group) and `~/.mcc/shared/groups/<name>/projects` (`--group <name>`), only for profiles that opted in with `mcc share` (their `projects/` links there) |
 | Project defaults | `[projects."<dir>"]` tables in `~/.mcc/config.toml`, written by `mcc project set` |
 | Statusline state | `~/.mcc/state/<profile>/usage.json` (rate limits cached by `mcc statusline`) and `statusline.json` (the `statusLine` it replaced), only after `mcc statusline install` |
-| mcc state | `~/.mcc/config.toml` (environment + registry; safe to edit by hand, mcc keeps your comments and formatting), `~/.mcc/.lock` (held while a command writes the config), `~/.mcc/logs/mcc.log` (rotated to `mcc.log.1` at about 1 MB), `~/.mcc/backups/` (rc file backups, session-merge conflicts) |
+| mcc state | `~/.mcc/config.toml` (environment + registry; safe to edit by hand, mcc keeps your comments and formatting), `~/.mcc/.lock` (held while a command writes the config), `~/.mcc/logs/mcc.log` (rotated to `mcc.log.1` at about 1 MB), `~/.mcc/backups/` (rc file backups, session-merge conflicts, `settings.json` backups from `mcc statusline`) |
 
 ### What clone and sync copy
 
@@ -448,7 +452,7 @@ $ mcc run
 
 - **`mcc run --profile NAME`** starts NAME without checking usage (`default` or `claude` for `~/.claude`). It is a one-off choice: the project's default doesn't change. Inside a project, a profile other than the project's prints the same note.
 - **Without a terminal**, `mcc run` can't ask. At the limit it stops with exit code 2 and names `mcc run --profile <profile>` to start it anyway.
-- **Unknown usage:** only the project profile's usage is ever fetched. If it can't be read (offline, an expired login, `MCC_NO_USAGE=1`), that profile starts. Unknown usage never counts as being at the limit.
+- **Unknown usage:** only the project profile's usage is ever fetched. If it can't be read (nothing cached for it, `MCC_NO_USAGE=1`, or, with the live lookup, offline or an expired login), that profile starts. Unknown usage never counts as being at the limit.
 - **`mcc run --dry-run`** prints the project's profile on stdout and why on stderr (at its limit, that `mcc run` would ask and wait by default), and starts nothing.
 - **Sessions:** Claude Code keeps sessions per profile. If you start another profile, `--resume` and `-c` there only see that profile's sessions, unless both profiles [share sessions](#sharing-sessions-between-profiles).
 - **Why there's no automatic switching:** Anthropic's seat rules are worded differently for each plan, and both rule it out:
@@ -481,7 +485,7 @@ mcc env default          # unset CLAUDE_CONFIG_DIR (the default profile, ~/.clau
 mcc env | source         # fish: set -gx CLAUDE_CONFIG_DIR '/Users/me/.mcc/profiles/work'
 ```
 
-The shell is `--shell zsh|bash|fish`, else bash inside a direnv `.envrc`, else your `$SHELL` (pass `--shell bash` when evaluating it in another shell than your login shell). Paths are single-quoted, so spaces and quotes in them are safe. It never checks usage and never writes anything; the choice stays the one you made with `mcc project set`, and naming a profile other than the project's prints the same note as `mcc run --profile`.
+The shell is `--shell zsh|bash|fish`, else bash inside a direnv `.envrc`, else your `$SHELL` (pass `--shell bash` when evaluating it in another shell than your login shell). Paths are single-quoted, so spaces and quotes in them are safe. It never checks usage and writes nothing but its log entry in `~/.mcc/logs/mcc.log`; the choice stays the one you made with `mcc project set`, and naming a profile other than the project's prints the same note as `mcc run --profile`.
 
 **With [direnv](https://direnv.net/)**, the project's profile applies whenever you `cd` into it. Put this in the project's `.envrc`, then run `direnv allow`:
 
@@ -641,7 +645,7 @@ Before mcc is set up (no `~/.mcc/config.toml` with its `[env]`), bare `mcc` prin
 
 ### Checking your setup: `mcc doctor`
 
-`mcc doctor` checks every profile, the default included, and prints a fix for each problem it finds. It only reads: it never writes `~/.mcc/config.toml` (not even the first-run setup), takes no lock, and changes no file. `mcc doctor work` checks one profile.
+`mcc doctor` checks every profile, the default included, and prints a fix for each problem it finds. It doesn't change your setup: it never writes `~/.mcc/config.toml` (not even the first-run setup), takes no lock, and writes no file except its line in `~/.mcc/logs/mcc.log`, and that only when the log folder already exists. `mcc doctor work` checks one profile.
 
 | Check | Fix it prints |
 |---|---|
@@ -666,7 +670,7 @@ Each finding is `ok`, `warn`, `problem` or `skipped` (with the reason). mcc exit
 
 An alias must be 1–32 characters: lowercase letters, digits, `-` or `_`, starting with a letter. It is rejected if any of these already uses the name:
 
-- mcc's reserved names: `claude`, `mcc`, `default`, `help`, `all`, `path`, `share`, `refresh-launchers`, `project`, `run`, `statusline`, `doctor`
+- mcc's reserved names: `claude`, `mcc`, `default`, `help`, `all`, `path`, `share`, `link`, `refresh-launchers`, `project`, `run`, `env`, `exec`, `statusline`, `doctor`
 - shell keywords and builtins
 - existing mcc profiles, and the old name of a renamed profile (its directory still uses that name; the error names the profile)
 - executables on `$PATH`
@@ -699,6 +703,7 @@ An alias must be 1–32 characters: lowercase letters, digits, `-` or `_`, start
 ## Uninstall
 
 ```sh
+mcc statusline uninstall  # if you ran mcc statusline install: puts your previous statusLine back
 for p in $(mcc list --json | jq -r '.[] | select(.is_default | not) | .name'); do mcc delete "$p" --yes; done
 brew uninstall mcc      # if you installed with Homebrew
 cargo uninstall mcc     # if you built from source with cargo

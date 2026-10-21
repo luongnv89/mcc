@@ -41,7 +41,7 @@
       <span class="eyebrow">Privacy</span>
       <h1>Privacy policy</h1>
       <p class="lede">mcc runs on your computer. It has no accounts, no telemetry and no analytics, and the project receives no data from you.</p>
-      <p class="meta">Effective October 20, 2026 · Applies to the mcc command-line tool and this website</p>
+      <p class="meta">Effective October 21, 2026 · Applies to the mcc command-line tool and this website</p>
     </div>
   </div>
 
@@ -93,12 +93,14 @@
         <div class="table-wrap"><table>
           <thead><tr><th>Location</th><th>Contents</th></tr></thead>
           <tbody>
-            <tr><td><code>~/.mcc/config.toml</code></td><td>Detected environment (OS, shell, rc file, <code>claude</code> path), the list of profiles, your settings, and when one-time notes (such as the live usage lookup disclosure) were shown</td></tr>
+            <tr><td><code>~/.mcc/config.toml</code></td><td>Detected environment (OS, shell, rc file, <code>claude</code> path), the list of profiles, the account each mcc profile signed in to as Claude Code reports it (email, account ID, and organization name, ID and type), each profile's label and color, project defaults, your settings, and when one-time notes (such as the live usage lookup disclosure) were shown</td></tr>
+            <tr><td><code>~/.mcc/.lock</code></td><td>An empty file that mcc commands lock while they change <code>config.toml</code>, so two runs don't lose each other's changes</td></tr>
             <tr><td><code>~/.mcc/state/&lt;profile&gt;/</code></td><td>Only after <code>mcc statusline install</code>: the 5-hour and weekly rate limits Claude Code passes to its status line (percent used and reset time), and the <code>statusLine</code> setting the shim replaced. No login or token</td></tr>
             <tr><td><code>~/.mcc/profiles/&lt;alias&gt;/</code></td><td>Each profile's Claude Code configuration. Claude Code itself stores that profile's login and history here</td></tr>
-            <tr><td><code>~/.mcc/shared/projects/</code></td><td>Session transcripts of the profiles you opted in with <code>mcc share</code>. It exists only once sharing is turned on</td></tr>
+            <tr><td><code>&lt;profile&gt;/.mcc-sync.json</code></td><td>The paths and MCP server names mcc last copied into the profile, each with a hash of what it wrote, so <code>mcc sync</code> can tell your edits from the default's changes. No file contents</td></tr>
+            <tr><td><code>~/.mcc/shared/projects/</code>, <code>~/.mcc/shared/groups/&lt;name&gt;/projects/</code></td><td>Session transcripts of the profiles you opted in with <code>mcc share</code>, one store per group. They exist only once sharing is turned on</td></tr>
             <tr><td><code>~/.mcc/logs/mcc.log</code></td><td>A log of each command's steps and results, which can include file paths and a profile's account email. It never contains access tokens. At about 1 MB it is moved to <code>mcc.log.1</code>, replacing the previous one, so at most about 2 MB of log is kept</td></tr>
-            <tr><td><code>~/.mcc/backups/</code>, <code>&lt;profile&gt;/.mcc-backup/</code></td><td>Copies of your rc file and of the profile files a sync overwrites or removes, taken before mcc changes them, and session files that <code>mcc share</code> could not merge</td></tr>
+            <tr><td><code>~/.mcc/backups/</code>, <code>&lt;profile&gt;/.mcc-backup/</code></td><td>Copies of your rc file, of the <code>settings.json</code> files <code>mcc statusline</code> changes, and of the profile files a sync overwrites or removes, taken before mcc changes them; a profile's own copy of what <code>mcc link</code> replaces, its plugins included; and session files that <code>mcc share</code> could not merge</td></tr>
             <tr><td><code>~/.local/bin/&lt;alias&gt;</code> and your rc file</td><td>The launcher for each profile and a marked alias block</td></tr>
           </tbody>
         </table></div>
@@ -120,7 +122,7 @@
         <p><code>mcc add</code> runs <code>claude auth login</code>, and <code>mcc delete</code> runs <code>claude auth logout</code>. Those are Claude Code's own commands. They talk to Anthropic under Anthropic's terms, and mcc does not see your password or the sign-in exchange.</p>
 
         <h3>Installing mcc</h3>
-        <p>The install script, <code>cargo install</code> and <code>brew install</code> download mcc's source from GitHub and its dependencies from crates.io. Homebrew also downloads its own Rust to build mcc. Those services see the request like any other download.</p>
+        <p>The install script downloads a prebuilt mcc binary and its SHA-256 checksum from mcc's GitHub releases, over HTTPS only. It builds from source instead, as <code>cargo install</code> and <code>brew install</code> do, when a release has no binary for your platform, with <code>MCC_FROM_SOURCE=1</code>, or when run from a clone. Building downloads mcc's source from GitHub and its dependencies from crates.io, and Homebrew also downloads its own Rust to build mcc. Those services see the request like any other download.</p>
         <p>mcc makes no other network requests.</p>
       </section>
 
@@ -128,7 +130,7 @@
         <h2>Third parties <a class="anchor" href="#third-parties" aria-label="Link to Third parties">#</a></h2>
         <ul>
           <li><strong>Anthropic</strong> receives the usage requests described above, if you turn them on, and handles Claude Code sign-in. See <a href="https://www.anthropic.com/legal/privacy">Anthropic's privacy policy</a>.</li>
-          <li><strong>GitHub</strong> hosts the source code, the install script and this website. See the <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub General Privacy Statement</a>.</li>
+          <li><strong>GitHub</strong> hosts the source code, the install script, the release binaries and this website. See the <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub General Privacy Statement</a>.</li>
           <li><strong>crates.io</strong> serves Rust dependencies when you build mcc. See the <a href="https://foundation.rust-lang.org/policies/privacy-policy/">Rust Foundation privacy policy</a>.</li>
           <li><strong>Homebrew</strong>, if you install mcc with it, serves the Rust used to build mcc and has its own analytics. See <a href="https://docs.brew.sh/Analytics">Homebrew's analytics page</a>.</li>
         </ul>

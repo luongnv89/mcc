@@ -38,7 +38,7 @@
 <main id="main">
   <div class="page-head">
     <div class="wrap">
-      <span class="eyebrow">Documentation · v0.3.0</span>
+      <span class="eyebrow">Documentation · v0.4.0</span>
       <h1>Using mcc</h1>
       <p class="lede">Install mcc, add profiles, keep them in sync and check their limits. Every command and option, with examples.</p>
     </div>
@@ -66,6 +66,8 @@
               <li><a href="#cmd-link">link</a></li>
               <li><a href="#cmd-project">project</a></li>
               <li><a href="#cmd-run">run</a></li>
+              <li><a href="#cmd-env">env</a></li>
+              <li><a href="#cmd-exec">exec</a></li>
               <li><a href="#cmd-statusline">statusline</a></li>
               <li><a href="#cmd-refresh-launchers">refresh-launchers</a></li>
               <li><a href="#cmd-doctor">doctor</a></li>
@@ -118,11 +120,12 @@
       <section id="quick-start">
         <h2>Quick start <a class="anchor" href="#quick-start" aria-label="Link to Quick start">#</a></h2>
         <div class="code"><pre><span class="p">$ </span>mcc init                    <span class="cm"># detect your environment (also runs automatically the first time)</span>
+<span class="p">$ </span>mcc statusline install      <span class="cm"># opt-in: lets mcc show each account's usage</span>
 <span class="p">$ </span>mcc add work --clone        <span class="cm"># new profile with your default setup, then log in</span>
 <span class="p">$ </span>work                        <span class="cm"># start Claude Code as the "work" account</span>
 <span class="p">$ </span>mcc list                    <span class="cm"># see all profiles</span>
 <span class="p">$ </span>mcc usage                   <span class="cm"># how much of each account's limits is used</span>
-<span class="p">$ </span>mcc sync work               <span class="cm"># later: pull new skills/plugins/settings from the default</span>
+<span class="p">$ </span>mcc sync work               <span class="cm"># later: pull the default's new skills and settings, keeping your edits</span>
 <span class="p">$ </span>mcc rename work job         <span class="cm"># rename the profile: its command becomes `job`</span>
 <span class="p">$ </span>mcc delete job              <span class="cm"># remove it completely</span></pre></div>
         <p>After <code>mcc add</code> finishes, the new command works in any shell straight away, because the launcher is written to <code>~/.local/bin</code>. The shell alias takes effect in new terminals.</p>
@@ -137,7 +140,7 @@
         <h3>Clone or fresh</h3>
         <p>When you add a profile you choose how it starts:</p>
         <ul>
-          <li><strong>Clone</strong> (<code>--clone</code>) copies the default profile's setup: settings, <code>CLAUDE.md</code>, skills, agents, commands, hooks, plugins and MCP servers. It never copies credentials. See <a href="#clone-sync">Clone &amp; sync rules</a>.</li>
+          <li><strong>Clone</strong> (<code>--clone</code>) copies the default profile's setup: settings, <code>CLAUDE.md</code>, skills, agents, commands, hooks and MCP servers, and shares its plugins instead of copying them (<code>--copy-plugins</code> copies them). It never copies credentials. See <a href="#clone-sync">Clone &amp; sync rules</a>.</li>
           <li><strong>Fresh</strong> (<code>--fresh</code>) starts with an empty profile.</li>
         </ul>
         <h3>Sync</h3>
@@ -151,7 +154,7 @@
           <tbody>
             <tr><td><a href="#cmd-status"><code>mcc</code></a></td><td>With no command, once mcc is set up: the profile that applies in this directory and why, every profile's account, usage and drift, and warnings; read-only (before setup, the help)</td><td></td></tr>
             <tr><td><a href="#cmd-init"><code>mcc init</code></a></td><td>Detect OS, terminal, shell, rc file and the <code>claude</code> binary</td><td><code>--force</code>, <code>--shell</code></td></tr>
-            <tr><td><a href="#cmd-add"><code>mcc add [ALIAS]</code></a></td><td>Create the default profile, or a new profile with its own command</td><td><code>--clone</code>, <code>--fresh</code>, <code>--no-login</code>, <code>-y</code></td></tr>
+            <tr><td><a href="#cmd-add"><code>mcc add [ALIAS]</code></a></td><td>Create the default profile, or a new profile with its own command</td><td><code>--clone</code>, <code>--fresh</code>, <code>--link ITEMS</code>, <code>--copy-plugins</code>, <code>--no-login</code>, <code>--email</code>, <code>--sso</code>, <code>--label</code>, <code>--color</code>, <code>-y</code></td></tr>
             <tr><td><a href="#cmd-list"><code>mcc list</code></a> (<code>ls</code>)</td><td>Show every profile with metrics and usage</td><td><code>--json</code>, <code>--json-v2</code>, <code>-l</code>, <code>--no-usage</code></td></tr>
             <tr><td><a href="#cmd-usage"><code>mcc usage [PROFILE]</code></a></td><td>Show 5-hour and weekly usage in a table</td><td><code>--json</code>, <code>--json-v2</code>, <code>--show-email</code>, <code>--hide-email</code></td></tr>
             <tr><td><a href="#cmd-sync"><code>mcc sync [ALIAS]</code></a></td><td>Copy the default's setup into a profile</td><td><code>--all</code>, <code>--dry-run</code>, <code>--prune</code>, <code>--force</code>, <code>--only</code>, <code>-y</code></td></tr>
@@ -161,6 +164,8 @@
             <tr><td><a href="#cmd-link"><code>mcc link ALIAS [ITEMS]</code></a></td><td>Link read-mostly items to the default's copy instead of copying them; edits write through to the default (off by default)</td><td><code>--off</code></td></tr>
             <tr><td><a href="#cmd-project"><code>mcc project set PROFILE</code></a></td><td>Make PROFILE the one <code>mcc run</code> starts in this project; also <code>unset</code> and <code>list</code></td><td><code>--path</code>, <code>--allow</code>, <code>list --json</code></td></tr>
             <tr><td><a href="#cmd-run"><code>mcc run [-- CLAUDE_ARGS]</code></a></td><td>Start Claude Code with the current project's profile; at its limit, ask whether to wait (the default) or start it anyway</td><td><code>--profile</code>, <code>--dry-run</code></td></tr>
+            <tr><td><a href="#cmd-env"><code>mcc env [PROFILE]</code></a></td><td>Print the shell line that points <code>CLAUDE_CONFIG_DIR</code> at the project's profile (or PROFILE), for <code>eval</code> or direnv</td><td><code>--shell</code></td></tr>
+            <tr><td><a href="#cmd-exec"><code>mcc exec PROFILE -- CMD…</code></a></td><td>Run a command with a profile's <code>CLAUDE_CONFIG_DIR</code> and exit with its status; <code>--all</code> runs it once per profile</td><td><code>--all</code></td></tr>
             <tr><td><a href="#configuration"><code>mcc config get|set|edit|path</code></a></td><td>Read or change <code>~/.mcc/config.toml</code>; invalid values and edits leave the file unchanged</td><td><code>get KEY</code>, <code>set KEY VALUE</code>, <code>edit</code>, <code>path</code></td></tr>
             <tr><td><a href="#cmd-statusline"><code>mcc statusline install</code></a></td><td>Opt-in: show the active profile in Claude Code's status line and cache each profile's rate limits; also <code>uninstall</code></td><td><code>--prefix</code>, <code>-y</code></td></tr>
             <tr><td><a href="#cmd-refresh-launchers"><code>mcc refresh-launchers [ALIAS...]</code></a></td><td>Rewrite launchers and shell aliases from the current templates</td><td></td></tr>
@@ -195,7 +200,7 @@ work       Acme     ████░░░░░░ 42% (2h) ██░░░░�
 <span class="p">$ </span>mcc init --force --shell bash</pre></div>
 
         <h3 id="cmd-add"><code>mcc add</code> <a class="anchor" href="#cmd-add" aria-label="Link to mcc add">#</a></h3>
-        <p class="synopsis">mcc add [ALIAS] [--clone | --fresh] [--no-login] [--label LABEL] [-y]</p>
+        <p class="synopsis">mcc add [ALIAS] [--clone [--link ITEMS] [--copy-plugins] | --fresh] [--no-login | [--email ADDRESS] [--sso]] [--label LABEL] [--color COLOR] [-y]</p>
         <p>If <code>~/.claude</code> doesn't exist, <code>add</code> creates your default profile. Otherwise it creates a new profile in eight numbered steps:</p>
         <ol>
           <li>Validate the alias (see <a href="#aliases">Alias rules</a>)</li>
@@ -214,12 +219,15 @@ work       Acme     ████░░░░░░ 42% (2h) ██░░░░�
           <thead><tr><th>Option</th><th>Effect</th></tr></thead>
           <tbody>
             <tr><td><code>ALIAS</code></td><td>Command name for the new profile (prompted if omitted)</td></tr>
-            <tr><td><code>--clone</code></td><td>Copy the default profile's setup (never credentials)</td></tr>
+            <tr><td><code>--clone</code></td><td>Copy the default profile's setup and share its plugins (never credentials)</td></tr>
             <tr><td><code>--fresh</code></td><td>Start with an empty profile</td></tr>
+            <tr><td><code>--link ITEMS</code></td><td>With <code>--clone</code>: link these items (<code>skills</code>, <code>agents</code>, <code>commands</code>, <code>output-styles</code>, <code>claude-md</code>) to the default's instead of copying them; see <a href="#cmd-link"><code>mcc link</code></a></td></tr>
+            <tr><td><code>--copy-plugins</code></td><td>With <code>--clone</code>: give the profile its own copy of the default's plugins instead of sharing them</td></tr>
             <tr><td><code>--no-login</code></td><td>Skip <code>claude auth login</code>; log in later by running the alias</td></tr>
             <tr><td><code>--email ADDRESS</code></td><td>Passed to <code>claude auth login --email</code>: pre-fills the address on the sign-in page. mcc does not print it, and <code>mcc.log</code> records it as <code>&lt;redacted&gt;</code>; once signed in, the account's email (usually the same) is shown and logged like any profile's</td></tr>
             <tr><td><code>--sso</code></td><td>Passed to <code>claude auth login --sso</code>: forces the SSO sign-in flow</td></tr>
             <tr><td><code>--label LABEL</code></td><td>Label the account (e.g. <code>personal</code>, or the work organization) instead of being asked; 1–64 characters</td></tr>
+            <tr><td><code>--color COLOR</code></td><td>Show the profile's name in this color in <code>mcc list</code>, <code>mcc run</code> and the status line: <code>black</code>, <code>red</code>, <code>green</code>, <code>yellow</code>, <code>blue</code>, <code>magenta</code>, <code>cyan</code> or <code>white</code></td></tr>
             <tr><td><code>-y</code>, <code>--yes</code></td><td>Accept defaults without prompting</td></tr>
           </tbody>
         </table></div>
@@ -246,7 +254,7 @@ work       Acme     ████░░░░░░ 42% (2h) ██░░░░�
 NAME       ACCOUNT   5H                     WEEK                   LAST USED  SYNC
 default ★  Acme      <span class="g">████</span><span class="d">░░░░░░</span> 42% (2h)    <span class="g">██</span><span class="d">░░░░░░░░</span> 18% (3d)    just now   —
 work       personal  <span class="y">█████████</span><span class="d">░</span> <span class="y">85%!</span> (35m)  <span class="r">██████████</span> <span class="r">96%!!</span> (3d)  2h ago     ✓
-lab        —         <span class="d">unavailable            unavailable</span>            1d ago     3 behind</pre></div>
+lab        —         <span class="d">—                      —</span>                      1d ago     3 behind</pre></div>
         <div class="code"><pre><span class="p">$ </span>mcc list --long
 <span class="p">$ </span>mcc list --no-usage            <span class="cm"># offline: skip the usage lookup</span>
 <span class="p">$ </span>mcc list --json --show-email | jq '.[] | {name, account, skills, plugins_installed}'
@@ -342,6 +350,21 @@ lab        —         <span class="d">unavailable            unavailable</span>
 <span class="p">$ </span>mcc run --profile lab            <span class="cm"># this time only; the project's default stays</span>
 <span class="p">$ </span>mcc run --dry-run</pre></div>
 
+        <h3 id="cmd-env"><code>mcc env</code> <a class="anchor" href="#cmd-env" aria-label="Link to mcc env">#</a></h3>
+        <p class="synopsis">mcc env [PROFILE] [--shell zsh|bash|fish]</p>
+        <p>Prints the shell line that points <code>CLAUDE_CONFIG_DIR</code> at the profile <code>mcc run</code> would start here (the project's default, else the default profile, which prints <code>unset CLAUDE_CONFIG_DIR</code>), or at PROFILE, so plain <code>claude</code>, IDE extensions and scripts use it too. For a profile that shares the default's plugins it also sets <code>CLAUDE_CODE_PLUGIN_CACHE_DIR</code>. The shell is <code>--shell</code>, else bash inside a direnv <code>.envrc</code>, else your <code>$SHELL</code>; fish gets <code>set -gx</code>. Paths are single-quoted, so spaces and quotes are safe. It never checks usage and writes nothing but its log entry in <code>~/.mcc/logs/mcc.log</code>; naming a profile other than the project's prints the same note as <code>mcc run --profile</code>. With <a href="https://direnv.net/">direnv</a>, put <code>eval "$(mcc env)"</code> in the project's <code>.envrc</code> and run <code>direnv allow</code>: the project's profile then applies whenever you <code>cd</code> into it.</p>
+        <div class="code"><pre><span class="p">$ </span>eval "$(mcc env)"               <span class="cm"># this shell now uses the project's profile</span>
+<span class="p">$ </span>mcc env work                    <span class="cm"># export CLAUDE_CONFIG_DIR='/Users/me/.mcc/profiles/work'</span>
+<span class="p">$ </span>mcc env default                 <span class="cm"># unset CLAUDE_CONFIG_DIR (the default profile, ~/.claude)</span>
+<span class="p">$ </span>mcc env | source                <span class="cm"># the same in fish</span></pre></div>
+
+        <h3 id="cmd-exec"><code>mcc exec</code> <a class="anchor" href="#cmd-exec" aria-label="Link to mcc exec">#</a></h3>
+        <p class="synopsis">mcc exec (PROFILE | --all) -- CMD [ARGS…]</p>
+        <p>Runs any command with a profile's <code>CLAUDE_CONFIG_DIR</code> (unset for the default profile) and exits with its status, which makes Claude Code's own plugin and MCP commands work per profile. <code>--all</code> runs it once per profile, the default first, one after the other: each profile's output comes under its name, followed by its exit status, and mcc exits 0 only if the command succeeded everywhere (else with the first failing status). A command that can't be found counts as exit 127 (126 when it can't be run), and Ctrl+C stops at the current profile. mcc holds no lock while the command runs, so the command may run mcc itself.</p>
+        <div class="code"><pre><span class="p">$ </span>mcc exec work -- claude mcp list
+<span class="p">$ </span>mcc exec default -- claude plugin list
+<span class="p">$ </span>mcc exec --all -- claude plugin marketplace update</pre></div>
+
         <h3 id="cmd-statusline"><code>mcc statusline</code> <a class="anchor" href="#cmd-statusline" aria-label="Link to mcc statusline">#</a></h3>
         <p class="synopsis">mcc statusline install [--prefix] [--yes] · mcc statusline uninstall</p>
         <p>Opt-in. Claude Code passes the session's 5-hour and weekly rate limits (<code>rate_limits.five_hour</code> and <code>rate_limits.seven_day</code>, with <code>used_percentage</code> and <code>resets_at</code>) to its <a href="https://code.claude.com/docs/en/statusline">status-line command</a> on stdin. <code>install</code> and <code>uninstall</code> are the only mcc commands that change an existing default profile (a symlinked <code>settings.json</code> stays a symlink). <code>install</code> backs up <code>~/.claude/settings.json</code> to <code>~/.mcc/backups/</code>, records the current <code>statusLine</code> in <code>~/.mcc/state/default/statusline.json</code> and sets <code>mcc statusline</code> in its place, never twice. <code>--prefix</code> starts the status line with the active profile's name, e.g. <code>[work]</code>, or <code>[work · Acme]</code> when the profile has a label, in the profile's color (<code>mcc config set profiles.work.color blue</code>) unless <code>NO_COLOR</code> is set. Profiles get it with their next <code>mcc sync</code>; when <code>[sync] exclude</code> has <code>"settings"</code>, <code>install</code> offers to add it to each profile directly (<code>--yes</code> accepts).</p>
@@ -357,7 +380,7 @@ lab        —         <span class="d">unavailable            unavailable</span>
 
         <h3 id="cmd-doctor"><code>mcc doctor</code> <a class="anchor" href="#cmd-doctor" aria-label="Link to mcc doctor">#</a></h3>
         <p class="synopsis">mcc doctor [PROFILE] [--json | --json-v2]</p>
-        <p>Checks every profile, the default included (or only PROFILE; <code>default</code> or <code>claude</code> for <code>~/.claude</code>), and prints a fix for each problem. It only reads: no <code>~/.mcc/config.toml</code> write (not even the first-run setup), no lock, no file changed.</p>
+        <p>Checks every profile, the default included (or only PROFILE; <code>default</code> or <code>claude</code> for <code>~/.claude</code>), and prints a fix for each problem. It doesn't change your setup: no <code>~/.mcc/config.toml</code> write (not even the first-run setup), no lock, and no file written except its line in <code>~/.mcc/logs/mcc.log</code>, and that only when the log folder already exists.</p>
         <ul>
           <li>Setup: mcc is initialized (<code>mcc init</code>), <code>claude</code> is found, <code>~/.local/bin</code> is on <code>PATH</code> (<code>source</code> the rc file, or <code>mcc init --force</code>).</li>
           <li>No rc file sets <code>CLAUDE_CONFIG_DIR</code> for every shell (<code>export</code>, a bare assignment, fish's <code>set -gx</code>; comments, aliases and mcc's own blocks are ignored): such a line makes plain <code>claude</code> stop starting the default profile. The fix names the line to remove. <code>CLAUDE_CONFIG_DIR</code> set in the current shell is a warning (<code>unset CLAUDE_CONFIG_DIR</code>; fish: <code>set -e CLAUDE_CONFIG_DIR</code>).</li>
@@ -415,7 +438,7 @@ lab        —         <span class="d">unavailable            unavailable</span>
             <tr><td><code>keybindings</code></td><td><code>keybindings.json</code></td></tr>
             <tr><td><code>statusline</code></td><td><code>statusline.conf</code></td></tr>
             <tr><td><code>agents</code>, <code>skills</code>, <code>commands</code>, <code>hooks</code>, <code>output-styles</code></td><td>those directories</td></tr>
-            <tr><td><code>plugins</code></td><td><code>plugins/installed_plugins.json</code>, <code>plugins/known_marketplaces.json</code>, <code>plugins/marketplaces/</code>, <code>plugins/cache/</code></td></tr>
+            <tr><td><code>plugins</code></td><td><code>plugins/installed_plugins.json</code>, <code>plugins/known_marketplaces.json</code>, <code>plugins/marketplaces/</code>, <code>plugins/cache/</code>; only for a profile with its own plugins: one that shares the default's (a clone, unless <code>--copy-plugins</code>) gets none of these, see <a href="#cmd-link"><code>mcc link</code></a></td></tr>
             <tr><td><code>mcp</code></td><td>the <code>mcpServers</code> entry from <code>~/.claude.json</code>, merged; the rest of the profile's state is kept</td></tr>
           </tbody>
         </table></div>
@@ -497,7 +520,7 @@ allow = ["lab"]                <span class="cm"># optional: offered when `work` 
           <li><strong>Allowed profiles:</strong> <code>mcc project set work --allow lab</code> lets the prompt offer <code>lab</code> (repeat <code>--allow</code>, or separate names with commas). Setting the project again without <code>--allow</code> clears the list.</li>
           <li><strong><code>--profile NAME</code></strong> starts NAME without checking usage, this time only: the project's default doesn't change.</li>
           <li><strong>Without a terminal</strong>, <code>mcc run</code> can't ask. At the limit it stops with exit code 2 and names <code>mcc run --profile &lt;profile&gt;</code> to start it anyway.</li>
-          <li><strong>Unknown usage:</strong> only the project profile's usage is ever fetched. If it can't be read (offline, an expired login, <code>MCC_NO_USAGE=1</code>), that profile starts.</li>
+          <li><strong>Unknown usage:</strong> only the project profile's usage is ever read. If it isn't known (nothing cached, <code>MCC_NO_USAGE=1</code>, or, with the live lookup, offline or an expired login), that profile starts.</li>
           <li><strong>Sessions:</strong> Claude Code keeps sessions per profile, so in another profile <code>--resume</code> only sees that profile's sessions, unless both profiles <a href="#session-sharing">share sessions</a>.</li>
           <li><strong>Why there's no automatic switching:</strong> Anthropic's seat rules are worded differently for each plan, and both rule it out. The <a href="https://support.claude.com/en/articles/12004354-purchase-and-manage-seats-on-team-plans">Team</a> plan: &ldquo;Users can't route their work through another user's account to use that user's remaining usage.&rdquo; The <a href="https://support.claude.com/en/articles/13393991-purchase-and-manage-seats-on-enterprise-plans">Enterprise</a> plan: &ldquo;Users can't use another user's account to get around their own spend limits or usage limits.&rdquo; Its <a href="https://www.anthropic.com/legal/consumer-terms">Consumer Terms</a> also forbid bypassing its systems or protective measures, and its <a href="https://www.anthropic.com/legal/aup">Usage Policy</a>, updated with effect from November 12, 2026, applies to every account. So which account to use when one is at its limit is always your call.</li>
           <li><strong>In <code>mcc list</code>:</strong> a second table shows each project with its profile and account; <code>--long</code> cards have a <code>Default for</code> row, and <code>--json</code> a <code>project_defaults</code> array.</li>
@@ -561,7 +584,7 @@ work       <span class="y">█████████</span><span class="d">░
         <h2>Alias rules <a class="anchor" href="#aliases" aria-label="Link to Alias rules">#</a></h2>
         <p>An alias must be 1–32 characters: lowercase letters, digits, <code>-</code> or <code>_</code>, starting with a letter. It is rejected if any of these already uses the name:</p>
         <ul>
-          <li>mcc's reserved names: <code>claude</code>, <code>mcc</code>, <code>default</code>, <code>help</code>, <code>all</code>, <code>path</code>, <code>share</code>, <code>refresh-launchers</code>, <code>project</code>, <code>run</code>, <code>statusline</code>, <code>doctor</code></li>
+          <li>mcc's reserved names: <code>claude</code>, <code>mcc</code>, <code>default</code>, <code>help</code>, <code>all</code>, <code>path</code>, <code>share</code>, <code>link</code>, <code>refresh-launchers</code>, <code>project</code>, <code>run</code>, <code>env</code>, <code>exec</code>, <code>statusline</code>, <code>doctor</code></li>
           <li>shell keywords and builtins</li>
           <li>existing mcc profiles</li>
           <li>executables on <code>$PATH</code></li>
@@ -582,11 +605,14 @@ work       <span class="y">█████████</span><span class="d">░
             <tr><td>Shell alias</td><td>A managed block in your rc file, between <code># &gt;&gt;&gt; mcc:&lt;alias&gt; &gt;&gt;&gt;</code> and <code># &lt;&lt;&lt; mcc:&lt;alias&gt; &lt;&lt;&lt;</code></td></tr>
             <tr><td>Config &amp; registry</td><td><code>~/.mcc/config.toml</code></td></tr>
             <tr><td>Log</td><td><code>~/.mcc/logs/mcc.log</code>; every run is appended here, and at about 1 MB it is moved to <code>mcc.log.1</code> (replacing the previous one)</td></tr>
-            <tr><td>Shared sessions</td><td><code>~/.mcc/shared/projects</code>, only for profiles that opted in with <code>mcc share</code></td></tr>
+            <tr><td>Shared sessions</td><td><code>~/.mcc/shared/projects</code> (the <code>default</code> group) and <code>~/.mcc/shared/groups/&lt;name&gt;/projects</code>, only for profiles that opted in with <code>mcc share</code></td></tr>
             <tr><td>Project defaults</td><td><code>[projects."&lt;dir&gt;"]</code> tables in <code>~/.mcc/config.toml</code>, written by <code>mcc project set</code></td></tr>
             <tr><td>rc file backups</td><td><code>~/.mcc/backups/</code></td></tr>
             <tr><td>Statusline state</td><td><code>~/.mcc/state/&lt;profile&gt;/usage.json</code> and <code>statusline.json</code>, only after <code>mcc statusline install</code>; settings backups in <code>~/.mcc/backups/</code></td></tr>
-            <tr><td>Sync backups</td><td><code>&lt;profile&gt;/.mcc-backup/&lt;timestamp&gt;/</code></td></tr>
+            <tr><td>Sync backups</td><td><code>&lt;profile&gt;/.mcc-backup/&lt;timestamp&gt;/</code>, also holding the profile's own copy of what <code>mcc link</code> replaces (plugins included)</td></tr>
+            <tr><td>Sync record</td><td><code>&lt;profile&gt;/.mcc-sync.json</code>: a hash of each path and MCP server mcc last wrote, for <a href="#three-way">three-way sync</a></td></tr>
+            <tr><td>Settings overlay</td><td><code>[profiles.&lt;alias&gt;.settings]</code> in <code>~/.mcc/config.toml</code> and <code>&lt;profile&gt;/settings.mcc.json</code>; see <a href="#settings-overlays">Per-profile settings overlays</a></td></tr>
+            <tr><td>Config lock</td><td><code>~/.mcc/.lock</code>, locked by every command that writes the config</td></tr>
           </tbody>
         </table></div>
         <p>Set <code>MCC_HOME</code> to make mcc use another directory instead of <code>$HOME</code> for everything it reads and writes.</p>
@@ -627,8 +653,8 @@ work       <span class="y">█████████</span><span class="d">░
         <h2>Troubleshooting <a class="anchor" href="#troubleshooting" aria-label="Link to Troubleshooting">#</a></h2>
         <h3>The new command isn't found</h3>
         <p>The launcher lives in <code>~/.local/bin</code>. If that directory isn't on your <code>PATH</code>, run <code>mcc init --force</code>; it checks and offers to add it. The shell alias only applies to terminals opened after <code>mcc add</code>.</p>
-        <h3>Usage shows <code>unavailable</code></h3>
-        <p>Run <code>mcc list --long</code> or <code>mcc usage</code> to see the reason. For <code>token_expired</code>, start that profile in Claude Code once (for example <code>work</code>) so it refreshes its own login; mcc never refreshes tokens itself. For <code>not_logged_in</code>, run the profile's command and sign in.</p>
+        <h3>Usage shows <code>—</code> or <code>unavailable</code></h3>
+        <p><code>—</code> means nothing current is cached for that profile. Run <code>mcc statusline install</code> once (profiles get it with their next <code>mcc sync</code>), then use the profile in Claude Code, or run <code>/usage</code> in it; the data exists only for Pro and Max plans. <code>unavailable</code> comes from the opt-in live lookup: run <code>mcc list --long</code> or <code>mcc usage</code> to see the reason. For <code>token_expired</code>, start that profile in Claude Code once (for example <code>work</code>) so it refreshes its own login; mcc never refreshes tokens itself. For <code>not_logged_in</code>, run the profile's command and sign in.</p>
         <h3><code>claude</code> isn't detected</h3>
         <p>Point mcc at the binary with <code>MCC_CLAUDE_BIN=/path/to/claude</code>, or put it on your <code>PATH</code> and run <code>mcc init --force</code>.</p>
         <h3>Something went wrong</h3>
@@ -638,7 +664,8 @@ work       <span class="y">█████████</span><span class="d">░
       <section id="uninstall">
         <h2>Uninstall <a class="anchor" href="#uninstall" aria-label="Link to Uninstall">#</a></h2>
         <p>Delete every mcc profile (this logs each one out), remove the binary, then remove mcc's state. Your default <code>~/.claude</code> profile is left alone.</p>
-        <div class="code"><pre><span class="p">$ </span>for p in $(mcc list --json | jq -r '.[] | select(.is_default | not) | .name'); do mcc delete "$p" --yes; done
+        <div class="code"><pre><span class="p">$ </span>mcc statusline uninstall  <span class="cm"># if you ran mcc statusline install: puts your previous statusLine back</span>
+<span class="p">$ </span>for p in $(mcc list --json | jq -r '.[] | select(.is_default | not) | .name'); do mcc delete "$p" --yes; done
 <span class="p">$ </span>brew uninstall mcc      <span class="cm"># if you installed with Homebrew</span>
 <span class="p">$ </span>cargo uninstall mcc     <span class="cm"># if you built from source with cargo</span>
 <span class="p">$ </span>rm -f ~/.local/bin/mcc  <span class="cm"># if you used the install script</span>

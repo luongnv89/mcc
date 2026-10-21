@@ -23,7 +23,7 @@
     "description": "Manage multiple Claude Code profiles (accounts) from one CLI.",
     "applicationCategory": "DeveloperApplication",
     "operatingSystem": "macOS, Linux",
-    "softwareVersion": "0.3.0",
+    "softwareVersion": "0.4.0",
     "license": "https://www.apache.org/licenses/LICENSE-2.0",
     "codeRepository": "https://github.com/luongnv89/mcc",
     "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
@@ -165,7 +165,7 @@
         <article class="card feature">
           <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 01-15.5 6.2L3 16"/><path d="M3 12a9 9 0 0115.5-6.2L21 8"/><path d="M21 3v5h-5"/><path d="M3 21v-5h5"/></svg></div>
           <h3>Sync when your main setup changes</h3>
-          <p><code>mcc sync work</code> pulls new skills, plugins and settings from your default profile. Preview it with <code>--dry-run</code>; every file it overwrites or removes is backed up before anything is written.</p>
+          <p><code>mcc sync work</code> pulls new skills, settings and MCP servers from your default profile and keeps the changes you made in the profile: a file changed on both sides is reported as a conflict, not overwritten. <code>mcc diff work</code> shows what differs, <code>--dry-run</code> previews the sync, and every file it overwrites or removes is backed up first.</p>
         </article>
         <article class="card feature">
           <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M22 20H2"/></svg></div>
@@ -176,6 +176,11 @@
           <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 00-15-6.7L3 13"/></svg></div>
           <h3>Every change can be undone</h3>
           <p>A failed <code>add</code> rolls itself back. Your rc file is backed up before each edit. <code>mcc delete</code> logs the profile out and removes only what mcc created.</p>
+        </article>
+        <article class="card feature">
+          <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg></div>
+          <h3>Each project on its own account</h3>
+          <p><code>mcc project set work</code> makes <code>work</code> the profile <code>mcc run</code> starts in this repository. At its limit, <code>mcc run</code> asks first, with waiting as the default: mcc never switches accounts for you. <code>eval "$(mcc env)"</code> points plain <code>claude</code>, IDE extensions and scripts at the same profile.</p>
         </article>
         <article class="card feature feature-wide">
           <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 015.8 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg></div>
@@ -193,23 +198,23 @@
         <div>
         <span class="eyebrow">mcc usage</span>
         <h2 id="usage-title">See which account has room before you start.</h2>
-        <p class="lede" style="margin:0">Each profile is checked with its own login, in parallel, with short timeouts.</p>
+        <p class="lede" style="margin:0">Each profile's 5-hour and weekly limits, as Claude Code last reported them to <code>mcc statusline</code>. No login is read and nothing touches the network.</p>
         </div>
         <ul class="checks">
-          <li>One compact table: percent used, time until reset, and the reset time in your time zone</li>
+          <li>One compact table: percent used, time until reset, the reset time in your time zone, and how old the numbers are</li>
           <li>Account emails stay hidden unless you ask for them, so it is safe to share on screen</li>
           <li>Bars shrink to fit narrow terminals; <code>--json</code> for scripts</li>
-          <li>A logged-out or offline profile shows <em>unavailable</em> and the reason. The command still exits 0</li>
-          <li>Turn it off with <code>--no-usage</code> or <code>MCC_NO_USAGE=1</code>, and nothing touches the network</li>
+          <li>A profile with nothing current cached shows <em>—</em> and a hint to run <code>/usage</code> in Claude Code. The command still exits 0</li>
+          <li>Set it up once with <code>mcc statusline install</code>. Asking Anthropic with each profile's login is opt-in: <code>mcc config set usage.live true</code></li>
         </ul>
       </div>
       <figure class="term" style="margin:0" aria-label="Terminal: mcc usage output for three profiles">
         <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>~ — zsh</span></div>
 <pre><span class="p">$ </span><span class="c">mcc usage</span>
-<span class="w">PROFILE    5-HOUR           RESETS IN                  WEEKLY            RESETS IN</span>
-default ★  <span class="g">████</span><span class="d">░░░░░░</span> 42%   2h 14m <span class="d">(Sat Oct 10 16:00)</span>  <span class="g">██</span><span class="d">░░░░░░░░</span> 18%    3d 4h <span class="d">(Wed Oct 14 00:00)</span>
-lab        <span class="d">unavailable (not logged in)</span>
-work       <span class="y">█████████</span><span class="d">░</span> <span class="y">85%!</span>  35m <span class="d">(Sat Oct 10 14:21)</span>     <span class="r">██████████</span> <span class="r">96%!!</span>  3d 4h <span class="d">(Wed Oct 14 00:00)</span></pre>
+<span class="w">PROFILE    5-HOUR           RESETS IN                  WEEKLY            RESETS IN                 UPDATED</span>
+default ★  <span class="g">████</span><span class="d">░░░░░░</span> 42%   2h 14m <span class="d">(Sat Oct 10 16:00)</span>  <span class="g">██</span><span class="d">░░░░░░░░</span> 18%    3d 4h <span class="d">(Wed Oct 14 00:00)</span>  12m ago
+lab        <span class="d">— (no recent usage cached; run /usage in Claude Code)</span>
+work       <span class="y">█████████</span><span class="d">░</span> <span class="y">85%!</span>  35m <span class="d">(Sat Oct 10 14:21)</span>     <span class="r">██████████</span> <span class="r">96%!!</span>  3d 4h <span class="d">(Wed Oct 14 00:00)</span>  just now</pre>
       </figure>
     </div>
   </section>
@@ -271,15 +276,15 @@ work       <span class="y">█████████</span><span class="d">░
         </details>
         <details>
           <summary>Will it change my existing <code>claude</code> setup?</summary>
-          <div><p>No. Your default profile stays in <code>~/.claude</code> and keeps the <code>claude</code> command. Sync is one-way: it copies from the default into a profile, never back.</p></div>
+          <div><p>Your default profile stays in <code>~/.claude</code> and keeps the <code>claude</code> command, and sync is one-way: it copies from the default into a profile, never back. Three things do reach the default: a cloned profile shares its plugins, so installing or removing a plugin in it does so for the default too (clone with <code>--copy-plugins</code> to avoid that); items you link with <code>mcc link</code> are the default's own files; and the opt-in <code>mcc statusline install</code> sets the default's <code>statusLine</code>, after backing up its settings.</p></div>
         </details>
         <details>
           <summary>What does mcc send over the network?</summary>
-          <div><p>Only <code>mcc list</code> and <code>mcc usage</code> make requests, to Anthropic's usage endpoint, each profile with its own token. The token is never printed, logged or written to disk. mcc has no telemetry or analytics. Details are on the <a href="privacy.html">privacy page</a>.</p></div>
+          <div><p>By default, nothing: <code>mcc list</code>, <code>mcc usage</code> and <code>mcc run</code> read the usage <code>mcc statusline</code> cached on your machine. Only if you turn on the live lookup (<code>mcc config set usage.live true</code>) do they ask Anthropic's usage endpoint, each profile with its own token. The token is never printed, logged or written to disk. mcc has no telemetry or analytics. Details are on the <a href="privacy.html">privacy page</a>.</p></div>
         </details>
         <details>
           <summary>Is the usage data official?</summary>
-          <div><p>It comes from the same endpoint as Claude Code's <code>/usage</code> screen. That endpoint is undocumented and may change. If it does, mcc shows <em>unavailable</em> instead of failing.</p></div>
+          <div><p>By default it is what Claude Code itself passes to its status line, the session's 5-hour and weekly rate limits, which <code>mcc statusline</code> caches. The opt-in live lookup uses the same endpoint as Claude Code's <code>/usage</code> screen. That endpoint is undocumented and may change. If it does, mcc shows <em>unavailable</em> instead of failing.</p></div>
         </details>
         <details>
           <summary>Which platforms and shells are supported?</summary>
