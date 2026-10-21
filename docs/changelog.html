@@ -52,7 +52,12 @@
           <h2>Unreleased</h2>
           <span class="pill pill-muted">main</span>
         </div>
-        <p style="margin:0">Nothing yet beyond 0.4.0. Follow <a href="https://github.com/luongnv89/mcc/commits/main">commits on <code>main</code></a> for work in progress.</p>
+        <p>Work in progress since 0.4.0; <a href="https://github.com/luongnv89/mcc/blob/main/CHANGELOG.md">CHANGELOG.md</a> lists every change, and <a href="https://github.com/luongnv89/mcc/commits/main">commits on <code>main</code></a> show the rest.</p>
+
+        <h3>Added</h3>
+        <ul>
+          <li><code>mcc usage --all</code> looks every account's usage up live for one run, the default profile included, with each profile's own login instead of the <code>mcc statusline</code> cache, without turning on <code>[usage] live = true</code>. Because it sends each profile's OAuth access token to Anthropic's undocumented usage endpoint, it prints a risk notice on stderr every time it runs, also shown in <code>mcc usage --help</code>. Without <code>--all</code>, <code>mcc usage</code> behaves as before. <span class="ref"><a href="https://github.com/luongnv89/mcc/issues/94">#94</a></span></li>
+        </ul>
       </article>
 
       <article class="release" id="v0.4.0">

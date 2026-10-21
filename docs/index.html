@@ -205,7 +205,7 @@
           <li>Account emails stay hidden unless you ask for them, so it is safe to share on screen</li>
           <li>Bars shrink to fit narrow terminals; <code>--json</code> for scripts</li>
           <li>A profile with nothing current cached shows <em>—</em> and a hint to run <code>/usage</code> in Claude Code. The command still exits 0</li>
-          <li>Set it up once with <code>mcc statusline install</code>. Asking Anthropic with each profile's login is opt-in: <code>mcc config set usage.live true</code></li>
+          <li>Set it up once with <code>mcc statusline install</code>. Asking Anthropic with each profile's login is opt-in: <code>mcc config set usage.live true</code>, or <code>mcc usage --all</code> for one run of every account, with a risk notice</li>
         </ul>
       </div>
       <figure class="term" style="margin:0" aria-label="Terminal: mcc usage output for three profiles">
@@ -280,7 +280,7 @@ work       <span class="y">█████████</span><span class="d">░
         </details>
         <details>
           <summary>What does mcc send over the network?</summary>
-          <div><p>By default, nothing: <code>mcc list</code>, <code>mcc usage</code> and <code>mcc run</code> read the usage <code>mcc statusline</code> cached on your machine. Only if you turn on the live lookup (<code>mcc config set usage.live true</code>) do they ask Anthropic's usage endpoint, each profile with its own token. The token is never printed, logged or written to disk. mcc has no telemetry or analytics. Details are on the <a href="privacy.html">privacy page</a>.</p></div>
+          <div><p>By default, nothing: <code>mcc list</code>, <code>mcc usage</code> and <code>mcc run</code> read the usage <code>mcc statusline</code> cached on your machine. Only if you turn on the live lookup (<code>mcc config set usage.live true</code>), or run <code>mcc usage --all</code> for one live look at every account (it prints a risk notice each time), does mcc ask Anthropic's usage endpoint, each profile with its own token. The token is never printed, logged or written to disk. mcc has no telemetry or analytics. Details are on the <a href="privacy.html">privacy page</a>.</p></div>
         </details>
         <details>
           <summary>Is the usage data official?</summary>
