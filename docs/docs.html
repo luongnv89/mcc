@@ -217,7 +217,7 @@ work       Acme     ████░░░░░░ 42% (2h) ██░░░░�
             <tr><td><code>--clone</code></td><td>Copy the default profile's setup (never credentials)</td></tr>
             <tr><td><code>--fresh</code></td><td>Start with an empty profile</td></tr>
             <tr><td><code>--no-login</code></td><td>Skip <code>claude auth login</code>; log in later by running the alias</td></tr>
-            <tr><td><code>--email ADDRESS</code></td><td>Passed to <code>claude auth login --email</code>: pre-fills the address on the sign-in page. mcc does not print it</td></tr>
+            <tr><td><code>--email ADDRESS</code></td><td>Passed to <code>claude auth login --email</code>: pre-fills the address on the sign-in page. mcc does not print it, and <code>mcc.log</code> records it as <code>&lt;redacted&gt;</code>; once signed in, the account's email (usually the same) is shown and logged like any profile's</td></tr>
             <tr><td><code>--sso</code></td><td>Passed to <code>claude auth login --sso</code>: forces the SSO sign-in flow</td></tr>
             <tr><td><code>--label LABEL</code></td><td>Label the account (e.g. <code>personal</code>, or the work organization) instead of being asked; 1–64 characters</td></tr>
             <tr><td><code>-y</code>, <code>--yes</code></td><td>Accept defaults without prompting</td></tr>
