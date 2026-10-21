@@ -36,6 +36,16 @@ macro_rules! run_tos_note {
 }
 pub(crate) use run_tos_note;
 
+/// The risk notice printed each time `mcc usage --all` looks every
+/// account's usage up live. A macro so the help text below can include it
+/// verbatim.
+macro_rules! usage_all_note {
+    () => {
+        "⚠ --all looks usage up live for every account, the default included: mcc reads each profile's Claude Code login (its OAuth access token, from .credentials.json or the macOS Keychain) and sends it to Anthropic's undocumented, rate-limited usage endpoint (https://api.anthropic.com/api/oauth/usage). Anthropic says third-party tools may not collect or intermediate Claude.ai credentials (https://code.claude.com/docs/en/legal-and-compliance), so use this at your own discretion, only with accounts you own, and never to get around usage limits. Without --all, `mcc usage` reads the `mcc statusline` cache (unless `[usage] live = true`)."
+    };
+}
+pub(crate) use usage_all_note;
+
 const ABOUT: &str = "mcc — run several Claude Code accounts side by side.
 
 Each profile is a separate Claude Code config directory (CLAUDE_CONFIG_DIR)
@@ -125,9 +135,46 @@ pub enum Command {
     List(ListArgs),
 
     /// Show each profile's 5-hour and weekly usage in detail
-    #[command(
-        after_help = "Examples:\n  mcc usage                     Every profile, the default included\n  mcc usage work                Only the `work` profile\n  mcc usage default             Only the default profile (~/.claude)\n  mcc usage --show-email        Also show each profile's account email\n  mcc usage --json | jq '.[] | {name, weekly: .usage.weekly.percent}'\n  mcc usage --json-v2 | jq '.profiles[].name'   Versioned: {\"schema\": 2, \"profiles\": [...]}\n\nOne table row per profile: for the 5-hour and weekly windows, a bar of the\nlimit used with its percent, then the time until it resets (and the reset\ntime when it fits). `!` marks 80% or more and `!!` 95% or more. On a narrow\nterminal the reset time goes first, then bars shrink; under 80 columns bars\nare dropped when nothing fits. UPDATED is how old the numbers cached by\n`mcc statusline` are; a profile with nothing current cached shows \"—\"\n(run /usage in Claude Code), and one whose usage can't be read shows\n\"unavailable\" and why. MCC_NO_USAGE=1 skips usage entirely.\n\nAccount emails are hidden by default (also `null` in --json). To always\nshow them, or to look usage up live with each profile's login (off by\ndefault; a one-time note explains what it sends), set in ~/.mcc/config.toml:\n\n  [privacy]\n  show_email = true\n\n  [usage]\n  live = true\n\n`[privacy] show_email` applies to `mcc list` too; `[usage] show_email`, its\nold name, is still read."
-    )]
+    #[command(after_help = concat!(
+        "Examples:\n",
+        "  mcc usage                     Every profile, the default included\n",
+        "  mcc usage work                Only the `work` profile\n",
+        "  mcc usage default             Only the default profile (~/.claude)\n",
+        "  mcc usage --all               Every account looked up live, the default included (risk notice)\n",
+        "  mcc usage --show-email        Also show each profile's account email\n",
+        "  mcc usage --json | jq '.[] | {name, weekly: .usage.weekly.percent}'\n",
+        "  mcc usage --json-v2 | jq '.profiles[].name'   Versioned: {\"schema\": 2, \"profiles\": [...]}\n",
+        "\n",
+        "One table row per profile: for the 5-hour and weekly windows, a bar of the\n",
+        "limit used with its percent, then the time until it resets (and the reset\n",
+        "time when it fits). `!` marks 80% or more and `!!` 95% or more. On a narrow\n",
+        "terminal the reset time goes first, then bars shrink; under 80 columns bars\n",
+        "are dropped when nothing fits. UPDATED is how old the numbers cached by\n",
+        "`mcc statusline` are; a profile with nothing current cached shows \"—\"\n",
+        "(run /usage in Claude Code), and one whose usage can't be read shows\n",
+        "\"unavailable\" and why. MCC_NO_USAGE=1 skips usage entirely.\n",
+        "\n",
+        "Account emails are hidden by default (also `null` in --json). To always\n",
+        "show them, or to look usage up live with each profile's login (off by\n",
+        "default; a one-time note explains what it sends), set in ~/.mcc/config.toml:\n",
+        "\n",
+        "  [privacy]\n",
+        "  show_email = true\n",
+        "\n",
+        "  [usage]\n",
+        "  live = true\n",
+        "\n",
+        "`[privacy] show_email` applies to `mcc list` too; `[usage] show_email`, its\n",
+        "old name, is still read.\n",
+        "\n",
+        "--all looks every account's usage up live for this one run, the default\n",
+        "included, with each profile's login instead of the statusline cache: no\n",
+        "config change, and `[usage] live` isn't needed. It can't be combined with\n",
+        "PROFILE, and MCC_NO_USAGE=1 still skips usage (no lookup, no note). Each\n",
+        "time it looks usage up, it prints this note on stderr:\n",
+        "\n",
+        usage_all_note!()
+    ))]
     Usage(UsageArgs),
 
     /// Delete a profile: log out, remove its directory, command and shell alias
@@ -359,7 +406,8 @@ pub enum Command {
         "Each finding is ok, warn, problem or skipped; warnings and problems come\n",
         "with a fix. mcc exits 1 when there is a problem. Nothing is written: not\n",
         "~/.mcc/config.toml, not even on first use. Token expiry is checked only\n",
-        "with `[usage] live = true`, the one setting that lets mcc read tokens."
+        "with `[usage] live = true`, the one setting that lets mcc doctor read\n",
+        "tokens."
     ))]
     Doctor(DoctorArgs),
 
@@ -512,6 +560,10 @@ pub struct DoctorArgs {
 pub struct UsageArgs {
     /// Only this profile (`default` or `claude` for ~/.claude)
     pub profile: Option<String>,
+
+    /// Look up every account's usage live with its login, the default included, instead of the statusline cache (prints a risk notice)
+    #[arg(long, conflicts_with = "profile")]
+    pub all: bool,
 
     /// Output JSON (to stdout) instead of a table: a bare array (schema 1)
     #[arg(long, conflicts_with = "json_v2")]

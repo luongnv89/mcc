@@ -835,7 +835,7 @@ fn check_config_dir(
 }
 
 /// Token expiry: only with `[usage] live = true` (and MCC_NO_USAGE unset),
-/// the setting under which mcc reads tokens at all. Not reported for a
+/// the only setting under which doctor reads tokens. Not reported for a
 /// profile `claude` says is logged out (the login check covers it).
 fn check_token(
     d: &mut Doctor,
@@ -854,7 +854,7 @@ fn check_token(
             if d.cfg.usage.live {
                 "token expiry not checked: MCC_NO_USAGE is set".into()
             } else {
-                "token expiry not checked: mcc reads tokens only with `[usage] live = true` in ~/.mcc/config.toml".into()
+                "token expiry not checked: mcc doctor reads tokens only with `[usage] live = true` in ~/.mcc/config.toml".into()
             },
         );
         return;

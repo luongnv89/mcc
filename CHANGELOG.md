@@ -4,6 +4,10 @@ All notable changes to mcc are recorded here. The format follows [Keep a Changel
 
 ## [Unreleased]
 
+### Added
+
+- `mcc usage --all` looks every account's usage up live for one run, the default profile included, with each profile's own login instead of the `mcc statusline` cache, without turning on `[usage] live = true` or changing the config. Because it reads and sends each profile's OAuth access token to Anthropic's undocumented usage endpoint, it prints a risk notice on stderr every time it runs (with `-q` too; `--json` on stdout is unaffected), and `mcc usage --help` shows that notice in full. `--all` can't be combined with a profile name (exit 2), and `MCC_NO_USAGE=1` still turns usage off. Without `--all`, `mcc usage` behaves as before. ([#94](https://github.com/luongnv89/mcc/issues/94))
+
 ## [0.4.0] - 2026-10-21
 
 Each project can now have its own profile, which `mcc run` starts (at a usage limit it asks first, with waiting as the default), and usage now comes by default from the rate limits the opt-in `mcc statusline` caches instead of from each profile's login. `mcc sync` is three-way and keeps a profile's own edits, and profiles can share the default's plugins, link its skills and other read-mostly items, keep their own settings in an overlay and share sessions within a named group. `mcc doctor` checks every profile's setup, `mcc config` reads and changes mcc's settings without hand-editing TOML, and `mcc env` and `mcc exec` point other tools at a profile. `mcc list` hides account emails by default, and releases now ship prebuilt binaries for macOS and Linux, which the install script uses.

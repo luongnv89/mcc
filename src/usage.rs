@@ -6,7 +6,8 @@
 //! obsolete and dropped; a profile with nothing left shows [`Reason::NoData`].
 //!
 //! The live lookup ([`fetch_all`]) runs only with `[usage] live = true`, after
-//! a one-time [`LIVE_DISCLOSURE`]. It sends each profile's own OAuth access
+//! a one-time [`LIVE_DISCLOSURE`], or for one `mcc usage --all`, which prints
+//! its own risk notice each time. It sends each profile's own OAuth access
 //! token — from `<config dir>/.credentials.json`, or the macOS login Keychain —
 //! to Anthropic's OAuth usage endpoint, the one Claude Code's `/usage` screen
 //! reads. That endpoint is undocumented, so every response field is optional
@@ -37,9 +38,10 @@ const BETA: &str = "oauth-2025-04-20";
 /// Keychain service of the default profile; other config dirs get a hash suffix.
 const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 
-/// Printed on stderr the first time a command looks usage up live
-/// (`[usage] live = true`); `[usage] live_disclosed_at` records that it was.
-pub const LIVE_DISCLOSURE: &str = "⚠ Live usage lookup is on ([usage] live = true in ~/.mcc/config.toml): mcc reads each profile's Claude Code login (its OAuth access token, from .credentials.json or the macOS Keychain) and sends it to Anthropic's undocumented, rate-limited usage endpoint (https://api.anthropic.com/api/oauth/usage). Anthropic says third-party tools may not collect or intermediate Claude.ai credentials (https://code.claude.com/docs/en/legal-and-compliance), so use this at your own discretion. Set live = false to read usage only from the `mcc statusline` cache. This note is shown once.";
+/// Printed on stderr the first time `[usage] live = true` makes a command look
+/// usage up live; `[usage] live_disclosed_at` records that it was. Not tied to
+/// `mcc usage --all`, which prints its own risk notice each time it runs.
+pub const LIVE_DISCLOSURE: &str = "⚠ Live usage lookup is on ([usage] live = true in ~/.mcc/config.toml): mcc reads each profile's Claude Code login (its OAuth access token, from .credentials.json or the macOS Keychain) and sends it to Anthropic's undocumented, rate-limited usage endpoint (https://api.anthropic.com/api/oauth/usage). Anthropic says third-party tools may not collect or intermediate Claude.ai credentials (https://code.claude.com/docs/en/legal-and-compliance), so use this at your own discretion. Set live = false to read usage only from the `mcc statusline` cache (`mcc usage --all` still looks it up live, with its own notice). This note is shown once.";
 
 /// Where a [`Usage`] came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -47,7 +49,7 @@ pub const LIVE_DISCLOSURE: &str = "⚠ Live usage lookup is on ([usage] live = t
 pub enum Source {
     /// The rate limits `mcc statusline` cached.
     Cache,
-    /// The OAuth usage endpoint (`[usage] live = true`).
+    /// The OAuth usage endpoint (`[usage] live = true`, or `mcc usage --all`).
     Live,
 }
 
@@ -408,7 +410,8 @@ pub struct Target {
 }
 
 /// Every target's usage, in target order: looked up live with `live`
-/// (`[usage] live = true`), else read from the statusline cache.
+/// (`[usage] live = true`, or `mcc usage --all`), else read from the
+/// statusline cache.
 pub fn lookup(paths: &Paths, targets: &[Target], live: bool) -> Vec<Usage> {
     if live {
         fetch_all(targets)
