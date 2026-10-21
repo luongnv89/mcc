@@ -122,7 +122,12 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
                 is_default: e.is_default,
             })
             .collect();
-        for (e, u) in entries.iter_mut().zip(usage::lookup(paths, &targets, live)) {
+        let found = usage::lookup(paths, &targets, live);
+        if args.all {
+            // So that `mcc usage` without --all shows these numbers next time.
+            usage::save_to_cache(paths, &targets, &found);
+        }
+        for (e, u) in entries.iter_mut().zip(found) {
             e.usage = u;
         }
     }
