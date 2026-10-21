@@ -769,6 +769,56 @@ fn email_is_passed_when_creating_the_default_profile() {
     assert_eq!(login_args(&sb), ["--email", "me@example.com"]);
 }
 
+const LOG: &str = ".mcc/logs/mcc.log";
+
+/// Runs `mcc add ARGS`, expecting exit CODE, and returns what it appended to
+/// mcc.log.
+fn add_log_lines(sb: &Sandbox, args: &[&str], code: i32) -> String {
+    let before = if sb.exists(LOG) {
+        sb.read(LOG)
+    } else {
+        String::new()
+    };
+    sb.mcc().arg("add").args(args).assert().code(code);
+    let after = sb.read(LOG);
+    assert!(after.starts_with(&before), "{after}");
+    after[before.len()..].to_string()
+}
+
+#[test]
+fn the_email_value_is_redacted_from_the_log() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    let added = add_log_lines(&sb, &["work", "--fresh", "--email", "a@b.c"], 0);
+    assert!(added.contains(r#""--email", "<redacted>""#), "{added}");
+    // claude still gets the address itself.
+    assert_eq!(login_args(&sb), ["--email", "a@b.c"]);
+
+    // A value --email refuses is logged before it is checked: redacted too.
+    let added = add_log_lines(&sb, &["lab", "--fresh", "--email", "leakmarker@"], 2);
+    assert!(added.contains(r#""--email", "<redacted>""#), "{added}");
+
+    let log = sb.read(LOG);
+    assert!(!log.contains("a@b.c"), "{log}");
+    assert!(!log.contains("leakmarker"), "{log}");
+}
+
+#[test]
+fn the_email_value_after_an_equals_sign_is_redacted_from_the_log() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    let added = add_log_lines(&sb, &["work", "--fresh", "--email=a@b.c"], 0);
+    assert!(added.contains(r#""--email=<redacted>""#), "{added}");
+    assert_eq!(login_args(&sb), ["--email", "a@b.c"]);
+
+    let added = add_log_lines(&sb, &["lab", "--fresh", "--email=leakmarker@"], 2);
+    assert!(added.contains(r#""--email=<redacted>""#), "{added}");
+
+    let log = sb.read(LOG);
+    assert!(!log.contains("a@b.c"), "{log}");
+    assert!(!log.contains("leakmarker"), "{log}");
+}
+
 #[test]
 fn rejects_an_invalid_email_and_login_flags_without_login() {
     let sb = Sandbox::new();
