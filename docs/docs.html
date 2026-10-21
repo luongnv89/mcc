@@ -268,7 +268,7 @@ lab        —         <span class="d">—                      —</span>      
           <thead><tr><th>Option</th><th>Effect</th></tr></thead>
           <tbody>
             <tr><td><code>PROFILE</code></td><td>Only this profile (<code>default</code> or <code>claude</code> for the default)</td></tr>
-            <tr><td><code>--all</code></td><td>Look every account's usage up live for this run, the default included, with each profile's login instead of the statusline cache, and print a risk notice on stderr each time (see <a href="#usage-limits">Usage limits</a>). Can't be combined with <code>PROFILE</code>; <code>MCC_NO_USAGE=1</code> still skips usage</td></tr>
+            <tr><td><code>--all</code></td><td>Look every account's usage up live for this run, the default included, with each profile's login instead of the statusline cache, save what it finds to that cache, and print a risk notice on stderr each time (see <a href="#usage-limits">Usage limits</a>). Can't be combined with <code>PROFILE</code>; <code>MCC_NO_USAGE=1</code> still skips usage</td></tr>
             <tr><td><code>--json</code></td><td>Print one JSON object per profile with <code>name</code>, <code>command</code>, <code>is_default</code>, <code>account</code> and <code>usage</code> (<code>account</code> is <code>null</code> while emails are hidden)</td></tr>
             <tr><td><code>--json-v2</code></td><td>Print versioned JSON: <code>{"schema": 2, "profiles": [...]}</code>, the same objects as <code>--json</code></td></tr>
             <tr><td><code>--show-email</code></td><td>Show account emails for this run</td></tr>
@@ -567,7 +567,7 @@ work       <span class="y">█████████</span><span class="d">░
   "source": "cache",
   "updated_at": "2026-10-10T11:48:00Z"
 }</pre></div>
-        <p><code>status</code> is <code>ok</code> or <code>unavailable</code>. <code>five_hour</code> and <code>weekly</code> are <code>null</code> when there is no data (<code>resets_at</code> can be <code>null</code> too). <code>source</code> is <code>cache</code>, <code>live</code> or <code>null</code> (not looked up), and <code>updated_at</code> is when the statusline cached the numbers (<code>null</code> for live lookups). When <code>status</code> is <code>unavailable</code>, <code>reason</code> is one of:</p>
+        <p><code>status</code> is <code>ok</code> or <code>unavailable</code>. <code>five_hour</code> and <code>weekly</code> are <code>null</code> when there is no data (<code>resets_at</code> can be <code>null</code> too). <code>source</code> is <code>cache</code>, <code>live</code> or <code>null</code> (not looked up), and <code>updated_at</code> is when the numbers were cached, by the statusline or the last <code>mcc usage --all</code> (<code>null</code> for live lookups). When <code>status</code> is <code>unavailable</code>, <code>reason</code> is one of:</p>
         <div class="table-wrap"><table>
           <thead><tr><th><code>reason</code></th><th>Meaning</th></tr></thead>
           <tbody>
