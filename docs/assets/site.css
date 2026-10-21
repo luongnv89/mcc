@@ -167,6 +167,7 @@ section { padding-block: clamp(56px, 9vw, 104px); }
 .hero h1 { margin-bottom: 20px; }
 .hero h1 .hl { color: var(--accent); }
 .hero .lede { margin-bottom: 28px; }
+.hero-release { margin: 0 0 18px; }
 .cta-row { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 28px; }
 .trust {
   display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 0; margin: 0; list-style: none;
@@ -204,6 +205,18 @@ section { padding-block: clamp(56px, 9vw, 104px); }
 .term .b { color: var(--term-blue); }
 .term .a { color: var(--term-accent); font-weight: 600; }
 .term .w { color: #ffffff; font-weight: 600; }
+.term .soft { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Hero terminal tour: site.js replays the transcript over the static <pre>,
+   which keeps the height and stays readable by screen readers. */
+.tour-screen { position: relative; }
+.tour-screen.is-playing > pre:not(.tour-play) { opacity: 0; }
+.term .tour-play { position: absolute; top: 0; right: 0; bottom: 0; left: 0; overflow-y: hidden; }
+.tour-caret {
+  display: inline-block; width: 0.6em; height: 1.2em; margin-left: 1px; vertical-align: -0.25em;
+  background: var(--term-accent); animation: tour-blink 1.1s steps(1) infinite;
+}
+@keyframes tour-blink { 50% { opacity: 0; } }
 
 /* ---------- Cards / grids ---------- */
 
@@ -416,6 +429,13 @@ td code { white-space: nowrap; }
   padding: 5px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent);
 }
 .pill-muted { background: var(--surface-2); color: var(--muted); }
+.pill-link {
+  display: inline-flex; align-items: center; gap: 8px; padding: 4px 10px 4px 4px;
+  text-transform: none; letter-spacing: 0; text-decoration: none;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.pill-link:hover { border-color: var(--accent); text-decoration: none; }
+.pill-tag { padding: 3px 7px; border-radius: 999px; background: var(--accent); color: var(--accent-ink); }
 .release h3 { font: 600 0.8rem/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 26px 0 12px; }
 .release h3:first-of-type { margin-top: 0; }
 .release ul { margin: 0; }

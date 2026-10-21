@@ -52,11 +52,19 @@
           <h2>Unreleased</h2>
           <span class="pill pill-muted">main</span>
         </div>
-        <p>Work in progress since 0.4.0; <a href="https://github.com/luongnv89/mcc/blob/main/CHANGELOG.md">CHANGELOG.md</a> lists every change, and <a href="https://github.com/luongnv89/mcc/commits/main">commits on <code>main</code></a> show the rest.</p>
+        <p style="margin:0">Nothing yet beyond 0.5.0. Follow <a href="https://github.com/luongnv89/mcc/commits/main">commits on <code>main</code></a> for work in progress.</p>
+      </article>
+
+      <article class="release" id="v0.5.0">
+        <div class="release-head">
+          <h2>0.5.0</h2>
+          <span class="pill pill-muted">2026-10-21</span>
+        </div>
+        <p><code>mcc usage --all</code> looks up every account's usage live for one run, the default profile included, with no config change and a risk notice each time. What it finds is saved to the <code>mcc statusline</code> cache, so plain <code>mcc usage</code>, <code>mcc list</code> and <code>mcc run</code> show those numbers afterwards, with their age. <a href="https://github.com/luongnv89/mcc/releases/tag/v0.5.0">Release v0.5.0</a>.</p>
 
         <h3>Added</h3>
         <ul>
-          <li><code>mcc usage --all</code> looks every account's usage up live for one run, the default profile included, with each profile's own login instead of the <code>mcc statusline</code> cache, without turning on <code>[usage] live = true</code>. Because it sends each profile's OAuth access token to Anthropic's undocumented usage endpoint, it prints a risk notice on stderr every time it runs, also shown in <code>mcc usage --help</code>. What it finds is saved to the same cache <code>mcc statusline</code> writes, so a later <code>mcc usage</code> without <code>--all</code> shows it with its age; an account it can't read keeps what was cached. Without <code>--all</code>, <code>mcc usage</code> behaves as before. <span class="ref"><a href="https://github.com/luongnv89/mcc/issues/94">#94</a></span></li>
+          <li><code>mcc usage --all</code> looks every account's usage up live for one run, the default profile included, with each profile's own login instead of the <code>mcc statusline</code> cache, without turning on <code>[usage] live = true</code>. Because it sends each profile's OAuth access token to Anthropic's undocumented usage endpoint, it prints a risk notice on stderr every time it runs, also shown in <code>mcc usage --help</code>; use it only with accounts you own. What it finds is saved to the same cache <code>mcc statusline</code> writes, so a later <code>mcc usage</code> without <code>--all</code>, <code>mcc list</code> and <code>mcc run</code> show it with its age until a window resets or newer numbers are cached; an account it can't read keeps what was cached. Without <code>--all</code>, <code>mcc usage</code> behaves as before. <span class="ref"><a href="https://github.com/luongnv89/mcc/issues/94">#94</a></span></li>
         </ul>
       </article>
 

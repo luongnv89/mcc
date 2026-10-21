@@ -23,7 +23,7 @@
     "description": "Manage multiple Claude Code profiles (accounts) from one CLI.",
     "applicationCategory": "DeveloperApplication",
     "operatingSystem": "macOS, Linux",
-    "softwareVersion": "0.4.0",
+    "softwareVersion": "0.5.0",
     "license": "https://www.apache.org/licenses/LICENSE-2.0",
     "codeRepository": "https://github.com/luongnv89/mcc",
     "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
@@ -56,6 +56,7 @@
   <section class="hero">
     <div class="wrap hero-grid">
       <div>
+        <p class="hero-release"><a class="pill pill-link" href="changelog.html#v0.5.0"><span class="pill-tag">v0.5.0</span> What's new: mcc usage --all<span aria-hidden="true">→</span></a></p>
         <span class="eyebrow">Open-source CLI · macOS &amp; Linux</span>
         <h1>Run every Claude Code account <span class="hl">side by side.</span></h1>
         <p class="lede">mcc gives each account its own login, its own command, and a copy of your main setup. Type <code>work</code> for one account and <code>claude</code> for the other. No logging out in between.</p>
@@ -71,31 +72,26 @@
         </ul>
       </div>
 
-      <figure class="term" style="margin:0" aria-label="Terminal: adding a work profile with mcc">
-        <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>~ — zsh</span></div>
-<pre><span class="p">$ </span><span class="c">mcc add work --clone</span>
-<span class="a">◆</span> <span class="w">Add Claude Code profile "work"</span>
-  <span class="d">[1/8]</span> Validate alias
-        <span class="g">✓ done</span> <span class="d">— "work" is available</span>
-  <span class="d">[2/8]</span> Create ~/.mcc/profiles/work
-        <span class="g">✓ done</span>
-  <span class="d">[3/8]</span> Copy setup from the default profile
-        <span class="g">✓ done</span> <span class="d">— 7 items, 1 MCP server; no credentials copied</span>
-  <span class="d">[4/8]</span> Install launcher ~/.local/bin/work
-        <span class="g">✓ done</span>
-  <span class="d">[5/8]</span> Add shell alias
-        <span class="g">✓ done</span> <span class="d">— ~/.zshrc</span>
-  <span class="d">[6/8]</span> Register profile
-        <span class="g">✓ done</span> <span class="d">— ~/.mcc/config.toml</span>
-  <span class="d">[7/8]</span> Log in <span class="d">(complete the sign-in in your browser)</span>
-        <span class="g">✓ done</span>
-  <span class="d">[8/8]</span> Verify login
-        <span class="g">✓ done</span> <span class="d">— you@work.example</span>
-
-  <span class="g">Result:</span> profile "work" is ready — start it with <span class="w">`work`</span>
-
+      <figure class="term" data-tour style="margin:0" aria-label="Terminal: a tour of basic mcc commands">
+        <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>~/code/app — zsh</span></div>
+        <div class="tour-screen">
+<pre><span class="p">$ </span><span class="c">mcc list</span>
+<span class="w">NAME       ACCOUNT  5H          WEEK      LAST USED  SYNC</span>
+default ★  —        85%! (35m)  62% (3d)  just now   —
+work       Acme     12% (4h)    30% (5d)  48m ago    ✓
+<span class="soft">  <span class="b">●</span> 2 profiles · 1.6 GB on disk · add one with `mcc add &lt;alias&gt;`</span>
+<span class="p">$ </span><span class="c">mcc usage</span>
+<span class="w">PROFILE    5-HOUR  RESETS IN  WEEKLY  RESETS IN  UPDATED</span>
+default ★  85%!    35m        62%     3d 4h      just now
+work       12%     4h 10m     30%     5d 2h      48m ago
 <span class="p">$ </span><span class="c">work</span>     <span class="d"># Claude Code on the work account</span>
-<span class="p">$ </span><span class="c">claude</span>   <span class="d"># your default account, unchanged</span></pre>
+<span class="p">$ </span><span class="c">claude</span>   <span class="d"># your default account, unchanged</span>
+<span class="p">$ </span><span class="c">mcc project set work</span>
+  <span class="g">✓</span> ~/code/app: `mcc run` starts `work` here
+<span class="soft d">    → when it is at its limit, `mcc run` asks whether to wait (the default) or start it anyway; `mcc list` shows every project</span>
+<span class="p">$ </span><span class="c">mcc run</span>
+<span class="soft">  <span class="b">●</span> starting `work` — the default for ~/code/app (5h 12%, week 30% used · 48m ago)</span></pre>
+        </div>
       </figure>
     </div>
   </section>
@@ -170,7 +166,7 @@
         <article class="card feature">
           <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M22 20H2"/></svg></div>
           <h3>Every limit on one screen</h3>
-          <p><code>mcc usage</code> shows each account's 5-hour and weekly usage and when it resets. Anything at 80% gets a <code>!</code>, at 95% a <code>!!</code>, so it reads the same without colour.</p>
+          <p><code>mcc usage</code> shows each account's 5-hour and weekly usage and when it resets. Anything at 80% gets a <code>!</code>, at 95% a <code>!!</code>, so it reads the same without colour. <code>mcc usage --all</code> looks every account up live for one run, with a risk notice each time, and caches what it finds.</p>
         </article>
         <article class="card feature">
           <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 00-15-6.7L3 13"/></svg></div>
@@ -198,14 +194,14 @@
         <div>
         <span class="eyebrow">mcc usage</span>
         <h2 id="usage-title">See which account has room before you start.</h2>
-        <p class="lede" style="margin:0">Each profile's 5-hour and weekly limits, as Claude Code last reported them to <code>mcc statusline</code>. No login is read and nothing touches the network.</p>
+        <p class="lede" style="margin:0">Each profile's 5-hour and weekly limits, as Claude Code last reported them to <code>mcc statusline</code>, or as the last <code>mcc usage --all</code> found them. Plain <code>mcc usage</code> reads no login and touches no network.</p>
         </div>
         <ul class="checks">
           <li>One compact table: percent used, time until reset, the reset time in your time zone, and how old the numbers are</li>
           <li>Account emails stay hidden unless you ask for them, so it is safe to share on screen</li>
           <li>Bars shrink to fit narrow terminals; <code>--json</code> for scripts</li>
           <li>A profile with nothing current cached shows <em>—</em> and a hint to run <code>/usage</code> in Claude Code. The command still exits 0</li>
-          <li>Set it up once with <code>mcc statusline install</code>. Asking Anthropic with each profile's login is opt-in: <code>mcc config set usage.live true</code>, or <code>mcc usage --all</code> for one run of every account, with a risk notice</li>
+          <li>Set it up once with <code>mcc statusline install</code>. Asking Anthropic with each profile's login is opt-in: <code>mcc config set usage.live true</code>, or <code>mcc usage --all</code> for one run of every account, with a risk notice; what it finds is cached for the next <code>mcc usage</code></li>
         </ul>
       </div>
       <figure class="term" style="margin:0" aria-label="Terminal: mcc usage output for three profiles">

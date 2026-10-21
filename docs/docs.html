@@ -38,7 +38,7 @@
 <main id="main">
   <div class="page-head">
     <div class="wrap">
-      <span class="eyebrow">Documentation · v0.4.0</span>
+      <span class="eyebrow">Documentation · v0.5.0</span>
       <h1>Using mcc</h1>
       <p class="lede">Install mcc, add profiles, keep them in sync and check their limits. Every command and option, with examples.</p>
     </div>
@@ -113,7 +113,7 @@
         <div class="code"><pre><span class="p">$ </span>git clone https://github.com/luongnv89/mcc &amp;&amp; cd mcc &amp;&amp; ./install.sh</pre></div>
         <p class="label">Directly with Cargo</p>
         <div class="code"><pre><span class="p">$ </span>cargo install --git https://github.com/luongnv89/mcc --locked</pre></div>
-        <p>The one-liner downloads the prebuilt binary for your platform (macOS or Linux, x86_64 or arm64) from the latest GitHub release, checks its SHA-256 checksum, and installs it into <code>~/.local/bin</code> (override with <code>MCC_INSTALL_DIR</code>); you don't need Rust. If <code>~/.local/bin</code> is not on your <code>PATH</code> (it isn't by default on macOS), the script tells you; add it with <code>export PATH="$HOME/.local/bin:$PATH"</code> in your shell profile. A checksum mismatch stops the install. <code>MCC_VERSION=v0.4.0</code> picks a release. When a release has no binary for your platform (releases up to v0.3.0 have none), or with <code>MCC_FROM_SOURCE=1</code>, or when run from a clone, the script builds with <code>cargo</code> and installs into <code>~/.cargo/bin</code> (override with <code>CARGO_INSTALL_ROOT</code>). Check it worked:</p>
+        <p>The one-liner downloads the prebuilt binary for your platform (macOS or Linux, x86_64 or arm64) from the latest GitHub release, checks its SHA-256 checksum, and installs it into <code>~/.local/bin</code> (override with <code>MCC_INSTALL_DIR</code>); you don't need Rust. If <code>~/.local/bin</code> is not on your <code>PATH</code> (it isn't by default on macOS), the script tells you; add it with <code>export PATH="$HOME/.local/bin:$PATH"</code> in your shell profile. A checksum mismatch stops the install. <code>MCC_VERSION=v0.5.0</code> picks a release. When a release has no binary for your platform (releases up to v0.3.0 have none), or with <code>MCC_FROM_SOURCE=1</code>, or when run from a clone, the script builds with <code>cargo</code> and installs into <code>~/.cargo/bin</code> (override with <code>CARGO_INSTALL_ROOT</code>). Check it worked:</p>
         <div class="code"><pre><span class="p">$ </span>mcc --version</pre></div>
       </section>
 

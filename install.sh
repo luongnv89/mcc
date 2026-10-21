@@ -13,7 +13,7 @@
 # into ~/.cargo/bin (override with CARGO_INSTALL_ROOT).
 #
 # Other settings:
-#   MCC_VERSION=v0.4.0    install that release instead of the latest one
+#   MCC_VERSION=v0.5.0    install that release instead of the latest one
 #                         (a source build then builds that tag)
 #   MCC_RELEASE_URL=URL   download from URL/<asset> (a mirror) instead of
 #                         the GitHub release; https:// only (file:// for
@@ -54,7 +54,7 @@ case "$arch" in
 esac
 ok "platform: $os $arch"
 
-# The release to install: a tag such as v0.4.0, or empty for the latest one.
+# The release to install: a tag such as v0.5.0, or empty for the latest one.
 version="${MCC_VERSION:-}"
 if [ -n "$version" ]; then
   case "$version" in
@@ -62,7 +62,7 @@ if [ -n "$version" ]; then
     *) version="v$version" ;;
   esac
   case "$version" in
-    *[!A-Za-z0-9._-]*) fail "invalid MCC_VERSION: $version" "use a release tag such as v0.4.0" ;;
+    *[!A-Za-z0-9._-]*) fail "invalid MCC_VERSION: $version" "use a release tag such as v0.5.0" ;;
   esac
 fi
 

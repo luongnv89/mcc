@@ -4,6 +4,10 @@ All notable changes to mcc are recorded here. The format follows [Keep a Changel
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-21
+
+`mcc usage --all` looks every account's usage up live for one run, the default profile included, without a config change and with a risk notice each time, and saves what it finds to the `mcc statusline` cache, so plain `mcc usage`, `mcc list` and `mcc run` show those numbers afterwards with their age.
+
 ### Added
 
 - `mcc usage --all` looks every account's usage up live for one run, the default profile included, with each profile's own login instead of the `mcc statusline` cache, without turning on `[usage] live = true` or changing the config. Because it reads and sends each profile's OAuth access token to Anthropic's undocumented usage endpoint, it prints a risk notice on stderr every time it runs (with `-q` too; `--json` on stdout is unaffected), and `mcc usage --help` shows that notice in full. What it finds is saved to `~/.mcc/state/<profile>/usage.json`, the same cache `mcc statusline` writes, so a later `mcc usage` without `--all` (and `mcc list` and `mcc run`) shows those numbers with their age until a window resets or newer numbers are cached; an account it can't read keeps what was cached. `--all` can't be combined with a profile name (exit 2), and `MCC_NO_USAGE=1` still turns usage off. Without `--all`, `mcc usage` behaves as before. ([#94](https://github.com/luongnv89/mcc/issues/94))
@@ -123,7 +127,8 @@ The first version of mcc.
 - Access tokens are kept in memory only, sent only to the usage endpoint for their own profile, and never printed, logged or written to disk. Expired tokens are never sent. ([#15](https://github.com/luongnv89/mcc/pull/15))
 - GitHub private vulnerability reporting is enabled, and `contact@luongnv.com` is listed as the security contact. ([#21](https://github.com/luongnv89/mcc/pull/21))
 
-[Unreleased]: https://github.com/luongnv89/mcc/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/luongnv89/mcc/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/luongnv89/mcc/releases/tag/v0.5.0
 [0.4.0]: https://github.com/luongnv89/mcc/releases/tag/v0.4.0
 [0.3.0]: https://github.com/luongnv89/mcc/releases/tag/v0.3.0
 [0.2.0]: https://github.com/luongnv89/mcc/releases/tag/v0.2.0
