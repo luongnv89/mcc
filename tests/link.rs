@@ -159,6 +159,70 @@ fn sync_diff_and_list_leave_linked_items_alone() {
     assert_eq!(sb.read(&format!("{WORK}/CLAUDE.md")), "# my own\n");
 }
 
+/// Issue #86: a link entry written by hand that can't be linked is ignored,
+/// with a warning. Sync, diff and list still treat the item as a copied one:
+/// the default's settings changes are reported and synced.
+#[test]
+fn a_link_entry_that_cant_be_linked_is_ignored_and_synced() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    // No plugins entry, so `settings` is the profile's only one.
+    sb.mcc()
+        .args(["add", "work", "--clone", "--copy-plugins"])
+        .assert()
+        .success();
+    let cfg = sb.read(".mcc/config.toml").replace(
+        "[profiles.work]\n",
+        "[profiles.work]\nlink = [\"settings\"]\n",
+    );
+    sb.write(".mcc/config.toml", &cfg);
+    assert_eq!(links(&sb), ["settings"]);
+    assert_eq!(sync_status(&sb)["behind"], 0);
+
+    // Only the default's settings.json changes: the profile is one behind.
+    let settings = sb
+        .read(".claude/settings.json")
+        .replace("\"opus\"", "\"sonnet\"");
+    sb.write(".claude/settings.json", &settings);
+    let warning = "\"work\": link entry \"settings\" can't be linked";
+    let list = sb
+        .mcc()
+        .args(["list", "--json", "--no-usage"])
+        .assert()
+        .success();
+    let out = list.get_output();
+    let all: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    let status = &by_name(&all, "work")["sync"];
+    assert_eq!(status["behind"], 1, "{status}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains(warning), "{stderr}");
+    assert!(stderr.contains("mcc config edit"), "{stderr}");
+
+    sb.mcc()
+        .args(["diff", "work", "--only", "settings"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("settings.json"))
+        .stdout(predicate::str::contains("sonnet"))
+        .stderr(predicate::str::contains(warning))
+        .stderr(predicate::str::contains("linked to the default profile").not());
+
+    let out = sb.mcc().args(["sync", "work", "--yes"]).output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    // Warned once, though a sync both reports and plans the profile's links.
+    assert_eq!(stderr.matches(warning).count(), 1, "{stderr}");
+    assert!(
+        !stderr.contains("linked to the default profile"),
+        "{stderr}"
+    );
+    let synced = json(sb.read(&format!("{WORK}/settings.json")).as_bytes());
+    assert_eq!(synced["model"], "sonnet", "{synced}");
+    assert_eq!(sync_status(&sb)["behind"], 0);
+    // Ignored, not removed: config.toml still has the entry.
+    assert_eq!(links(&sb), ["settings"]);
+}
+
 #[test]
 fn off_replaces_the_link_with_a_copy_and_never_touches_the_default() {
     let sb = Sandbox::new();
