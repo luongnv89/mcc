@@ -127,6 +127,14 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         commands::banner::run(&args.alias);
         return Ok(());
     }
+    if let Command::LaunchSync(args) = &command {
+        // Run by a launcher on every start: no first-run setup, no waiting
+        // for the lock (only tried, per profile), logging only into an
+        // existing ~/.mcc/logs, nothing on stdout but the TTY summary, and
+        // never an error.
+        commands::launch_sync::run(&args.alias);
+        return Ok(());
+    }
     let paths = paths::Paths::from_env()?;
     if let Command::Doctor(args) = &command {
         // Read-only, even on first use: no lock, no first-run setup, and
@@ -224,7 +232,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Completions(_)
         | Command::Config(_)
         | Command::Doctor(_)
-        | Command::LaunchBanner(_) => {
+        | Command::LaunchBanner(_)
+        | Command::LaunchSync(_) => {
             unreachable!("handled above")
         }
     }
@@ -277,6 +286,9 @@ fn writes_config(command: &Command) -> bool {
         Command::Doctor(_) => false,
         // Runs on every launch: reads the config, never writes it.
         Command::LaunchBanner(_) => false,
+        // Runs on every launch, and never waits: it only tries the lock,
+        // per profile, and skips a profile while another command holds it.
+        Command::LaunchSync(_) => false,
         // Never locked: `mcc exec` runs commands that may run mcc commands
         // which take the lock themselves.
         Command::Env(_) | Command::Exec(_) => false,

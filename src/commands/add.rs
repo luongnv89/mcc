@@ -490,7 +490,7 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
             plugins::in_link(&link)
                 .then(|| plugins::shared_root(paths))
                 .as_deref(),
-            cfg.launch.banner,
+            shell::Blocks::for_profile(cfg, None),
         )?;
         undo.record(Undo::Wrapper(wrapper.clone()));
         if dir_on_path(&paths.local_bin) {
@@ -545,6 +545,7 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
                 account: None,
                 settings: None,
                 link: link.clone(),
+                auto_sync: None,
             },
         );
         undo.record(Undo::Registry(alias.clone()));

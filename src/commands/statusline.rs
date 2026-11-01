@@ -795,6 +795,7 @@ mod tests {
                 account: None,
                 settings: None,
                 link: Vec::new(),
+                auto_sync: None,
             },
         );
         let f = |d: Option<&str>| profile_for(&p, &cfg, d.map(OsStr::new));

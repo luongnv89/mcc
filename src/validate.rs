@@ -388,6 +388,7 @@ mod tests {
                 account: None,
                 settings: None,
                 link: Vec::new(),
+                auto_sync: None,
             },
         );
         assert!(!conflicts("claude", &paths, &cfg, None).is_empty());

@@ -100,7 +100,7 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &RenameArgs) -> Result<()> {
             &profile.dir,
             claude::find_binary(env.claude_bin.as_deref()).as_deref(),
             crate::plugins::root_for(paths, &profile).as_deref(),
-            cfg.launch.banner,
+            shell::Blocks::for_profile(cfg, Some(&profile)),
         )?;
         undo.record(Undo::Wrapper(wrapper.clone()));
         step.ok("");

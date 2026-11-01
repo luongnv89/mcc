@@ -189,7 +189,7 @@ pub enum Command {
 
     /// Copy the default profile's setup into a profile (one-way: default → profile)
     #[command(
-        after_help = "Items: settings, claude-md, keybindings, statusline, agents, skills,\n       commands, hooks, output-styles, plugins, mcp\n\nEach sync records what it wrote in <profile>/.mcc-sync.json. The next sync\ncompares the default and the profile with it: a path changed only in the\ndefault is updated; one edited (or deleted) only in the profile is kept and\nreported as a local edit; one changed in both is a conflict, kept unless\n--force. Everything overwritten or removed is first backed up to\n<profile>/.mcc-backup/<timestamp>/. `mcc diff ALIAS` shows the differences.\nItems linked to the default with `mcc link` are left alone.\n\nExamples:\n  mcc sync work --dry-run\n  mcc sync work --only skills,agents\n  mcc sync work --force\n  mcc sync --all --prune"
+        after_help = "Items: settings, claude-md, keybindings, statusline, agents, skills,\n       commands, hooks, output-styles, plugins, mcp\n\nEach sync records what it wrote in <profile>/.mcc-sync.json. The next sync\ncompares the default and the profile with it: a path changed only in the\ndefault is updated; one edited (or deleted) only in the profile is kept and\nreported as a local edit; one changed in both is a conflict, kept unless\n--force. Everything overwritten or removed is first backed up to\n<profile>/.mcc-backup/<timestamp>/. `mcc diff ALIAS` shows the differences.\nItems linked to the default with `mcc link` are left alone.\n\nAuto sync ([sync] auto, on by default): when a profile starts (its launcher or\n`mcc run`), mcc first does the safe part of this for it, then for the other\nprofiles the default changed for: adds and updates only, backed up first;\nlocal edits and conflicts kept; nothing written for a profile without a sync\nrecord or when something would be removed. `mcc list --long` shows what it\ndid. Turn it off with `mcc config set sync.auto false` (every profile) or\n`mcc config set profiles.ALIAS.auto_sync false` (one profile).\n\nExamples:\n  mcc sync work --dry-run\n  mcc sync work --only skills,agents\n  mcc sync work --force\n  mcc sync --all --prune"
     )]
     Sync(SyncArgs),
 
@@ -383,9 +383,13 @@ pub enum Command {
     #[command(name = "launch-banner", hide = true)]
     LaunchBanner(LaunchBannerArgs),
 
+    /// Catch profiles up with the default as one starts (called by its launcher)
+    #[command(name = "launch-sync", hide = true)]
+    LaunchSync(LaunchSyncArgs),
+
     /// Rewrite profiles' launchers and shell aliases from the current templates
     #[command(
-        after_help = "Examples:\n  mcc refresh-launchers          Every profile\n  mcc refresh-launchers work lab Only these profiles\n\nNeeded once for profiles created by an older mcc, so that `<alias> --mcc-share`\nworks: the shell alias then runs the launcher (~/.local/bin/<alias>) instead of\nclaude directly.\nAlso run it after turning the launch banner on or off ([launch] banner):\nlaunchers include the banner call only while it is on, and this adds or\nremoves it. CLAUDE_CONFIG_DIR stays exactly the same, so logins are kept.\nmcc never rewrites existing launchers on its own. Launchers that are already\ncurrent are left alone, and files mcc didn't write are skipped."
+        after_help = "Examples:\n  mcc refresh-launchers          Every profile\n  mcc refresh-launchers work lab Only these profiles\n\nNeeded once for profiles created by an older mcc, so that `<alias> --mcc-share`\nworks: the shell alias then runs the launcher (~/.local/bin/<alias>) instead of\nclaude directly.\nAlso run it after turning the launch banner ([launch] banner) or auto sync\n([sync] auto, profiles.ALIAS.auto_sync) on or off: launchers include those\ncalls only while they are on, and this adds or removes them. CLAUDE_CONFIG_DIR stays exactly the same, so logins are kept.\nmcc never rewrites existing launchers on its own. Launchers that are already\ncurrent are left alone, and files mcc didn't write are skipped."
     )]
     RefreshLaunchers(RefreshLaunchersArgs),
 
@@ -433,9 +437,14 @@ pub enum Command {
         "  usage.live             true or false\n",
         "  launch.banner          true or false (a one-line banner on stderr when a\n",
         "                         profile starts; then run `mcc refresh-launchers`)\n",
+        "  sync.auto              true or false (catch profiles up with the default\n",
+        "                         when one starts; on by default; then run\n",
+        "                         `mcc refresh-launchers`)\n",
         "  profiles.ALIAS.label   1–64 characters (\"\" removes it)\n",
         "  profiles.ALIAS.color   black, red, green, yellow, blue, magenta, cyan or\n",
         "                         white (\"\" removes it)\n",
+        "  profiles.ALIAS.auto_sync\n",
+        "                         true or false (auto sync for this profile alone)\n",
         "\n",
         "`get` reads any key, dotted as in TOML (projects.\"/Users/me/app\".profile).\n",
         "A value `set` rejects leaves the file unchanged, and comments are kept.\n",
@@ -765,6 +774,12 @@ pub struct ExecArgs {
 
 #[derive(Debug, Args)]
 pub struct LaunchBannerArgs {
+    /// The profile starting
+    pub alias: String,
+}
+
+#[derive(Debug, Args)]
+pub struct LaunchSyncArgs {
     /// The profile starting
     pub alias: String,
 }

@@ -663,6 +663,16 @@ fn check_launcher(d: &mut Doctor, name: &str, p: &Profile) {
             ),
             refresh,
         );
+    } else if d.cfg.auto_sync_of(Some(p)).is_on() && !shell::launcher_runs_sync(w) {
+        ok = false;
+        d.push_cmd(
+            "launcher",
+            Level::Warn,
+            format!(
+                "the launcher {shown} doesn't catch the profile up with the default, which `[sync] auto` turns on"
+            ),
+            refresh,
+        );
     }
     if ok {
         d.push(

@@ -168,11 +168,13 @@ impl Claude<'_> {
 
 /// `claude auth status --json` run through a profile's launcher, so the
 /// result reflects the `CLAUDE_CONFIG_DIR` the launcher exports (none is
-/// inherited from mcc). `None` when it printed no JSON object.
+/// inherited from mcc). `None` when it printed no JSON object. The
+/// launcher's auto sync is turned off: this only reads.
 pub fn launcher_status(launcher: &Path, paths: &Paths) -> Result<Option<AuthStatus>> {
     let out = Command::new(launcher)
         .args(["auth", "status", "--json"])
         .env("HOME", &paths.home)
+        .env(crate::commands::launch_sync::ENV_OFF, "1")
         .env_remove("CLAUDE_CONFIG_DIR")
         .stdin(Stdio::null())
         .stderr(Stdio::null())

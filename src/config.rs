@@ -49,6 +49,12 @@ pub struct SyncConfig {
     /// Extra paths (relative to the config dir) to copy verbatim.
     #[serde(default)]
     pub extra: Vec<String>,
+    /// Catch profiles up with the default on launch (`[sync] auto`): the
+    /// safe part of `mcc sync` only, run by profiles' launchers and
+    /// `mcc run`. Unset means on; read it with [`Config::auto_sync`]. Left
+    /// out of the file while unset, so existing files stay as they are.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -167,6 +173,12 @@ pub struct Profile {
     /// gets it unless `mcc add --copy-plugins`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub link: Vec<String>,
+    /// Catch this profile up with the default on launch (`[sync] auto`
+    /// applies to it). Unset means on; `false` turns it off for this
+    /// profile alone. Read it with [`Config::auto_sync`]. Left out of the
+    /// file while unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_sync: Option<bool>,
 }
 
 /// A Claude Code account, as its state file (`oauthAccount` in
@@ -318,6 +330,22 @@ impl Account {
     }
 }
 
+/// Whether launches catch a profile up with the default ([`Config::auto_sync`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoSync {
+    On,
+    /// `[sync] auto = false`.
+    OffForAll,
+    /// `profiles.<alias>.auto_sync = false`.
+    OffForProfile,
+}
+
+impl AutoSync {
+    pub fn is_on(self) -> bool {
+        self == AutoSync::On
+    }
+}
+
 /// What kind of account a profile is logged in to ([`Account::kind`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccountKind {
@@ -391,6 +419,26 @@ impl Config {
             cfg.privacy.show_email = Some(true);
         }
         Ok(cfg)
+    }
+
+    /// Whether launches catch the profile `alias` up with the default
+    /// (`[sync] auto` and `profiles.<alias>.auto_sync`, both on unless set
+    /// to false), and which setting turned it off. For a name that is not
+    /// an mcc profile (the default), only `[sync] auto` counts.
+    pub fn auto_sync(&self, alias: &str) -> AutoSync {
+        self.auto_sync_of(self.profiles.get(alias))
+    }
+
+    /// [`Config::auto_sync`] for `profile` (`None`: the default, or a
+    /// profile not registered yet).
+    pub fn auto_sync_of(&self, profile: Option<&Profile>) -> AutoSync {
+        if self.sync.auto == Some(false) {
+            AutoSync::OffForAll
+        } else if profile.and_then(|p| p.auto_sync) == Some(false) {
+            AutoSync::OffForProfile
+        } else {
+            AutoSync::On
+        }
     }
 
     /// Whether account emails are shown (`[privacy] show_email`; hidden by
@@ -578,34 +626,9 @@ pub struct ConfigLock {
 /// Take the config lock, waiting (and saying so) while another mcc command
 /// holds it.
 pub fn lock(paths: &Paths) -> Result<ConfigLock> {
-    use std::os::fd::AsRawFd;
-    use std::os::unix::fs::OpenOptionsExt;
-
     let path = &paths.lock_file;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    }
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .open(path)
-        .with_context(|| format!("opening {}", path.display()))?;
-    let flock = |op: libc::c_int| -> std::io::Result<()> {
-        loop {
-            // SAFETY: flock only reads the descriptor, which `file` keeps open.
-            if unsafe { libc::flock(file.as_raw_fd(), op) } == 0 {
-                return Ok(());
-            }
-            let err = std::io::Error::last_os_error();
-            if err.kind() != std::io::ErrorKind::Interrupted {
-                return Err(err);
-            }
-        }
-    };
-    if let Err(e) = flock(libc::LOCK_EX | libc::LOCK_NB) {
+    let file = open_lock_file(path)?;
+    if let Err(e) = flock(&file, libc::LOCK_EX | libc::LOCK_NB) {
         if e.kind() != std::io::ErrorKind::WouldBlock {
             return Err(e).with_context(|| format!("locking {}", path.display()));
         }
@@ -613,9 +636,53 @@ pub fn lock(paths: &Paths) -> Result<ConfigLock> {
             "waiting for another mcc command to finish (it holds {})",
             paths.display(path)
         ));
-        flock(libc::LOCK_EX).with_context(|| format!("locking {}", path.display()))?;
+        flock(&file, libc::LOCK_EX).with_context(|| format!("locking {}", path.display()))?;
     }
     Ok(ConfigLock { _file: file })
+}
+
+/// Take the config lock only if it is free: `None` (at once, silently)
+/// while another mcc command holds it. For work that is skipped rather than
+/// waited for, such as the catch-up a launch runs.
+pub fn try_lock(paths: &Paths) -> Result<Option<ConfigLock>> {
+    let path = &paths.lock_file;
+    let file = open_lock_file(path)?;
+    match flock(&file, libc::LOCK_EX | libc::LOCK_NB) {
+        Ok(()) => Ok(Some(ConfigLock { _file: file })),
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("locking {}", path.display())),
+    }
+}
+
+fn open_lock_file(path: &Path) -> Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(path)
+        .with_context(|| format!("opening {}", path.display()))
+}
+
+/// `flock(2)` on `file`, retried when a signal interrupts it.
+fn flock(file: &File, op: libc::c_int) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    loop {
+        // SAFETY: flock only reads the descriptor, which `file` keeps open.
+        if unsafe { libc::flock(file.as_raw_fd(), op) } == 0 {
+            return Ok(());
+        }
+        let err = std::io::Error::last_os_error();
+        if err.kind() != std::io::ErrorKind::Interrupted {
+            return Err(err);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -647,6 +714,7 @@ mod tests {
                 account: None,
                 settings: None,
                 link: Vec::new(),
+                auto_sync: None,
             },
         );
         cfg.save(&path).unwrap();
@@ -786,6 +854,7 @@ mod tests {
             account: None,
             link: Vec::new(),
             settings: None,
+            auto_sync: None,
         }
     }
 

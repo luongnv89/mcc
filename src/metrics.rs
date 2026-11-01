@@ -52,9 +52,10 @@ pub struct ProfileMetrics {
     /// The sharing group (`mcc share --group`): `default` for the default
     /// group, null while the profile doesn't share.
     pub share_group: Option<String>,
-    /// False only for an mcc launcher written before session sharing (run
-    /// `mcc refresh-launchers`); true when there is nothing to refresh, as
-    /// for the default profile or a profile without a launcher.
+    /// False for an mcc launcher `mcc refresh-launchers` would rewrite:
+    /// written before session sharing, or without a block a setting turns
+    /// on (the launch banner, auto sync); true when there is nothing to
+    /// refresh, as for the default profile or a profile without a launcher.
     pub launcher_current: bool,
     /// Project directories where `mcc run` starts this profile (`mcc project
     /// set`); filled in by `mcc list` from the config, not by `collect`.
@@ -62,6 +63,10 @@ pub struct ProfileMetrics {
     /// How the profile compares with the default (`mcc sync`); filled in by
     /// `mcc list`, and always null for the default profile.
     pub sync: Option<crate::copy::Status>,
+    /// Auto sync (`[sync] auto`): whether launches catch the profile up
+    /// with the default, and what the last check did; filled in by
+    /// `mcc list`, and always null for the default profile.
+    pub auto_sync: Option<crate::commands::launch_sync::Info>,
     /// 5-hour/weekly usage; filled in by `mcc list` (network), not by `collect`.
     pub usage: Usage,
     /// The config dir as Claude Code sees it (`CLAUDE_CONFIG_DIR`).
@@ -131,13 +136,14 @@ pub fn default_profile(paths: &Paths, full: bool) -> ProfileMetrics {
     m
 }
 
-/// `banner` is `[launch] banner`: with it on, a launcher without the banner
-/// block is out of date. `full` as for [`default_profile`].
+/// `blocks` are the launcher blocks the settings turn on for the profile
+/// ([`shell::Blocks::for_profile`]): a launcher without one of them is out
+/// of date. `full` as for [`default_profile`].
 pub fn mcc_profile(
     name: &str,
     p: &Profile,
     paths: &Paths,
-    banner: bool,
+    blocks: shell::Blocks,
     full: bool,
 ) -> ProfileMetrics {
     let mut m = collect(
@@ -155,7 +161,7 @@ pub fn mcc_profile(
     m.launcher_current = p
         .wrapper
         .as_deref()
-        .is_none_or(|w| !shell::is_mcc_wrapper(w) || !shell::launcher_needs_refresh(w, banner));
+        .is_none_or(|w| !shell::is_mcc_wrapper(w) || !shell::launcher_needs_refresh(w, blocks));
     m
 }
 
@@ -258,10 +264,11 @@ fn collect(
         share_group: reg
             .filter(|r| r.share_sessions)
             .map(|r| r.share_group.clone().unwrap_or_else(|| "default".into())),
-        // Set by `mcc_profile`, which knows whether the banner is on.
+        // Set by `mcc_profile`, which knows which launcher blocks are on.
         launcher_current: true,
         project_defaults: Vec::new(),
         sync: None,
+        auto_sync: None,
         usage: Usage::default(),
         config_dir: dir.to_path_buf(),
         last_used_time,
@@ -457,13 +464,13 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(
-            mcc_profile("work", &p, &paths, false, true).plugins_installed,
+            mcc_profile("work", &p, &paths, shell::Blocks::default(), true).plugins_installed,
             3
         );
         // With its own plugins it counts its own (none here).
         p.link.clear();
         assert_eq!(
-            mcc_profile("work", &p, &paths, false, true).plugins_installed,
+            mcc_profile("work", &p, &paths, shell::Blocks::default(), true).plugins_installed,
             0
         );
     }

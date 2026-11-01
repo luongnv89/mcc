@@ -396,6 +396,150 @@ fn sync_one(
     Ok(())
 }
 
+/// What a launch-time catch-up ([`auto_catch_up`]) did for one profile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AutoOutcome {
+    /// Copied `changed` from the default: profile-relative paths, then
+    /// `MCP server "NAME"` for each server added or updated. `status` is
+    /// what the profile still differs in (the kept local edits and
+    /// conflicts).
+    Applied {
+        changed: Vec<String>,
+        status: Status,
+    },
+    /// Nothing to copy; `status` as in `Applied`.
+    UpToDate { status: Status },
+    /// Nothing written: catching up needs what only `mcc sync` does.
+    Held { reason: Held },
+}
+
+/// Why a launch-time catch-up wrote nothing ([`AutoOutcome::Held`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Held {
+    /// No sync manifest (a `--fresh` profile never synced, or one from
+    /// before manifests): every difference would be taken from the default,
+    /// local edits included, so only `mcc sync` (which warns) does that.
+    NoManifest,
+    /// The manifest can't be read (or is from a newer mcc).
+    InvalidManifest,
+    /// The sync would remove something from the profile (a symlink or file
+    /// where the default has a directory, say); removals need `mcc sync`'s
+    /// confirmation.
+    Removals,
+}
+
+impl Held {
+    /// Its name in the auto-sync state file and in `mcc list --json`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Held::NoManifest => "no_manifest",
+            Held::InvalidManifest => "invalid_manifest",
+            Held::Removals => "removals",
+        }
+    }
+
+    /// The reason named `name` ([`Held::as_str`]).
+    pub fn from_name(name: &str) -> Option<Held> {
+        [Held::NoManifest, Held::InvalidManifest, Held::Removals]
+            .into_iter()
+            .find(|h| h.as_str() == name)
+    }
+
+    /// Why, for people: "it has no sync record yet".
+    pub fn describe(self) -> &'static str {
+        match self {
+            Held::NoManifest => "it has no sync record yet",
+            Held::InvalidManifest => "its sync record can't be read",
+            Held::Removals => "the sync would remove files",
+        }
+    }
+}
+
+/// The safe part of `mcc sync ALIAS`, run when a profile starts (`[sync]
+/// auto`): with the profile's sync manifest only (three-way), never pruning,
+/// never forcing, and only when nothing would be removed. Adds and updates
+/// are copied (backed up first, as `mcc sync` does); local edits and
+/// conflicts are kept. Records the manifest and, when it copied something,
+/// `last_sync` in `cfg`, which it saves.
+///
+/// Silent: no output, no prompt. The caller holds the config lock and
+/// loaded `cfg` under it.
+pub fn auto_catch_up(paths: &Paths, cfg: &mut Config, alias: &str) -> Result<AutoOutcome> {
+    let dir = cfg
+        .profiles
+        .get(alias)
+        .map(|p| p.dir.clone())
+        .ok_or_else(|| super::unknown_profile(alias))?;
+    if !dir.is_dir() || !paths.default_dir.is_dir() {
+        return Err(CliError::runtime(format!(
+            "{} or the default profile is missing",
+            paths.display(&dir)
+        ))
+        .into());
+    }
+    let previous = match manifest::load(&dir) {
+        manifest::Loaded::Found(m) => m,
+        manifest::Loaded::Missing => {
+            return Ok(AutoOutcome::Held {
+                reason: Held::NoManifest,
+            });
+        }
+        manifest::Loaded::Invalid(_) => {
+            return Ok(AutoOutcome::Held {
+                reason: Held::InvalidManifest,
+            });
+        }
+    };
+    let spec = copy::spec(None, &cfg.sync)?;
+    let rw = Rewriter::for_profile(paths, cfg, &dir)?;
+    let plan = plan_for(paths, cfg, &dir, &spec, Some(&previous), false, false)?;
+    let removals = plan.count(Action::Remove) + plan.mcp.as_ref().map_or(0, |m| m.removed.len());
+    if removals > 0 {
+        return Ok(AutoOutcome::Held {
+            reason: Held::Removals,
+        });
+    }
+    let status = plan.status();
+    let kept = Status {
+        behind: 0,
+        ..status
+    };
+    let next = plan.manifest(Some(&previous));
+    if plan.actionable() == 0 {
+        // As `mcc sync` does: record what the profile matches.
+        if next != previous {
+            next.save(&dir)?;
+        }
+        return Ok(AutoOutcome::UpToDate { status: kept });
+    }
+    backup(&dir, &plan)?;
+    copy::apply(&plan, &paths.default_dir, &dir, &rw, false)?;
+    next.save(&dir)?;
+    let mut changed: Vec<String> = plan
+        .changes
+        .iter()
+        .filter(|c| !c.action.kept() && !c.dir)
+        .map(|c| c.rel.display().to_string())
+        .collect();
+    if let Some(m) = &plan.mcp {
+        changed.extend(
+            m.added
+                .iter()
+                .chain(&m.updated)
+                .map(|k| format!("MCP server \"{k}\"")),
+        );
+    }
+    if let Some(p) = cfg.profiles.get_mut(alias) {
+        p.last_sync =
+            Some(chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false));
+    }
+    cfg.save(&paths.config_file)?;
+    Ok(AutoOutcome::Applied {
+        changed,
+        status: kept,
+    })
+}
+
 /// Without a usable sync manifest the plan is two-way, so every path that
 /// differs from the default is taken from it, local edits included: list
 /// each path (and MCP server) whose profile content a sync replaces, and

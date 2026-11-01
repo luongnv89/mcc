@@ -701,7 +701,7 @@ fn rewrite_launcher(
         &p.dir,
         claude_bin.as_deref(),
         plugin_root,
-        cfg.launch.banner,
+        shell::Blocks::for_profile(cfg, Some(p)),
     );
     if old != script.as_bytes() {
         undo.record(Undo::Launcher(wrapper.clone(), old));

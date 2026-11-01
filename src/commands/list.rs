@@ -58,7 +58,7 @@ pub fn run(paths: &Paths, cfg: &Config, args: &ListArgs) -> Result<()> {
             if all.len() == 1 { "" } else { "s" },
             ui::human_size(total)
         ));
-        sharing_notes(&all, cfg.launch.banner);
+        sharing_notes(&all, cfg);
         let names: Vec<&str> = all.iter().map(|m| m.name.as_str()).collect();
         let usages: Vec<&Usage> = all.iter().map(|m| &m.usage).collect();
         if let Some(hint) = usage::no_data_hint(&names, &usages) {
@@ -79,11 +79,10 @@ pub(super) fn profiles(
     usage: Option<bool>,
 ) -> Vec<ProfileMetrics> {
     let mut all = vec![metrics::default_profile(paths, full)];
-    all.extend(
-        cfg.profiles
-            .iter()
-            .map(|(name, p)| metrics::mcc_profile(name, p, paths, cfg.launch.banner, full)),
-    );
+    all.extend(cfg.profiles.iter().map(|(name, p)| {
+        let blocks = crate::shell::Blocks::for_profile(cfg, Some(p));
+        metrics::mcc_profile(name, p, paths, blocks, full)
+    }));
     for m in &mut all {
         m.project_defaults = cfg
             .projects
@@ -95,6 +94,7 @@ pub(super) fn profiles(
     for m in all.iter_mut().filter(|m| !m.is_default) {
         if let Some(p) = cfg.profiles.get(&m.name) {
             m.sync = super::sync::status(paths, cfg, &p.dir);
+            m.auto_sync = Some(super::launch_sync::Info::of(paths, cfg, &m.name));
         }
     }
     if let Some(live) = usage {
@@ -120,20 +120,29 @@ pub(super) fn redact(all: &mut [ProfileMetrics], show_email: bool) -> Vec<bool> 
     known
 }
 
-/// Footnotes (stderr) for session sharing and out-of-date launchers.
-/// `banner` is `[launch] banner`: the launch banner is mentioned only then.
-pub(super) fn sharing_notes(all: &[ProfileMetrics], banner: bool) {
+/// Footnotes (stderr) for session sharing and out-of-date launchers. The
+/// launch banner and auto sync are mentioned only while they are on.
+pub(super) fn sharing_notes(all: &[ProfileMetrics], cfg: &Config) {
     if all.iter().any(|m| m.share_sessions) {
         ui::info(
             "shared: sessions shared with every sharing profile of the same group (their session counts include all of them)",
         );
     }
     let stale = all.iter().filter(|m| !m.launcher_current).count();
-    if stale > 0 && banner {
+    let mut features = vec!["`<alias> --mcc-share`"];
+    if cfg.launch.banner {
+        features.push("the launch banner");
+    }
+    if cfg.sync.auto != Some(false) {
+        features.push("auto sync");
+    }
+    if stale > 0 && features.len() > 1 {
+        let last = features.pop().expect("more than one");
         ui::hint(&format!(
-            "{stale} launcher{} {} out of date — run `mcc refresh-launchers` so `<alias> --mcc-share` and the launch banner work",
+            "{stale} launcher{} {} out of date — run `mcc refresh-launchers` so {} and {last} work",
             if stale == 1 { "" } else { "s" },
             if stale == 1 { "is" } else { "are" },
+            features.join(", "),
         ));
     } else if stale > 0 {
         ui::hint(&format!(
@@ -292,11 +301,69 @@ pub(super) fn table(out: &mut impl Write, all: &[ProfileMetrics]) -> Result<()> 
 }
 
 /// The SYNC cell: "✓", e.g. "3 behind, 2 local edits", or "—" for the
-/// default profile and profiles that can't be compared.
+/// default profile and profiles that can't be compared. A profile behind
+/// that auto sync doesn't catch up says why: "(held)" when its last check
+/// wrote nothing (`mcc sync` has to), "(auto sync off)" when it is off.
 fn sync_cell(m: &ProfileMetrics) -> String {
-    m.sync
-        .as_ref()
-        .map_or_else(|| "—".into(), super::sync::status_text)
+    let Some(s) = m.sync.as_ref() else {
+        return "—".into();
+    };
+    let text = super::sync::status_text(s);
+    match &m.auto_sync {
+        Some(a) if s.behind > 0 && !a.enabled => format!("{text} (auto sync off)"),
+        Some(a) if s.behind > 0 && a.held.is_some() => format!("{text} (held)"),
+        _ => text,
+    }
+}
+
+/// The `--long` card rows for auto sync: whether it is on, when it last
+/// checked and copied, what it copied, and why it last held back.
+fn auto_sync_rows(m: &ProfileMetrics) -> Vec<(&'static str, String)> {
+    let Some(a) = &m.auto_sync else {
+        return Vec::new();
+    };
+    let mut rows = vec![(
+        "Auto sync",
+        match &a.off_by {
+            None => "on (when a profile starts)".to_string(),
+            Some(key) => format!("off ({key} = false)"),
+        },
+    )];
+    if a.last_checked.is_some() {
+        rows.push(("Last checked", metrics::ago_str(a.last_checked.as_deref())));
+    }
+    if a.last_applied.is_some() {
+        const SHOWN: usize = 5;
+        let mut what = a
+            .changed
+            .iter()
+            .take(SHOWN)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        if a.changed.len() > SHOWN {
+            what.push_str(&format!(", …and {} more", a.changed.len() - SHOWN));
+        }
+        rows.push((
+            "Last auto sync",
+            format!(
+                "{} — {} updated ({what})",
+                metrics::ago_str(a.last_applied.as_deref()),
+                a.changed.len()
+            ),
+        ));
+    }
+    if let Some(held) = &a.held {
+        let why = super::sync::Held::from_name(held).map_or(
+            "the last check failed (see ~/.mcc/logs/mcc.log)",
+            super::sync::Held::describe,
+        );
+        rows.push((
+            "Held",
+            format!("nothing copied: {why} — run `mcc sync {}`", m.name),
+        ));
+    }
+    rows
 }
 
 /// Header and rows, with usage bars `bar` cells wide. Counts, size, the
@@ -530,6 +597,9 @@ fn card(
         )?;
         row(out, "Last sync", metrics::ago_str(m.last_sync.as_deref()))?;
         row(out, "Sync", sync_cell(m))?;
+        for (k, v) in auto_sync_rows(m) {
+            row(out, k, v)?;
+        }
     }
     writeln!(out)?;
     Ok(())
