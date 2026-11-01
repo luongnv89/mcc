@@ -105,6 +105,21 @@ pub struct UsageConfig {
     /// once. Left out of the file until then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live_disclosed_at: Option<String>,
+    /// How many days before a profile's login runs out `mcc usage` warns
+    /// about it. Unset means [`crate::usage::LOGIN_WARN_DAYS`]; read it with
+    /// [`UsageConfig::login_warn_days`]. Left out of the file while unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login_warn_days: Option<u32>,
+}
+
+impl UsageConfig {
+    /// The login-expiry warning window in days: as set, held to
+    /// 1..=[`crate::usage::LOGIN_WARN_DAYS_MAX`], else the default.
+    pub fn login_warn_days(&self) -> u32 {
+        self.login_warn_days
+            .unwrap_or(crate::usage::LOGIN_WARN_DAYS)
+            .clamp(1, crate::usage::LOGIN_WARN_DAYS_MAX)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

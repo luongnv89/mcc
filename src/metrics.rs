@@ -346,6 +346,41 @@ fn count_hooks(settings: Option<&Value>) -> usize {
         .sum()
 }
 
+/// At most this many directory entries are looked at under `projects/` when
+/// working out [`last_activity`], so a huge history stays quick to read.
+const ACTIVITY_SCAN_LIMIT: usize = 20_000;
+
+/// When the profile in `config_dir` was last used for a conversation: the
+/// newest modification time of its prompt history (`history.jsonl`) and its
+/// transcripts (`projects/**/*.jsonl`); `None` when it has neither.
+///
+/// Never `.claude.json` or `.credentials.json`, which change without the
+/// account being used (a launch, a token refresh, `mcc` itself). A
+/// `projects/` that is a symlink (session sharing) holds the whole group's
+/// transcripts, so it is skipped and only the profile's own history counts.
+pub fn last_activity(config_dir: &Path) -> Option<SystemTime> {
+    let mtime = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    let history = mtime(&config_dir.join("history.jsonl"));
+    let projects = config_dir.join("projects");
+    let shared = std::fs::symlink_metadata(&projects).is_ok_and(|m| m.file_type().is_symlink());
+    let transcripts = if shared {
+        None
+    } else {
+        WalkDir::new(&projects)
+            .follow_links(false)
+            .max_depth(4)
+            .into_iter()
+            .take(ACTIVITY_SCAN_LIMIT)
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_type().is_file() && e.path().extension().is_some_and(|x| x == "jsonl")
+            })
+            .filter_map(|e| e.metadata().ok()?.modified().ok())
+            .max()
+    };
+    history.into_iter().chain(transcripts).max()
+}
+
 /// "3m ago", "5h ago", "2d ago".
 pub fn ago(t: Option<SystemTime>) -> String {
     let Some(t) = t else { return "never".into() };
@@ -500,6 +535,72 @@ mod tests {
         let m = default_profile(&paths, true);
         assert!(m.exists);
         assert!(m.warnings[0].contains("not valid JSON"));
+    }
+
+    /// Set `p`'s modification time to `secs_ago` seconds ago.
+    fn touch_ago(p: &Path, secs_ago: u64) {
+        let t = SystemTime::now() - std::time::Duration::from_secs(secs_ago);
+        std::fs::File::options()
+            .append(true)
+            .open(p)
+            .unwrap()
+            .set_modified(t)
+            .unwrap();
+    }
+
+    #[test]
+    fn last_activity_is_the_newest_history_or_transcript() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path();
+        assert_eq!(last_activity(dir), None);
+        // Files that change without the account being used never count.
+        for f in [".claude.json", ".credentials.json", "settings.json"] {
+            std::fs::write(dir.join(f), "{}").unwrap();
+        }
+        std::fs::create_dir_all(dir.join("projects/-p")).unwrap();
+        std::fs::write(dir.join("projects/-p/notes.txt"), "").unwrap();
+        assert_eq!(last_activity(dir), None);
+
+        std::fs::write(dir.join("history.jsonl"), "{}\n").unwrap();
+        touch_ago(&dir.join("history.jsonl"), 3 * 86400);
+        let history = std::fs::metadata(dir.join("history.jsonl"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert_eq!(last_activity(dir), Some(history));
+        // A newer transcript (subagent transcripts sit a level deeper) wins.
+        let sub = dir.join("projects/-p/s1/subagents");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("a.jsonl"), "{}\n").unwrap();
+        touch_ago(&sub.join("a.jsonl"), 3600);
+        let transcript = std::fs::metadata(sub.join("a.jsonl"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert_eq!(last_activity(dir), Some(transcript));
+        // Touching .claude.json changes nothing.
+        std::fs::write(dir.join(".claude.json"), r#"{"x":1}"#).unwrap();
+        assert_eq!(last_activity(dir), Some(transcript));
+    }
+
+    #[test]
+    fn last_activity_skips_shared_transcripts() {
+        let d = tempfile::tempdir().unwrap();
+        let store = d.path().join("store");
+        std::fs::create_dir_all(store.join("-p")).unwrap();
+        std::fs::write(store.join("-p/other-profile.jsonl"), "{}\n").unwrap();
+        let dir = d.path().join("work");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::os::unix::fs::symlink(&store, dir.join("projects")).unwrap();
+        // Only the group's transcripts: unknown.
+        assert_eq!(last_activity(&dir), None);
+        std::fs::write(dir.join("history.jsonl"), "{}\n").unwrap();
+        touch_ago(&dir.join("history.jsonl"), 86400);
+        let history = std::fs::metadata(dir.join("history.jsonl"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert_eq!(last_activity(&dir), Some(history));
     }
 
     #[test]

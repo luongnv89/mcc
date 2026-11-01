@@ -20,6 +20,17 @@
 //! a user-facing string, and HTTP errors are reduced to [`Reason`] codes so no
 //! raw error text (which could echo headers) is ever surfaced. mcc never
 //! refreshes tokens: an expired one is reported, not sent.
+//!
+//! Login expiry ([`login_times`], #100) is the one narrow exception to "the
+//! default reads no token" (#34): plain `mcc usage` reads each profile's
+//! `.credentials.json` for two timestamps only, `claudeAiOauth.
+//! refreshTokenExpiresAt` (when the login needs a new sign-in) and
+//! `expiresAt` (the access token's own expiry). They are parsed into a struct
+//! that has no other field, so no token is ever bound, and nothing is sent
+//! anywhere. The macOS Keychain is consulted for them only where the token
+//! lookup may already read it (`[usage] live = true`, `mcc usage --all`);
+//! `MCC_NO_USAGE` turns the read
+//! off. mcc still never sends or refreshes a token itself.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -27,7 +38,7 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -356,6 +367,186 @@ pub fn token_state(config_dir: &Path, is_default: bool) -> TokenState {
         Credential::Expired => TokenState::Expired,
         Credential::Missing => TokenState::Missing,
     }
+}
+
+/// Where a login deadline was read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeadlineSource {
+    /// `<config dir>/.credentials.json`.
+    CredentialsFile,
+    /// The macOS login Keychain item of the config dir.
+    Keychain,
+}
+
+/// Why a profile's login deadline is unknown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnknownDeadline {
+    /// No credentials where mcc looked (logged out, an API-key login, or a
+    /// Keychain-only login while the Keychain was not consulted).
+    NoCredentials,
+    /// Credentials without a `refreshTokenExpiresAt` (older Claude Code).
+    NotRecorded,
+    /// Credentials mcc could not read as JSON, or a deadline out of range.
+    Malformed,
+    /// Not read: `MCC_NO_USAGE`.
+    Disabled,
+}
+
+/// When a profile's login stops working without a new sign-in: Claude Code's
+/// `claudeAiOauth.refreshTokenExpiresAt`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginDeadline {
+    Known {
+        at: DateTime<Utc>,
+        source: DeadlineSource,
+    },
+    Unknown(UnknownDeadline),
+}
+
+impl LoginDeadline {
+    pub fn at(&self) -> Option<DateTime<Utc>> {
+        match self {
+            LoginDeadline::Known { at, .. } => Some(*at),
+            LoginDeadline::Unknown(_) => None,
+        }
+    }
+
+    pub fn source(&self) -> Option<DeadlineSource> {
+        match self {
+            LoginDeadline::Known { source, .. } => Some(*source),
+            LoginDeadline::Unknown(_) => None,
+        }
+    }
+}
+
+/// A profile's login timestamps (never its tokens).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoginTimes {
+    pub deadline: LoginDeadline,
+    /// The access token's `expiresAt`, the latest of the sources read.
+    pub access_expires_at: Option<DateTime<Utc>>,
+}
+
+/// The two timestamps of a credentials blob, and nothing else: serde skips
+/// every other field (the tokens included) without binding it.
+#[derive(Deserialize)]
+struct CredentialTimes {
+    #[serde(rename = "claudeAiOauth")]
+    oauth: Option<OauthTimes>,
+}
+
+#[derive(Deserialize)]
+struct OauthTimes {
+    #[serde(rename = "refreshTokenExpiresAt")]
+    refresh_token_expires_at: Option<f64>,
+    #[serde(rename = "expiresAt")]
+    expires_at: Option<f64>,
+}
+
+/// One source's timestamps: `Err` when the deadline is unknown, with why.
+type SourceTimes = (
+    Result<DateTime<Utc>, UnknownDeadline>,
+    Option<DateTime<Utc>>,
+);
+
+/// Epoch milliseconds as a time; `None` when not a finite, in-range number.
+fn from_epoch_ms(ms: f64) -> Option<DateTime<Utc>> {
+    (ms.is_finite() && ms > 0.0 && ms < i64::MAX as f64)
+        .then(|| DateTime::from_timestamp_millis(ms as i64))
+        .flatten()
+}
+
+/// The timestamps in a credentials blob (the file, or the Keychain secret).
+/// The bytes are dropped by the caller right after.
+fn parse_times(bytes: &[u8]) -> SourceTimes {
+    let Ok(parsed) = serde_json::from_slice::<CredentialTimes>(bytes) else {
+        return (Err(UnknownDeadline::Malformed), None);
+    };
+    let Some(oauth) = parsed.oauth else {
+        return (Err(UnknownDeadline::NoCredentials), None);
+    };
+    let access = oauth.expires_at.and_then(from_epoch_ms);
+    let deadline = match oauth.refresh_token_expires_at {
+        None => Err(UnknownDeadline::NotRecorded),
+        Some(ms) => from_epoch_ms(ms).ok_or(UnknownDeadline::Malformed),
+    };
+    (deadline, access)
+}
+
+/// A profile's login timestamps from its credentials file and, with
+/// `allow_keychain`, its Keychain item (looked up through `keychain`, so
+/// tests never reach the real one). The newest known deadline wins.
+fn find_times(
+    config_dir: &Path,
+    is_default: bool,
+    allow_keychain: bool,
+    keychain: impl Fn(&str) -> Option<Vec<u8>>,
+) -> LoginTimes {
+    let mut sources: Vec<(DeadlineSource, SourceTimes)> = Vec::new();
+    if let Ok(bytes) = std::fs::read(config_dir.join(".credentials.json")) {
+        sources.push((DeadlineSource::CredentialsFile, parse_times(&bytes)));
+    }
+    if allow_keychain && let Some(bytes) = keychain(&keychain_service(config_dir, is_default)) {
+        sources.push((DeadlineSource::Keychain, parse_times(&bytes)));
+    }
+    let known = sources
+        .iter()
+        .filter_map(|(source, (d, _))| d.ok().map(|at| (at, *source)))
+        .max_by_key(|(at, _)| *at);
+    let deadline = match known {
+        Some((at, source)) => LoginDeadline::Known { at, source },
+        None => {
+            // The most telling reason: a malformed source over one without a
+            // deadline over none at all.
+            let reasons = sources.iter().filter_map(|(_, (d, _))| d.err());
+            LoginDeadline::Unknown(
+                reasons
+                    .max_by_key(|r| match r {
+                        UnknownDeadline::Malformed => 2,
+                        UnknownDeadline::NotRecorded => 1,
+                        _ => 0,
+                    })
+                    .unwrap_or(UnknownDeadline::NoCredentials),
+            )
+        }
+    };
+    LoginTimes {
+        deadline,
+        access_expires_at: sources.iter().filter_map(|(_, (_, a))| *a).max(),
+    }
+}
+
+/// A profile's login timestamps (see [`find_times`]), with the real Keychain
+/// when `allow_keychain`. `MCC_NO_USAGE` reads nothing: the deadline is
+/// [`UnknownDeadline::Disabled`].
+pub fn login_times(config_dir: &Path, is_default: bool, allow_keychain: bool) -> LoginTimes {
+    if disabled_by_env() {
+        return LoginTimes {
+            deadline: LoginDeadline::Unknown(UnknownDeadline::Disabled),
+            access_expires_at: None,
+        };
+    }
+    find_times(config_dir, is_default, allow_keychain, keychain_secret)
+}
+
+/// The days before a login deadline when mcc starts warning, when
+/// `[usage] login_warn_days` is unset.
+pub const LOGIN_WARN_DAYS: u32 = 2;
+/// The range `[usage] login_warn_days` is held to: a fresh sign-in lasts
+/// about 30 days, so a window close to that would warn right after one.
+pub const LOGIN_WARN_DAYS_MAX: u32 = 14;
+
+/// The time left before `deadline` when it falls within `window_days` of
+/// `now` (negative once it has passed); `None` outside the window.
+pub fn login_warning(
+    deadline: DateTime<Utc>,
+    now: DateTime<Utc>,
+    window_days: u32,
+) -> Option<chrono::Duration> {
+    let window = chrono::Duration::try_days(i64::from(window_days))?;
+    let left = deadline.signed_duration_since(now);
+    (left <= window).then_some(left)
 }
 
 /// `MCC_USAGE_URL` (a test/debug override) or the real endpoint. The override
@@ -955,6 +1146,135 @@ mod tests {
             "from-file"
         );
         assert_eq!(asked.borrow().len(), before);
+    }
+
+    fn times_blob(deadline: Option<i64>, access: Option<i64>) -> String {
+        let field =
+            |k: &str, v: Option<i64>| v.map(|v| format!(r#","{k}":{v}"#)).unwrap_or_default();
+        format!(
+            r#"{{"claudeAiOauth":{{"accessToken":"tok-secret","refreshToken":"ref-secret"{}{}}}}}"#,
+            field("refreshTokenExpiresAt", deadline),
+            field("expiresAt", access)
+        )
+    }
+
+    #[test]
+    fn login_times_read_only_the_two_timestamps() {
+        let ms = at("2026-10-10T12:00:00Z").timestamp_millis();
+        let (deadline, access) = parse_times(times_blob(Some(ms), Some(ms + 1000)).as_bytes());
+        assert_eq!(deadline, Ok(at("2026-10-10T12:00:00Z")));
+        assert_eq!(access, Some(at("2026-10-10T12:00:01Z")));
+        // A float, as JavaScript may write it, is read too.
+        let (deadline, _) =
+            parse_times(br#"{"claudeAiOauth":{"refreshTokenExpiresAt":1791000000000.0}}"#);
+        assert_eq!(
+            deadline,
+            Ok(DateTime::from_timestamp_millis(1_791_000_000_000).unwrap())
+        );
+        // Absent, malformed or out of range: unknown, and why.
+        assert_eq!(
+            parse_times(times_blob(None, Some(ms)).as_bytes()).0,
+            Err(UnknownDeadline::NotRecorded)
+        );
+        for bad in [
+            &b"garbage"[..],
+            br#"{"claudeAiOauth":{"refreshTokenExpiresAt":"soon"}}"#,
+            br#"{"claudeAiOauth":{"refreshTokenExpiresAt":-5}}"#,
+            br#"{"claudeAiOauth":{"refreshTokenExpiresAt":1e300}}"#,
+        ] {
+            assert_eq!(
+                parse_times(bad).0,
+                Err(UnknownDeadline::Malformed),
+                "{}",
+                String::from_utf8_lossy(bad)
+            );
+        }
+        assert_eq!(
+            parse_times(br#"{"token":"fake"}"#).0,
+            Err(UnknownDeadline::NoCredentials)
+        );
+    }
+
+    #[test]
+    fn login_times_take_the_newest_deadline_and_skip_the_keychain_unless_allowed() {
+        let d = tempfile::tempdir().unwrap();
+        let older = at("2026-10-11T00:00:00Z");
+        let newer = at("2026-11-05T00:00:00Z");
+        let asked = std::cell::RefCell::new(Vec::new());
+        let keychain = |service: &str| {
+            asked.borrow_mut().push(service.to_string());
+            Some(times_blob(Some(newer.timestamp_millis()), None).into_bytes())
+        };
+        // Nothing anywhere.
+        let t = find_times(d.path(), false, false, keychain);
+        assert_eq!(
+            t.deadline,
+            LoginDeadline::Unknown(UnknownDeadline::NoCredentials)
+        );
+        assert!(asked.borrow().is_empty(), "the keychain was asked");
+        std::fs::write(
+            d.path().join(".credentials.json"),
+            times_blob(
+                Some(older.timestamp_millis()),
+                Some(older.timestamp_millis()),
+            ),
+        )
+        .unwrap();
+        // The file alone, without the keychain.
+        let t = find_times(d.path(), false, false, keychain);
+        assert_eq!(
+            t.deadline,
+            LoginDeadline::Known {
+                at: older,
+                source: DeadlineSource::CredentialsFile
+            }
+        );
+        assert_eq!(t.access_expires_at, Some(older));
+        assert!(asked.borrow().is_empty(), "the keychain was asked");
+        // Both: the newer deadline wins, wherever it is.
+        let t = find_times(d.path(), true, true, keychain);
+        assert_eq!(
+            t.deadline,
+            LoginDeadline::Known {
+                at: newer,
+                source: DeadlineSource::Keychain
+            }
+        );
+        assert_eq!(asked.borrow().as_slice(), ["Claude Code-credentials"]);
+        let none = |_: &str| None;
+        assert_eq!(
+            find_times(d.path(), true, true, none).deadline.at(),
+            Some(older)
+        );
+        // A malformed file is unknown for that reason.
+        std::fs::write(d.path().join(".credentials.json"), "{oops").unwrap();
+        assert_eq!(
+            find_times(d.path(), false, true, none).deadline,
+            LoginDeadline::Unknown(UnknownDeadline::Malformed)
+        );
+    }
+
+    #[test]
+    fn login_warning_window() {
+        let now = at("2026-10-10T12:00:00Z");
+        let day = chrono::Duration::days(1);
+        let s = chrono::Duration::seconds(1);
+        // Inside, just inside, exactly on the boundary: warned.
+        assert_eq!(login_warning(now + day, now, 2), Some(day));
+        assert_eq!(login_warning(now + day * 2 - s, now, 2), Some(day * 2 - s));
+        assert_eq!(login_warning(now + day * 2, now, 2), Some(day * 2));
+        // Just outside: not.
+        assert_eq!(login_warning(now + day * 2 + s, now, 2), None);
+        assert_eq!(
+            login_warning(now + day * 29, now, LOGIN_WARN_DAYS_MAX),
+            None
+        );
+        // Already past: warned, with the time since as a negative.
+        assert_eq!(login_warning(now - day, now, 2), Some(-day));
+        // No overflow at the extremes.
+        assert_eq!(login_warning(DateTime::<Utc>::MAX_UTC, now, 2), None);
+        assert!(login_warning(DateTime::<Utc>::MAX_UTC, now, u32::MAX).is_some());
+        assert!(login_warning(DateTime::<Utc>::MIN_UTC, now, 2).is_some());
     }
 
     #[test]

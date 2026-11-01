@@ -40,6 +40,10 @@ pub const SETTABLE: &[(&str, &str)] = &[
     ),
     ("privacy.show_email", "true or false"),
     ("usage.live", "true or false"),
+    (
+        "usage.login_warn_days",
+        "days before a login runs out that `mcc usage` warns, 1–14 (\"\" for the default, 2)",
+    ),
     ("launch.banner", "true or false"),
     ("sync.auto", "true or false"),
     (
@@ -60,6 +64,7 @@ enum Key {
     SyncExtra,
     ShowEmail,
     Live,
+    LoginWarnDays,
     Banner,
     SyncAuto,
     Label(String),
@@ -110,6 +115,7 @@ fn settable(key: &str, parts: &[String]) -> Result<Key> {
         // `usage.show_email` is its name from before `[privacy]`.
         ["privacy" | "usage", "show_email"] => Key::ShowEmail,
         ["usage", "live"] => Key::Live,
+        ["usage", "login_warn_days"] => Key::LoginWarnDays,
         ["launch", "banner"] => Key::Banner,
         ["sync", "auto"] => Key::SyncAuto,
         ["profiles", alias, "label"] => Key::Label(alias.to_string()),
@@ -184,6 +190,7 @@ fn lookup(cfg: &Config, key: &str, parts: &[String]) -> Result<String> {
         // Left out of the file while it has its default.
         (None, Ok(Key::Live | Key::Banner)) => toml::Value::Boolean(false),
         (None, Ok(Key::SyncAuto)) => toml::Value::Boolean(true),
+        (_, Ok(Key::LoginWarnDays)) => toml::Value::Integer(i64::from(cfg.usage.login_warn_days())),
         (None, Ok(Key::AutoSync(alias))) if cfg.profiles.contains_key(&alias) => {
             toml::Value::Boolean(true)
         }
@@ -307,6 +314,7 @@ fn apply(cfg: &mut Config, which: &Key, value: &str) -> Result<()> {
         }
         Key::ShowEmail => cfg.privacy.show_email = Some(parse_bool(value)?),
         Key::Live => cfg.usage.live = parse_bool(value)?,
+        Key::LoginWarnDays => cfg.usage.login_warn_days = parse_warn_days(value)?,
         Key::Banner => cfg.launch.banner = parse_bool(value)?,
         // Written either way: a `false` left in the file would otherwise
         // survive a save that leaves the key out.
@@ -361,6 +369,27 @@ fn split_list(value: &str) -> Vec<String> {
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .collect()
+}
+
+/// `usage.login_warn_days`: a whole number of days in 1..=14, or "" for
+/// the default.
+fn parse_warn_days(value: &str) -> Result<Option<u32>> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let max = crate::usage::LOGIN_WARN_DAYS_MAX;
+    match value.parse::<u32>() {
+        Ok(days) if (1..=max).contains(&days) => Ok(Some(days)),
+        _ => Err(CliError::usage(format!(
+            "invalid value \"{value}\": expected a number of days from 1 to {max}"
+        ))
+        .hint(format!(
+            "a fresh sign-in lasts about 30 days; example: mcc config set usage.login_warn_days 3 (\"\" for the default, {})",
+            crate::usage::LOGIN_WARN_DAYS
+        ))
+        .into()),
+    }
 }
 
 fn parse_bool(value: &str) -> Result<bool> {
@@ -548,6 +577,7 @@ mod tests {
     fn settable_keys_parse() {
         assert_eq!(key("sync.exclude").unwrap(), Key::SyncExclude);
         assert_eq!(key("usage.live").unwrap(), Key::Live);
+        assert_eq!(key("usage.login_warn_days").unwrap(), Key::LoginWarnDays);
         assert_eq!(key("launch.banner").unwrap(), Key::Banner);
         assert_eq!(key("sync.auto").unwrap(), Key::SyncAuto);
         assert_eq!(
@@ -626,6 +656,32 @@ mod tests {
         assert_eq!(cfg.sync.auto, Some(true));
         assert!(apply(&mut cfg, &Key::SyncAuto, "maybe").is_err());
         assert!(apply(&mut cfg, &Key::AutoSync("nope".into()), "true").is_err());
+    }
+
+    #[test]
+    fn login_warn_days_is_held_to_its_range_and_reads_its_default() {
+        let mut cfg = Config::default();
+        let get = |cfg: &Config| {
+            let k = "usage.login_warn_days";
+            lookup(cfg, k, &split_key(k).unwrap()).unwrap()
+        };
+        assert_eq!(get(&cfg), "2\n");
+        apply(&mut cfg, &Key::LoginWarnDays, " 5 ").unwrap();
+        assert_eq!(cfg.usage.login_warn_days, Some(5));
+        assert_eq!(get(&cfg), "5\n");
+        apply(&mut cfg, &Key::LoginWarnDays, "14").unwrap();
+        assert_eq!(cfg.usage.login_warn_days(), 14);
+        for bad in ["0", "15", "30", "-1", "2.5", "soon"] {
+            assert!(apply(&mut cfg, &Key::LoginWarnDays, bad).is_err(), "{bad}");
+        }
+        apply(&mut cfg, &Key::LoginWarnDays, "").unwrap();
+        assert_eq!(cfg.usage.login_warn_days, None);
+        assert_eq!(get(&cfg), "2\n");
+        // A hand-edited value out of range is held to it.
+        cfg.usage.login_warn_days = Some(90);
+        assert_eq!(cfg.usage.login_warn_days(), 14);
+        cfg.usage.login_warn_days = Some(0);
+        assert_eq!(cfg.usage.login_warn_days(), 1);
     }
 
     #[test]
