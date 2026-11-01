@@ -144,7 +144,7 @@
           <li><strong>Fresh</strong> (<code>--fresh</code>) starts with an empty profile.</li>
         </ul>
         <h3>Sync</h3>
-        <p>A one-way copy from the default profile into a profile. Most tools assume the default config path, so the default stays the source of truth and profiles follow it.</p>
+        <p>A one-way copy from the default profile into a profile. Most tools assume the default config path, so the default stays the source of truth and profiles follow it. With <a href="#auto-sync">auto sync</a>, on by default, profiles catch up on their own as they start.</p>
       </section>
 
       <section id="commands">
@@ -376,7 +376,7 @@ lab        —         <span class="d">—                      —</span>      
 
         <h3 id="cmd-refresh-launchers"><code>mcc refresh-launchers</code> <a class="anchor" href="#cmd-refresh-launchers" aria-label="Link to mcc refresh-launchers">#</a></h3>
         <p class="synopsis">mcc refresh-launchers [ALIAS...]</p>
-        <p>Rewrites the launcher and shell alias of the given profiles (all of them when none are given) from the current templates, so that <code>&lt;alias&gt; --mcc-share</code> works for profiles created by an older mcc: the alias then runs the launcher instead of calling <code>claude</code> directly. <code>CLAUDE_CONFIG_DIR</code> stays exactly the same, so logins are kept. mcc never rewrites existing launchers on its own. Launchers that are already current are left alone, and launchers mcc didn't write are skipped. If a step fails, the previous launchers and aliases are restored.</p>
+        <p>Rewrites the launcher and shell alias of the given profiles (all of them when none are given) from the current templates, so that <code>&lt;alias&gt; --mcc-share</code> and <a href="#auto-sync">auto sync</a> work for profiles created by an older mcc: the alias then runs the launcher instead of calling <code>claude</code> directly. Run it again after turning the launch banner or auto sync on or off: launchers call them only while they are on. <code>CLAUDE_CONFIG_DIR</code> stays exactly the same, so logins are kept. mcc never rewrites existing launchers on its own. Launchers that are already current are left alone, and launchers mcc didn't write are skipped. If a step fails, the previous launchers and aliases are restored.</p>
         <div class="code"><pre><span class="p">$ </span>mcc refresh-launchers
 <span class="p">$ </span>mcc refresh-launchers work lab</pre></div>
 
@@ -459,6 +459,11 @@ lab        —         <span class="d">—                      —</span>      
         <h3 id="three-way">Three-way sync</h3>
         <p><code>add --clone</code> and every <code>sync</code> record what they wrote in <code>&lt;profile&gt;/.mcc-sync.json</code>: each path and MCP server with a hash of its content. The next <code>sync</code> compares the default, the profile and that record for every path. Changed only in the default: updated (or added). Edited, or deleted, only in the profile: kept and reported as a local edit. Changed in both: a conflict, kept and reported; <code>--force</code> overwrites it after backing it up. <code>--dry-run</code> shows the same classification and writes nothing, not even the record. A profile without a record (created <code>--fresh</code> or by an older mcc), or with one that can't be read, is compared two-way once, taking every difference from the default, and the record starts with that sync. Because that sync can't tell your edits from the default's changes, it first warns with each path and MCP server it will replace and where they are backed up (<code>&lt;profile&gt;/.mcc-backup/</code>); <code>--dry-run</code> lists the same paths, and the warning shows even with <code>--quiet</code>. A sync that only adds files prints no warning. The record belongs to its profile and is never copied; <code>[sync] extra</code> can't name it.</p>
 
+        <h3 id="auto-sync">Auto sync</h3>
+        <p>With <code>[sync] auto</code>, on by default, starting a profile from its command (its launcher) or with <code>mcc run</code> first catches it up with the default, then the other profiles the default changed for, while a half-second budget lasts. It is the safe part of <code>sync</code> only: adds and updates, three-way against the profile's sync record, backed up to <code>&lt;profile&gt;/.mcc-backup/</code> first; local edits and conflicts are kept and still reported; never <code>--prune</code> or <code>--force</code>, and nothing for linked items. Nothing is written for a profile without a usable sync record (a <code>--fresh</code> profile never synced), nor when catching up would remove something: <code>mcc list</code> marks those <code>(held)</code>, and <code>mcc sync ALIAS</code> handles them.</p>
+        <p>A launch stays fast and quiet: a fingerprint of what a catch-up depends on (the default's synced files by size and modification time, its MCP servers, the sync settings, the profile's overlay, links and sync record) is kept per profile, and nothing is compared while it is unchanged. mcc's lock is only tried: a profile is skipped while another mcc command holds it. Claude Code always starts, and nothing is written to its stdout; on a terminal, one stderr line says what was copied. <code>mcc list --long</code> shows <code>Auto sync</code>, <code>Last checked</code> and <code>Last auto sync</code> (when, and what it copied), and <code>--json</code> has them under <code>auto_sync</code>.</p>
+        <p>Turn it off with <code>mcc config set sync.auto false</code> (every profile) or <code>mcc config set profiles.ALIAS.auto_sync false</code> (one profile); either takes effect at once. Launchers call the catch-up only while it is on for their profile: run <code>mcc refresh-launchers</code> once so launchers made by an older mcc catch up, and again after turning it off to take the call out. <code>MCC_NO_AUTO_SYNC=1</code> turns it off for one run.</p>
+
         <h3 id="settings-overlays">Per-profile settings overlays</h3>
         <p>A profile can keep its own <code>model</code>, <code>env</code>, <code>permissions</code> or <code>statusLine</code> with an overlay: <code>[profiles.&lt;alias&gt;.settings]</code> in <code>~/.mcc/config.toml</code> and/or <code>&lt;profile&gt;/settings.mcc.json</code> (which wins where both set a key). Clone and every <code>sync</code> write the default's <code>settings.json</code> (paths rewritten), then deep-merge the overlay onto it: objects merge key by key, arrays and other values replace the default's whole (an overlay <code>permissions.allow</code> is the profile's whole list), and <code>null</code> (JSON only) removes a key. The merged result is what the sync record holds, so overlay keys are never local edits or conflicts, and editing the overlay is applied by the next <code>sync</code>, with the usual backup. When <code>[sync] exclude</code> has <code>"settings"</code>, the profile owns its <code>settings.json</code> and the overlay is not applied. An overlay <code>statusLine</code> replaces the default's, the <code>mcc statusline</code> shim included.</p>
       </section>
@@ -469,6 +474,7 @@ lab        —         <span class="d">—                      —</span>      
         <div class="code"><pre>[sync]
 exclude = ["plugins"]          <span class="cm"># built-in items to skip</span>
 extra = ["my-tool/config.yml"] <span class="cm"># additional paths (relative to the config dir) to copy</span>
+<span class="cm"># auto = false                 # no auto sync when a profile starts (default: on)</span>
 
 [privacy]
 show_email = true              <span class="cm"># show account emails in `mcc list` and `mcc usage` (default: false)</span>
@@ -616,6 +622,7 @@ work       <span class="y">█████████</span><span class="d">░
             <tr><td>Sync backups</td><td><code>&lt;profile&gt;/.mcc-backup/&lt;timestamp&gt;/</code>, also holding the profile's own copy of what <code>mcc link</code> replaces (plugins included)</td></tr>
             <tr><td>Sync record</td><td><code>&lt;profile&gt;/.mcc-sync.json</code>: a hash of each path and MCP server mcc last wrote, for <a href="#three-way">three-way sync</a></td></tr>
             <tr><td>Settings overlay</td><td><code>[profiles.&lt;alias&gt;.settings]</code> in <code>~/.mcc/config.toml</code> and <code>&lt;profile&gt;/settings.mcc.json</code>; see <a href="#settings-overlays">Per-profile settings overlays</a></td></tr>
+            <tr><td>Auto sync record</td><td><code>~/.mcc/state/&lt;alias&gt;/auto-sync.json</code>: when <a href="#auto-sync">auto sync</a> last checked and copied, and what</td></tr>
             <tr><td>Config lock</td><td><code>~/.mcc/.lock</code>, locked by every command that writes the config</td></tr>
           </tbody>
         </table></div>
@@ -630,6 +637,7 @@ work       <span class="y">█████████</span><span class="d">░
             <tr><td><code>MCC_HOME</code></td><td>Use this directory instead of <code>$HOME</code> for everything mcc reads and writes (useful for testing)</td></tr>
             <tr><td><code>MCC_CLAUDE_BIN</code></td><td>Path to the <code>claude</code> binary</td></tr>
             <tr><td><code>MCC_NON_INTERACTIVE</code></td><td>Set to any value (even empty) to never prompt, as when stdin or stderr isn't a terminal: required prompts stop and name the flag to pass instead, and optional ones take their default (useful in scripts and CI)</td></tr>
+            <tr><td><code>MCC_NO_AUTO_SYNC</code></td><td>Any value except empty or <code>0</code>: no <a href="#auto-sync">auto sync</a> for that run (<code>mcc doctor</code> sets it when it runs a launcher)</td></tr>
             <tr><td><code>MCC_NO_USAGE</code></td><td>Any value except empty or <code>0</code>: same as <code>mcc list --no-usage</code>; <code>mcc usage</code> shows usage as not fetched</td></tr>
             <tr><td><code>COLUMNS</code></td><td>Terminal width used to size usage bars (default: detected width; unlimited when piped)</td></tr>
             <tr><td><code>MCC_USAGE_URL</code></td><td>Test/debug override for the usage endpoint. It receives bearer tokens, so only <code>https://</code> URLs and <code>http://</code> on loopback (<code>127.0.0.1</code>, <code>localhost</code>, <code>[::1]</code>) are accepted; any other value is refused and usage is not fetched at all</td></tr>
