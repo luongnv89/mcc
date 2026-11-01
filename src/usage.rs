@@ -23,11 +23,12 @@
 //!
 //! Login expiry ([`login_times`], #100) is the one narrow exception to "the
 //! default reads no token" (#34): plain `mcc usage` reads each profile's
-//! `.credentials.json` for two timestamps only, `claudeAiOauth.
-//! refreshTokenExpiresAt` (when the login needs a new sign-in) and
-//! `expiresAt` (the access token's own expiry). They are parsed into a struct
-//! that has no other field, so no token is ever bound, and nothing is sent
-//! anywhere. The macOS Keychain is consulted for them only where the token
+//! `.credentials.json` for one timestamp only, `claudeAiOauth.
+//! refreshTokenExpiresAt` (when the login needs a new sign-in). It is parsed
+//! into a struct that has no other field, so no token (nor the access token's
+//! `expiresAt`) is ever bound, and nothing is sent anywhere. `mcc login
+//! --refresh-only` additionally reads `expiresAt`, the access token's own
+//! expiry. The macOS Keychain is consulted for them only where the token
 //! lookup may already read it (`[usage] live = true`, `mcc usage --all`) or
 //! when the user asks for it (`mcc login`); `MCC_NO_USAGE` turns the read
 //! off. mcc still never sends or refreshes a token itself: `mcc login
@@ -429,18 +430,37 @@ impl LoginDeadline {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LoginTimes {
     pub deadline: LoginDeadline,
-    /// The access token's `expiresAt`, the latest of the sources read.
+    /// The access token's `expiresAt`, the latest of the sources read; only
+    /// read with [`AccessExpiry::Read`], `None` otherwise.
     pub access_expires_at: Option<DateTime<Utc>>,
 }
 
-/// The two timestamps of a credentials blob, and nothing else: serde skips
-/// every other field (the tokens included) without binding it.
-#[derive(Deserialize)]
-struct CredentialTimes {
-    #[serde(rename = "claudeAiOauth")]
-    oauth: Option<OauthTimes>,
+/// Whether a read also binds the access token's `expiresAt`. `mcc usage`
+/// reads the login deadline alone ([`AccessExpiry::Skip`]); only `mcc login
+/// --refresh-only` needs the access token's expiry too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessExpiry {
+    Skip,
+    Read,
 }
 
+/// The timestamps of a credentials blob, and nothing else: serde skips every
+/// other field (the tokens included) without binding it.
+#[derive(Deserialize)]
+struct CredentialTimes<T> {
+    #[serde(rename = "claudeAiOauth")]
+    oauth: Option<T>,
+}
+
+/// The login deadline alone: what `mcc usage` reads.
+#[derive(Deserialize)]
+struct OauthDeadline {
+    #[serde(rename = "refreshTokenExpiresAt")]
+    refresh_token_expires_at: Option<f64>,
+}
+
+/// The login deadline and the access token's expiry: `mcc login
+/// --refresh-only` only.
 #[derive(Deserialize)]
 struct OauthTimes {
     #[serde(rename = "refreshTokenExpiresAt")]
@@ -462,21 +482,39 @@ fn from_epoch_ms(ms: f64) -> Option<DateTime<Utc>> {
         .flatten()
 }
 
-/// The timestamps in a credentials blob (the file, or the Keychain secret).
-/// The bytes are dropped by the caller right after.
-fn parse_times(bytes: &[u8]) -> SourceTimes {
-    let Ok(parsed) = serde_json::from_slice::<CredentialTimes>(bytes) else {
-        return (Err(UnknownDeadline::Malformed), None);
-    };
-    let Some(oauth) = parsed.oauth else {
-        return (Err(UnknownDeadline::NoCredentials), None);
-    };
-    let access = oauth.expires_at.and_then(from_epoch_ms);
-    let deadline = match oauth.refresh_token_expires_at {
+/// A credentials blob's `claudeAiOauth`, as `T`: `Err` when unknown, with why.
+fn parse_oauth<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, UnknownDeadline> {
+    serde_json::from_slice::<CredentialTimes<T>>(bytes)
+        .map_err(|_| UnknownDeadline::Malformed)?
+        .oauth
+        .ok_or(UnknownDeadline::NoCredentials)
+}
+
+/// A `refreshTokenExpiresAt` as a deadline: `Err` when unknown, with why.
+fn deadline_of(ms: Option<f64>) -> Result<DateTime<Utc>, UnknownDeadline> {
+    match ms {
         None => Err(UnknownDeadline::NotRecorded),
         Some(ms) => from_epoch_ms(ms).ok_or(UnknownDeadline::Malformed),
-    };
-    (deadline, access)
+    }
+}
+
+/// The timestamps in a credentials blob (the file, or the Keychain secret):
+/// the login deadline, and the access token's expiry only with
+/// [`AccessExpiry::Read`]. The bytes are dropped by the caller right after.
+fn parse_times(bytes: &[u8], access: AccessExpiry) -> SourceTimes {
+    match access {
+        AccessExpiry::Skip => match parse_oauth::<OauthDeadline>(bytes) {
+            Ok(o) => (deadline_of(o.refresh_token_expires_at), None),
+            Err(why) => (Err(why), None),
+        },
+        AccessExpiry::Read => match parse_oauth::<OauthTimes>(bytes) {
+            Ok(o) => (
+                deadline_of(o.refresh_token_expires_at),
+                o.expires_at.and_then(from_epoch_ms),
+            ),
+            Err(why) => (Err(why), None),
+        },
+    }
 }
 
 /// A profile's login timestamps from its credentials file and, with
@@ -486,14 +524,15 @@ fn find_times(
     config_dir: &Path,
     is_default: bool,
     allow_keychain: bool,
+    access: AccessExpiry,
     keychain: impl Fn(&str) -> Option<Vec<u8>>,
 ) -> LoginTimes {
     let mut sources: Vec<(DeadlineSource, SourceTimes)> = Vec::new();
     if let Ok(bytes) = std::fs::read(config_dir.join(".credentials.json")) {
-        sources.push((DeadlineSource::CredentialsFile, parse_times(&bytes)));
+        sources.push((DeadlineSource::CredentialsFile, parse_times(&bytes, access)));
     }
     if allow_keychain && let Some(bytes) = keychain(&keychain_service(config_dir, is_default)) {
-        sources.push((DeadlineSource::Keychain, parse_times(&bytes)));
+        sources.push((DeadlineSource::Keychain, parse_times(&bytes, access)));
     }
     let known = sources
         .iter()
@@ -522,8 +561,9 @@ fn find_times(
     }
 }
 
-/// A profile's login timestamps (see [`find_times`]), with the real Keychain
-/// when `allow_keychain`. `MCC_NO_USAGE` reads nothing: the deadline is
+/// A profile's login deadline (see [`find_times`]), with the real Keychain
+/// when `allow_keychain`: what `mcc usage` reads, so never the access
+/// token's expiry. `MCC_NO_USAGE` reads nothing: the deadline is
 /// [`UnknownDeadline::Disabled`].
 pub fn login_times(config_dir: &Path, is_default: bool, allow_keychain: bool) -> LoginTimes {
     if disabled_by_env() {
@@ -532,13 +572,20 @@ pub fn login_times(config_dir: &Path, is_default: bool, allow_keychain: bool) ->
             access_expires_at: None,
         };
     }
-    find_times(config_dir, is_default, allow_keychain, keychain_secret)
+    find_times(
+        config_dir,
+        is_default,
+        allow_keychain,
+        AccessExpiry::Skip,
+        keychain_secret,
+    )
 }
 
 /// [`login_times`] for an explicit request (`mcc login`): the credentials
-/// file and the Keychain, whatever `MCC_NO_USAGE` says.
-pub fn read_login_times(config_dir: &Path, is_default: bool) -> LoginTimes {
-    find_times(config_dir, is_default, true, keychain_secret)
+/// file and the Keychain, whatever `MCC_NO_USAGE` says; the access token's
+/// expiry too only with [`AccessExpiry::Read`] (`--refresh-only`).
+pub fn read_login_times(config_dir: &Path, is_default: bool, access: AccessExpiry) -> LoginTimes {
+    find_times(config_dir, is_default, true, access, keychain_secret)
 }
 
 /// Whether mcc can read a Keychain here (macOS, or `MCC_SECURITY_BIN`).
@@ -1185,21 +1232,28 @@ mod tests {
     #[test]
     fn login_times_read_only_the_two_timestamps() {
         let ms = at("2026-10-10T12:00:00Z").timestamp_millis();
-        let (deadline, access) = parse_times(times_blob(Some(ms), Some(ms + 1000)).as_bytes());
+        let (deadline, access) = parse_times(
+            times_blob(Some(ms), Some(ms + 1000)).as_bytes(),
+            AccessExpiry::Read,
+        );
         assert_eq!(deadline, Ok(at("2026-10-10T12:00:00Z")));
         assert_eq!(access, Some(at("2026-10-10T12:00:01Z")));
         // A float, as JavaScript may write it, is read too.
-        let (deadline, _) =
-            parse_times(br#"{"claudeAiOauth":{"refreshTokenExpiresAt":1791000000000.0}}"#);
+        let (deadline, _) = parse_times(
+            br#"{"claudeAiOauth":{"refreshTokenExpiresAt":1791000000000.0}}"#,
+            AccessExpiry::Skip,
+        );
         assert_eq!(
             deadline,
             Ok(DateTime::from_timestamp_millis(1_791_000_000_000).unwrap())
         );
         // Absent, malformed or out of range: unknown, and why.
-        assert_eq!(
-            parse_times(times_blob(None, Some(ms)).as_bytes()).0,
-            Err(UnknownDeadline::NotRecorded)
-        );
+        for access in [AccessExpiry::Skip, AccessExpiry::Read] {
+            assert_eq!(
+                parse_times(times_blob(None, Some(ms)).as_bytes(), access).0,
+                Err(UnknownDeadline::NotRecorded)
+            );
+        }
         for bad in [
             &b"garbage"[..],
             br#"{"claudeAiOauth":{"refreshTokenExpiresAt":"soon"}}"#,
@@ -1207,16 +1261,52 @@ mod tests {
             br#"{"claudeAiOauth":{"refreshTokenExpiresAt":1e300}}"#,
         ] {
             assert_eq!(
-                parse_times(bad).0,
+                parse_times(bad, AccessExpiry::Skip).0,
                 Err(UnknownDeadline::Malformed),
                 "{}",
                 String::from_utf8_lossy(bad)
             );
         }
         assert_eq!(
-            parse_times(br#"{"token":"fake"}"#).0,
+            parse_times(br#"{"token":"fake"}"#, AccessExpiry::Skip).0,
             Err(UnknownDeadline::NoCredentials)
         );
+    }
+
+    #[test]
+    fn the_usage_read_binds_the_login_deadline_alone() {
+        let ms = at("2026-10-10T12:00:00Z").timestamp_millis();
+        // `mcc usage` never binds the access token's expiry...
+        let (deadline, access) = parse_times(
+            times_blob(Some(ms), Some(ms + 1000)).as_bytes(),
+            AccessExpiry::Skip,
+        );
+        assert_eq!(deadline, Ok(at("2026-10-10T12:00:00Z")));
+        assert_eq!(access, None);
+        // ...so even an `expiresAt` it could not parse leaves the deadline.
+        let odd =
+            br#"{"claudeAiOauth":{"expiresAt":"soon","refreshTokenExpiresAt":1791000000000}}"#;
+        assert_eq!(
+            parse_times(odd, AccessExpiry::Skip).0,
+            Ok(DateTime::from_timestamp_millis(1_791_000_000_000).unwrap())
+        );
+        assert_eq!(
+            parse_times(odd, AccessExpiry::Read).0,
+            Err(UnknownDeadline::Malformed)
+        );
+        // And neither does `login_times`, the path `mcc usage` takes.
+        if disabled_by_env() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(
+            d.path().join(".credentials.json"),
+            times_blob(Some(ms), Some(ms + 1000)),
+        )
+        .unwrap();
+        let t = login_times(d.path(), false, false);
+        assert_eq!(t.deadline.at(), Some(at("2026-10-10T12:00:00Z")));
+        assert_eq!(t.access_expires_at, None);
     }
 
     #[test]
@@ -1230,7 +1320,7 @@ mod tests {
             Some(times_blob(Some(newer.timestamp_millis()), None).into_bytes())
         };
         // Nothing anywhere.
-        let t = find_times(d.path(), false, false, keychain);
+        let t = find_times(d.path(), false, false, AccessExpiry::Read, keychain);
         assert_eq!(
             t.deadline,
             LoginDeadline::Unknown(UnknownDeadline::NoCredentials)
@@ -1245,7 +1335,7 @@ mod tests {
         )
         .unwrap();
         // The file alone, without the keychain.
-        let t = find_times(d.path(), false, false, keychain);
+        let t = find_times(d.path(), false, false, AccessExpiry::Read, keychain);
         assert_eq!(
             t.deadline,
             LoginDeadline::Known {
@@ -1256,7 +1346,7 @@ mod tests {
         assert_eq!(t.access_expires_at, Some(older));
         assert!(asked.borrow().is_empty(), "the keychain was asked");
         // Both: the newer deadline wins, wherever it is.
-        let t = find_times(d.path(), true, true, keychain);
+        let t = find_times(d.path(), true, true, AccessExpiry::Read, keychain);
         assert_eq!(
             t.deadline,
             LoginDeadline::Known {
@@ -1267,13 +1357,15 @@ mod tests {
         assert_eq!(asked.borrow().as_slice(), ["Claude Code-credentials"]);
         let none = |_: &str| None;
         assert_eq!(
-            find_times(d.path(), true, true, none).deadline.at(),
+            find_times(d.path(), true, true, AccessExpiry::Skip, none)
+                .deadline
+                .at(),
             Some(older)
         );
         // A malformed file is unknown for that reason.
         std::fs::write(d.path().join(".credentials.json"), "{oops").unwrap();
         assert_eq!(
-            find_times(d.path(), false, true, none).deadline,
+            find_times(d.path(), false, true, AccessExpiry::Skip, none).deadline,
             LoginDeadline::Unknown(UnknownDeadline::Malformed)
         );
     }

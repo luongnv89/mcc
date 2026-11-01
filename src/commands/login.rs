@@ -12,7 +12,9 @@
 //! Success is decided by the deadline alone (read before and after from the
 //! credentials file and the Keychain, timestamps only): it must be known,
 //! later than before, and outside the warning window. A file rewritten with
-//! the same deadline is a failure. Signing in to another account or
+//! the same deadline is a failure, as is a deadline known before and
+//! unreadable after; only a sign-in with no deadline before or after succeeds
+//! with the expiry unknown. Signing in to another account or
 //! organization than before is a failure too, as is a session-sharing profile
 //! that ends up sharing across organizations.
 
@@ -30,7 +32,7 @@ use crate::cli::LoginArgs;
 use crate::config::{Account, Config, OrgMatch};
 use crate::error::{CliError, EXIT_INTERRUPTED};
 use crate::paths::Paths;
-use crate::usage::{self, LoginDeadline};
+use crate::usage::{self, AccessExpiry, LoginDeadline};
 use crate::{claude, metrics, ui};
 
 use super::run::{self, Profile};
@@ -103,7 +105,14 @@ pub fn run(paths: &Paths, cfg: &Config, args: &LoginArgs) -> Result<()> {
             "reading the login's expiry from .credentials.json and the macOS Keychain (timestamps only)",
         );
     }
-    let before = usage::read_login_times(&t.config_dir, t.is_default);
+    // The access token's expiry is read only for `--refresh-only`, which
+    // needs it to know whether Claude Code would refresh now.
+    let access = if args.refresh_only {
+        AccessExpiry::Read
+    } else {
+        AccessExpiry::Skip
+    };
+    let before = usage::read_login_times(&t.config_dir, t.is_default, access);
     if args.refresh_only {
         refresh_only(
             paths,
@@ -154,7 +163,7 @@ fn sign_in(
 
     let account_after = metrics::account_info(&t.state_json);
     check_account(cfg, t, account_before.as_ref(), account_after.as_ref())?;
-    let after = usage::read_login_times(&t.config_dir, t.is_default).deadline;
+    let after = usage::read_login_times(&t.config_dir, t.is_default, AccessExpiry::Skip).deadline;
     judge(
         name,
         Mode::SignIn,
@@ -234,7 +243,7 @@ fn refresh_only(
         .hint(format!("run `mcc login {name}` to sign in again"))
         .into());
     }
-    let after = usage::read_login_times(&t.config_dir, t.is_default).deadline;
+    let after = usage::read_login_times(&t.config_dir, t.is_default, AccessExpiry::Skip).deadline;
     judge(
         name,
         Mode::RefreshOnly,
@@ -419,7 +428,9 @@ enum Mode {
 }
 
 /// Decide from the deadlines alone: success only when the new one is known,
-/// later than before, and outside the warning window.
+/// later than before, and outside the warning window. The one exception: a
+/// sign-in where no deadline was known before or after (a Claude Code that
+/// records none) succeeds, saying the expiry is unknown.
 fn judge(
     name: &str,
     mode: Mode,
@@ -429,7 +440,7 @@ fn judge(
     window_days: u32,
 ) -> Result<()> {
     let Some(at) = after.at() else {
-        if mode == Mode::SignIn {
+        if mode == Mode::SignIn && before.at().is_none() {
             crate::log::write("INFO", &format!("login {name}: signed in, expiry unknown"));
             ui::success(&format!(
                 "`{name}` is signed in; its login expiry is unknown"
@@ -439,10 +450,19 @@ fn judge(
             );
             return Ok(());
         }
-        return Err(CliError::runtime(format!(
-            "Claude Code ran, but mcc can't read when `{name}`'s login runs out"
-        ))
-        .hint(format!("run `mcc login {name}` to sign in again"))
+        crate::log::write("WARN", &format!("login {name}: deadline unreadable after"));
+        return Err(match mode {
+            Mode::SignIn => CliError::runtime(format!(
+                "`{name}` signed in, but mcc could not read its login deadline afterwards"
+            ))
+            .hint(format!(
+                "run `mcc login {name}` again, or check `mcc usage --all` to see when the login runs out"
+            )),
+            Mode::RefreshOnly => CliError::runtime(format!(
+                "Claude Code ran, but mcc can't read when `{name}`'s login runs out"
+            ))
+            .hint(format!("run `mcc login {name}` to sign in again")),
+        }
         .into());
     };
     let when = format!("{} ({})", usage::until(at, now), usage::local_time(at));
@@ -527,13 +547,16 @@ mod tests {
                 1
             );
         }
-        // Unknown afterwards: a sign-in still worked; a refresh can't tell.
+        // Known before, unknown afterwards: nothing shows the login was
+        // renewed, so both fail.
+        for mode in [Mode::SignIn, Mode::RefreshOnly] {
+            assert_eq!(code(judge("w", mode, known(soon), UNKNOWN, now, 2)), 1);
+        }
+        // Unknown before and after: a sign-in still worked (a Claude Code that
+        // records no deadline); a refresh can't tell.
+        assert_eq!(code(judge("w", Mode::SignIn, UNKNOWN, UNKNOWN, now, 2)), 0);
         assert_eq!(
-            code(judge("w", Mode::SignIn, known(soon), UNKNOWN, now, 2)),
-            0
-        );
-        assert_eq!(
-            code(judge("w", Mode::RefreshOnly, known(soon), UNKNOWN, now, 2)),
+            code(judge("w", Mode::RefreshOnly, UNKNOWN, UNKNOWN, now, 2)),
             1
         );
         // The widest window still leaves a fresh 30-day login outside it.
@@ -564,6 +587,20 @@ mod tests {
             crate::error::classify(&err).1.as_deref(),
             Some("run `mcc login work` to sign in again")
         );
+    }
+
+    #[test]
+    fn a_deadline_lost_after_sign_in_is_a_failure_pointing_to_a_retry() {
+        let now = at("2026-10-10T12:00:00Z");
+        let soon = known("2026-10-11T00:00:00Z");
+        let err = judge("work", Mode::SignIn, soon, UNKNOWN, now, 2).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "`work` signed in, but mcc could not read its login deadline afterwards"
+        );
+        let hint = crate::error::classify(&err).1.unwrap();
+        assert!(hint.contains("`mcc login work`"), "{hint}");
+        assert!(hint.contains("`mcc usage --all`"), "{hint}");
     }
 
     fn account(email: &str, org: Option<&str>) -> Account {

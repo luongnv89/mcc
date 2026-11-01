@@ -136,8 +136,8 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
         }
     }
 
-    // Login expiry: the credentials file's two timestamps (no token, no
-    // network); the Keychain only where the live lookup may read it anyway.
+    // Login expiry: the credentials file's login deadline alone (no token,
+    // no access-token expiry, no network); the Keychain only where the live lookup may read it anyway.
     let now = Utc::now();
     let window_days = cfg.usage.login_warn_days();
     let allow_keychain = (cfg.usage.live || args.all) && !usage::disabled_by_env();

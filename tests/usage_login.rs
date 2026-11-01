@@ -472,8 +472,16 @@ fn renew_sign_in_failure_is_reported() {
 #[test]
 fn renew_with_an_unknown_deadline_says_so_and_succeeds() {
     let sb = sandbox();
-    // The fake writes {"token":"fake"}: signed in, no deadline recorded.
-    let o = run(sb.mcc().args(["login", "work"]));
+    // A Claude Code that records no deadline, before and after the sign-in.
+    sb.write(
+        ".mcc/profiles/work/.credentials.json",
+        &oauth_blob_with_deadline("tok-work-b2", now_ms() + HOUR_MS, None),
+    );
+    let no_deadline = oauth_blob_with_deadline("tok-renewed-c3", now_ms() + 8 * HOUR_MS, None);
+    let o = run(sb
+        .mcc()
+        .env("FAKE_LOGIN_CREDS", &no_deadline)
+        .args(["login", "work"]));
     assert_eq!(o.code, 0, "{}", o.stderr);
     assert!(
         o.stderr
@@ -481,6 +489,30 @@ fn renew_with_an_unknown_deadline_says_so_and_succeeds() {
         "{}",
         o.stderr
     );
+    assert_no_token(&sb, &[&o]);
+}
+
+#[test]
+fn renew_that_loses_a_known_deadline_fails() {
+    let sb = sandbox();
+    // `work` had a deadline; after the sign-in the credentials record none.
+    let no_deadline = oauth_blob_with_deadline("tok-renewed-c3", now_ms() + 8 * HOUR_MS, None);
+    let o = run(sb
+        .mcc()
+        .env("FAKE_LOGIN_CREDS", &no_deadline)
+        .args(["login", "work"]));
+    assert_eq!(o.code, 1, "{}", o.stderr);
+    assert!(
+        o.stderr
+            .contains("`work` signed in, but mcc could not read its login deadline afterwards"),
+        "{}",
+        o.stderr
+    );
+    assert!(o.stderr.contains("`mcc login work`"), "{}", o.stderr);
+    assert!(o.stderr.contains("`mcc usage --all`"), "{}", o.stderr);
+    assert!(!o.stderr.contains("expiry is unknown"), "{}", o.stderr);
+    assert!(!o.stderr.contains("renewed"), "{}", o.stderr);
+    assert_no_token(&sb, &[&o]);
 }
 
 #[test]
