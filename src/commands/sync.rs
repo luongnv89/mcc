@@ -426,6 +426,11 @@ pub enum Held {
     /// where the default has a directory, say); removals need `mcc sync`'s
     /// confirmation.
     Removals,
+    /// The sync would overwrite what the profile has in an item its manifest
+    /// doesn't record (a new `[sync] extra` path, say), where local edits
+    /// can't be told apart from what mcc wrote; only `mcc sync` (which
+    /// warns) does that.
+    Untracked,
 }
 
 impl Held {
@@ -435,14 +440,20 @@ impl Held {
             Held::NoManifest => "no_manifest",
             Held::InvalidManifest => "invalid_manifest",
             Held::Removals => "removals",
+            Held::Untracked => "untracked",
         }
     }
 
     /// The reason named `name` ([`Held::as_str`]).
     pub fn from_name(name: &str) -> Option<Held> {
-        [Held::NoManifest, Held::InvalidManifest, Held::Removals]
-            .into_iter()
-            .find(|h| h.as_str() == name)
+        [
+            Held::NoManifest,
+            Held::InvalidManifest,
+            Held::Removals,
+            Held::Untracked,
+        ]
+        .into_iter()
+        .find(|h| h.as_str() == name)
     }
 
     /// Why, for people: "it has no sync record yet".
@@ -451,13 +462,15 @@ impl Held {
             Held::NoManifest => "it has no sync record yet",
             Held::InvalidManifest => "its sync record can't be read",
             Held::Removals => "the sync would remove files",
+            Held::Untracked => "it would overwrite files its sync record doesn't cover",
         }
     }
 }
 
 /// The safe part of `mcc sync ALIAS`, run when a profile starts (`[sync]
 /// auto`): with the profile's sync manifest only (three-way), never pruning,
-/// never forcing, and only when nothing would be removed. Adds and updates
+/// never forcing, and only when nothing would be removed and nothing outside
+/// what the manifest records would be overwritten. Adds and updates
 /// are copied (backed up first, as `mcc sync` does); local edits and
 /// conflicts are kept. Records the manifest and, when it copied something,
 /// `last_sync` in `cfg`, which it saves.
@@ -493,10 +506,35 @@ pub fn auto_catch_up(paths: &Paths, cfg: &mut Config, alias: &str) -> Result<Aut
     let spec = copy::spec(None, &cfg.sync)?;
     let rw = Rewriter::for_profile(paths, cfg, &dir)?;
     let plan = plan_for(paths, cfg, &dir, &spec, Some(&previous), false, false)?;
-    let removals = plan.count(Action::Remove) + plan.mcp.as_ref().map_or(0, |m| m.removed.len());
+    // Anything the profile has that applying the plan deletes: a removal,
+    // a file or symlink of the profile replaced by the default's directory,
+    // or one standing where a copied path needs its parent dir.
+    let removals = plan.deletes(&dir) + plan.mcp.as_ref().map_or(0, |m| m.removed.len());
     if removals > 0 {
         return Ok(AutoOutcome::Held {
             reason: Held::Removals,
+        });
+    }
+    // Items the manifest doesn't record (a new `[sync] extra` path, one no
+    // longer excluded, a manifest written by `mcc sync --only`) are compared
+    // two-way: what the profile has there differently would be overwritten
+    // as if mcc had written it, its own edits included. Adding what the
+    // profile lacks is safe; replacing what it has is left to `mcc sync`.
+    let untracked: Vec<&Path> = spec
+        .items
+        .iter()
+        .map(|i| i.rel.as_path())
+        .filter(|rel| !previous.items.contains(&manifest::key(rel)))
+        .collect();
+    let overwrites_untracked = plan
+        .changes
+        .iter()
+        .any(|c| c.action == Action::Update && untracked.iter().any(|u| c.rel.starts_with(u)))
+        || (!previous.items.contains(manifest::MCP_ITEM)
+            && plan.mcp.as_ref().is_some_and(|m| !m.updated.is_empty()));
+    if overwrites_untracked {
+        return Ok(AutoOutcome::Held {
+            reason: Held::Untracked,
         });
     }
     let status = plan.status();

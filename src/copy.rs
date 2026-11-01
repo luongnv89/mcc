@@ -651,6 +651,28 @@ impl Plan {
         m
     }
 
+    /// How many paths [`apply`] would delete from `dst_dir` (MCP servers not
+    /// counted): every removal, every file or symlink of the profile the
+    /// default's directory replaces, and every file or non-dir symlink
+    /// standing where a copied path needs its parent dir (see
+    /// `blocks_parent`).
+    pub fn deletes(&self, dst_dir: &Path) -> usize {
+        let mut deleted: BTreeSet<&Path> = BTreeSet::new();
+        for c in &self.changes {
+            if c.action == Action::Remove || (c.action == Action::Update && c.dir) {
+                deleted.insert(&c.rel);
+            }
+            if matches!(c.action, Action::Add | Action::Update)
+                && let Some(parent) = c.rel.parent()
+                && !parent.as_os_str().is_empty()
+                && blocks_parent(&dst_dir.join(parent))
+            {
+                deleted.insert(parent);
+            }
+        }
+        deleted.len()
+    }
+
     /// Paths, relative to `dst_dir`, that [`apply`] will overwrite or delete
     /// and that exist now: every update or removal, a file standing where a
     /// copied path needs its parent dir (see `blocks_parent`), and

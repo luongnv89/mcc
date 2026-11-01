@@ -6,7 +6,8 @@
 //! Catching up is the safe part of `mcc sync` only
 //! ([`sync::auto_catch_up`]): three-way against the profile's sync manifest,
 //! never pruning or forcing, nothing written when the sync would remove
-//! something or the profile has no usable manifest, local edits and
+//! something, would overwrite what the profile has in an item its manifest
+//! doesn't record, or the profile has no usable manifest, local edits and
 //! conflicts kept, and a backup first. Everything else stays with
 //! `mcc sync`, which `mcc list` points at.
 //!
@@ -108,7 +109,7 @@ pub struct Info {
     /// What the last catch-up copied.
     pub changed: Vec<String>,
     /// Why the last check wrote nothing (`no_manifest`, `invalid_manifest`,
-    /// `removals`, `error`); null otherwise.
+    /// `removals`, `untracked`, `error`); null otherwise.
     pub held: Option<String>,
 }
 

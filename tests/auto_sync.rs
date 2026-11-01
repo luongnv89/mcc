@@ -221,6 +221,86 @@ fn a_catch_up_that_would_remove_something_writes_nothing() {
 }
 
 #[test]
+fn a_symlink_where_the_default_has_a_nested_folder_is_never_replaced() {
+    let sb = sandbox();
+    // The user's own skills/alpha, symlinked into the profile: the default's
+    // skills/alpha folder would replace it (a removal).
+    sb.write("mine/alpha/SKILL.md", "my alpha");
+    std::fs::remove_dir_all(sb.path(".mcc/profiles/work/skills/alpha")).unwrap();
+    std::os::unix::fs::symlink(
+        sb.path("mine/alpha"),
+        sb.path(".mcc/profiles/work/skills/alpha"),
+    )
+    .unwrap();
+    change_default(&sb);
+    let manifest = sb.read(".mcc/profiles/work/.mcc-sync.json");
+
+    launch(&sb, "work");
+    assert!(
+        std::fs::symlink_metadata(sb.path(".mcc/profiles/work/skills/alpha"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(sb.read("mine/alpha/SKILL.md"), "my alpha");
+    assert!(!sb.exists(".mcc/profiles/work/skills/gamma"));
+    assert_eq!(sb.read(".mcc/profiles/work/CLAUDE.md"), "# my rules\n");
+    assert_eq!(sb.read(".mcc/profiles/work/.mcc-sync.json"), manifest);
+    assert_eq!(backups(&sb, "work"), 0);
+    assert_eq!(state(&sb, "work")["held"], "removals");
+    assert!(caught_up(&sb, "lab"));
+}
+
+#[test]
+fn files_the_sync_record_does_not_cover_are_never_overwritten() {
+    let sb = sandbox();
+    // The profile has its own notes.md; the default has another. Adding it
+    // to the sync set leaves it out of work's sync record, so a two-way
+    // compare would take the default's over the profile's.
+    sb.write(".claude/notes.md", "default notes");
+    sb.write(".mcc/profiles/work/notes.md", "my notes");
+    set(&sb, "sync.extra", "notes.md");
+    let manifest = sb.read(".mcc/profiles/work/.mcc-sync.json");
+
+    launch(&sb, "work");
+    assert_eq!(sb.read(".mcc/profiles/work/notes.md"), "my notes");
+    assert_eq!(sb.read(".mcc/profiles/work/.mcc-sync.json"), manifest);
+    assert_eq!(backups(&sb, "work"), 0);
+    let s = state(&sb, "work");
+    assert_eq!(s["held"], "untracked", "{s}");
+    assert_eq!(s["changed"], serde_json::json!([]), "{s}");
+    let work = list_json(&sb)
+        .into_iter()
+        .find(|p| p["name"] == "work")
+        .unwrap();
+    assert_eq!(work["auto_sync"]["held"], "untracked", "{work}");
+    sb.mcc()
+        .args(["list", "--long", "--no-usage"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Held:            nothing copied: it would overwrite files its sync record doesn't cover — run `mcc sync work`",
+        ));
+    // lab, which lacks notes.md, simply gets it.
+    assert_eq!(sb.read(".mcc/profiles/lab/notes.md"), "default notes");
+
+    // The same for an MCP server: one the profile has its own way while
+    // its sync record doesn't cover MCP servers is kept.
+    let mut m = json(manifest.as_bytes());
+    m["items"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|i| i != ":mcp" && i != "notes.md");
+    sb.write(".mcc/profiles/work/.mcc-sync.json", &m.to_string());
+    sb.write(".mcc/profiles/work/notes.md", "default notes");
+    let mine = r#"{"mcpServers":{"fs":{"command":"mine"}}}"#;
+    sb.write(".mcc/profiles/work/.claude.json", mine);
+    launch(&sb, "work");
+    assert_eq!(sb.read(".mcc/profiles/work/.claude.json"), mine);
+    assert_eq!(state(&sb, "work")["held"], "untracked");
+}
+
+#[test]
 fn profiles_without_a_usable_sync_record_are_held() {
     let sb = Sandbox::new();
     sb.seed_default();
