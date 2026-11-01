@@ -550,9 +550,17 @@ pub fn auto_catch_up(paths: &Paths, cfg: &mut Config, alias: &str) -> Result<Aut
         }
         return Ok(AutoOutcome::UpToDate { status: kept });
     }
-    backup(&dir, &plan)?;
+    backup_as(&dir, &plan, AUTO_BACKUP_SUFFIX)?;
     copy::apply(&plan, &paths.default_dir, &dir, &rw, false)?;
     next.save(&dir)?;
+    // Catch-ups run unasked on every change of the default: only their
+    // latest backups are kept. The profile is caught up either way.
+    if let Err(e) = prune_auto_backups(&dir, AUTO_BACKUPS_KEPT) {
+        crate::log::write(
+            "WARN",
+            &format!("auto sync: {alias}: pruning old auto-sync backups failed: {e:#}"),
+        );
+    }
     let mut changed: Vec<String> = plan
         .changes
         .iter()
@@ -729,12 +737,18 @@ fn print_plan(plan: &Plan, dry_run: bool) {
 /// backup leaves the profile untouched. Never reuses an earlier backup folder
 /// (two syncs can land in one millisecond).
 fn backup(dir: &Path, plan: &Plan) -> Result<Option<PathBuf>> {
-    backup_rels(
+    backup_as(dir, plan, "")
+}
+
+/// [`backup`], to `<timestamp><suffix>/`.
+fn backup_as(dir: &Path, plan: &Plan, suffix: &str) -> Result<Option<PathBuf>> {
+    backup_rels_as(
         dir,
         BACKED_UP
             .iter()
             .map(PathBuf::from)
             .chain(plan.backup_paths(dir)),
+        suffix,
     )
 }
 
@@ -743,24 +757,98 @@ fn backup(dir: &Path, plan: &Plan) -> Result<Option<PathBuf>> {
 /// followed) to a new `<dir>/.mcc-backup/<timestamp>/`. `None` when none of
 /// them exists.
 pub fn backup_rels(dir: &Path, rels: impl IntoIterator<Item = PathBuf>) -> Result<Option<PathBuf>> {
+    backup_rels_as(dir, rels, "")
+}
+
+/// [`backup_rels`], to `<timestamp><suffix>/`.
+fn backup_rels_as(
+    dir: &Path,
+    rels: impl IntoIterator<Item = PathBuf>,
+    suffix: &str,
+) -> Result<Option<PathBuf>> {
     let rels = copy::outermost_existing(dir, rels);
     if rels.is_empty() {
         return Ok(None);
     }
-    let dest = new_backup_dir(dir)?;
+    let dest = new_backup_dir_as(dir, suffix)?;
     for rel in rels {
         fsutil::copy_path(&dir.join(&rel), &dest.join(&rel))?;
     }
     Ok(Some(dest))
 }
 
+/// The format of a backup folder's timestamp.
+const BACKUP_TIME: &str = "%Y%m%d-%H%M%S%.3f";
+
+/// What ends the name of a backup folder auto sync made
+/// (`<timestamp>-auto`, or `<timestamp>-auto.N` on a clash).
+const AUTO_BACKUP_SUFFIX: &str = "-auto";
+
+/// How many of its backups auto sync keeps per profile
+/// ([`prune_auto_backups`]). Backups of `mcc sync` (and of `mcc link`) are
+/// never pruned.
+pub const AUTO_BACKUPS_KEPT: usize = 10;
+
+/// When the backup folder `name` was made by auto sync: its timestamp and
+/// clash number (`<timestamp>-auto` is 0, `<timestamp>-auto.N` is N).
+fn auto_backup_key(name: &str) -> Option<(chrono::NaiveDateTime, u64)> {
+    let (stamp, n) = match name.strip_suffix(AUTO_BACKUP_SUFFIX) {
+        Some(stamp) => (stamp, 0),
+        None => {
+            let (head, n) = name.rsplit_once('.')?;
+            if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            (head.strip_suffix(AUTO_BACKUP_SUFFIX)?, n.parse().ok()?)
+        }
+    };
+    let time = chrono::NaiveDateTime::parse_from_str(stamp, BACKUP_TIME).ok()?;
+    // Exactly as mcc names them: nothing else is ever touched.
+    (time.format(BACKUP_TIME).to_string() == stamp).then_some((time, n))
+}
+
+/// Remove all but the newest `keep` backup folders auto sync made in
+/// `<dir>/.mcc-backup/` (real directories named as [`auto_backup_key`]
+/// reads them; never a symlink, nor any other backup). Returns how many
+/// it removed.
+pub fn prune_auto_backups(dir: &Path, keep: usize) -> Result<usize> {
+    let root = dir.join(copy::BACKUP_DIR);
+    let entries = match std::fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", root.display())),
+    };
+    let mut auto = Vec::new();
+    for entry in entries {
+        let entry = entry.with_context(|| format!("reading {}", root.display()))?;
+        let Some(key) = entry.file_name().to_str().and_then(auto_backup_key) else {
+            continue;
+        };
+        if std::fs::symlink_metadata(entry.path()).is_ok_and(|m| m.file_type().is_dir()) {
+            auto.push((key, entry.path()));
+        }
+    }
+    auto.sort();
+    let stale = auto.len().saturating_sub(keep);
+    for (_, path) in &auto[..stale] {
+        std::fs::remove_dir_all(path).with_context(|| format!("removing {}", path.display()))?;
+    }
+    Ok(stale)
+}
+
 /// A new, empty, private `<dir>/.mcc-backup/<timestamp>/` (with a `.N`
 /// suffix when that name is taken).
 pub fn new_backup_dir(dir: &Path) -> Result<PathBuf> {
+    new_backup_dir_as(dir, "")
+}
+
+/// [`new_backup_dir`], named `<timestamp><suffix>` (`.N` after it on a
+/// clash).
+fn new_backup_dir_as(dir: &Path, suffix: &str) -> Result<PathBuf> {
     let root = dir.join(copy::BACKUP_DIR);
     std::fs::create_dir_all(&root).with_context(|| format!("creating {}", root.display()))?;
     fsutil::set_private_dir(&root)?;
-    let base = chrono::Local::now().format("%Y%m%d-%H%M%S%.3f").to_string();
+    let base = format!("{}{suffix}", chrono::Local::now().format(BACKUP_TIME));
     let mut dest = root.join(&base);
     let mut n = 1;
     loop {
@@ -775,4 +863,71 @@ pub fn new_backup_dir(dir: &Path) -> Result<PathBuf> {
     }
     fsutil::set_private_dir(&dest)?;
     Ok(dest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_auto_sync_backups_are_pruned_and_the_latest_kept() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join(copy::BACKUP_DIR);
+        let mut made = Vec::new();
+        for i in 0..12 {
+            let name = format!("20260101-0000{i:02}.000-auto");
+            std::fs::create_dir_all(root.join(&name).join("sub")).unwrap();
+            std::fs::write(root.join(&name).join("sub/f"), "x").unwrap();
+            made.push(name);
+        }
+        // A clash in one millisecond, after the plain name.
+        std::fs::create_dir(root.join("20260101-000011.000-auto.1")).unwrap();
+        made.push("20260101-000011.000-auto.1".into());
+        // Never touched: `mcc sync` backups, look-alikes, a symlink.
+        let manual = "20250101-000000.000";
+        let others = [
+            manual,
+            "20250101-000000.000.1",
+            "notes-auto",
+            "20250101-000000-auto",
+            "20250101-000000.000-auto.x",
+            "x20250101-000000.000-auto",
+        ];
+        for name in others {
+            std::fs::create_dir(root.join(name)).unwrap();
+        }
+        let elsewhere = d.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, root.join("20240101-000000.000-auto")).unwrap();
+
+        assert_eq!(prune_auto_backups(d.path(), 10).unwrap(), 3);
+        let mut left: Vec<String> = std::fs::read_dir(&root)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        let mut want: Vec<String> = made[3..].to_vec();
+        want.extend(others.iter().map(|s| s.to_string()));
+        want.push("20240101-000000.000-auto".into());
+        want.sort();
+        assert_eq!(left, want);
+        assert!(elsewhere.is_dir());
+        // Nothing more to prune; none at all is fine too.
+        assert_eq!(prune_auto_backups(d.path(), 10).unwrap(), 0);
+        assert_eq!(prune_auto_backups(&d.path().join("none"), 10).unwrap(), 0);
+    }
+
+    #[test]
+    fn an_auto_sync_backup_is_named_apart_from_the_others() {
+        let d = tempfile::tempdir().unwrap();
+        let auto = new_backup_dir_as(d.path(), AUTO_BACKUP_SUFFIX).unwrap();
+        let again = new_backup_dir_as(d.path(), AUTO_BACKUP_SUFFIX).unwrap();
+        let manual = new_backup_dir(d.path()).unwrap();
+        for dir in [&auto, &again] {
+            let name = dir.file_name().unwrap().to_str().unwrap();
+            assert!(auto_backup_key(name).is_some(), "{name}");
+        }
+        let name = manual.file_name().unwrap().to_str().unwrap();
+        assert_eq!(auto_backup_key(name), None, "{name}");
+    }
 }

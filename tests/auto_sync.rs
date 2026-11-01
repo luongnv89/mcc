@@ -580,3 +580,154 @@ fn list_shows_when_auto_sync_last_ran_and_what_it_changed() {
             "Auto sync:       off (profiles.lab.auto_sync = false)",
         ));
 }
+
+/// The `.mcc-backup` folders of `alias` auto sync made (named
+/// `<timestamp>-auto`, `-auto.N` on a clash), and the others.
+fn backup_names(sb: &Sandbox, alias: &str) -> (Vec<String>, Vec<String>) {
+    let mut names: Vec<String> =
+        std::fs::read_dir(sb.path(&format!(".mcc/profiles/{alias}/.mcc-backup")))
+            .map(|d| {
+                d.map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+    names.sort();
+    names.into_iter().partition(|n| {
+        n.ends_with("-auto")
+            || n.rsplit_once('.').is_some_and(|(base, n)| {
+                base.ends_with("-auto") && n.chars().all(|c| c.is_ascii_digit())
+            })
+    })
+}
+
+#[test]
+fn churn_in_shared_plugins_does_not_recheck_profiles_that_share_them() {
+    let sb = sandbox();
+    sb.mcc()
+        .args(["add", "own", "--clone", "--no-login", "--copy-plugins"])
+        .assert()
+        .success();
+    change_default(&sb);
+    launch(&sb, "work");
+    let (work, lab, own) = (
+        sb.read(".mcc/state/work/auto-sync.json"),
+        sb.read(".mcc/state/lab/auto-sync.json"),
+        sb.read(".mcc/state/own/auto-sync.json"),
+    );
+    // Claude Code fetching a marketplace: a git clone under plugins/.
+    sb.write(".claude/plugins/marketplaces/m/.git/FETCH_HEAD", "abc\n");
+    sb.write(".claude/plugins/marketplaces/m/plugin.json", "{}");
+    sb.write(".claude/plugins/cache/m/p1/1.0.1/plugin.json", "{}");
+    launch(&sb, "work");
+    // work and lab share the default's plugins (clones link them): what
+    // changed there is nothing they sync, so they are not compared again.
+    assert_eq!(sb.read(".mcc/state/work/auto-sync.json"), work);
+    assert_eq!(sb.read(".mcc/state/lab/auto-sync.json"), lab);
+    // A profile with its own copy of the plugins does sync them.
+    assert_ne!(sb.read(".mcc/state/own/auto-sync.json"), own);
+    assert!(sb.exists(".mcc/profiles/own/plugins/marketplaces/m/plugin.json"));
+}
+
+#[test]
+fn a_profile_whose_catch_up_fails_is_not_retried_on_every_launch() {
+    let sb = sandbox();
+    // An overlay can't be merged onto a default settings.json that isn't
+    // JSON: every check of work fails until one of them changes.
+    sb.write(
+        ".mcc/profiles/work/settings.mcc.json",
+        r#"{"model":"haiku"}"#,
+    );
+    sb.write(".claude/settings.json", "{ not json");
+    launch(&sb, "work");
+    let failed = state(&sb, "work");
+    assert_eq!(failed["held"], "error", "{failed}");
+    assert!(failed["error"].as_str().unwrap().contains("not valid JSON"));
+    let recorded = sb.read(".mcc/state/work/auto-sync.json");
+    // Nothing changed: not tried again (it stays shown as failed)...
+    launch(&sb, "work");
+    launch(&sb, "lab");
+    assert_eq!(sb.read(".mcc/state/work/auto-sync.json"), recorded);
+    sb.mcc()
+        .args(["list", "--long", "--no-usage"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Held:"));
+    // ...until a while has passed,
+    let mut aged = failed.clone();
+    aged["last_checked"] = "2026-01-01T00:00:00.000+00:00".into();
+    sb.write(
+        ".mcc/state/work/auto-sync.json",
+        &serde_json::to_string_pretty(&aged).unwrap(),
+    );
+    launch(&sb, "work");
+    assert_ne!(
+        state(&sb, "work")["last_checked"],
+        "2026-01-01T00:00:00.000+00:00"
+    );
+    // or what it depends on changes.
+    sb.write(".claude/settings.json", r#"{"model":"opus","x":1}"#);
+    launch(&sb, "work");
+    let s = state(&sb, "work");
+    assert!(s["held"].is_null(), "{s}");
+    let settings = json(sb.read(".mcc/profiles/work/settings.json").as_bytes());
+    assert_eq!(settings["model"], "haiku", "{settings}");
+}
+
+#[test]
+fn an_edit_behind_a_symlinked_default_settings_file_is_picked_up() {
+    let sb = sandbox();
+    // dotfiles: the default's settings.json links to the user's own file.
+    sb.write("dotfiles/settings.json", r#"{"model":"opus"}"#);
+    std::fs::remove_file(sb.path(".claude/settings.json")).unwrap();
+    std::os::unix::fs::symlink(
+        sb.path("dotfiles/settings.json"),
+        sb.path(".claude/settings.json"),
+    )
+    .unwrap();
+    sb.write(
+        ".mcc/profiles/work/settings.mcc.json",
+        r#"{"model":"haiku"}"#,
+    );
+    launch(&sb, "work");
+    let settings = json(sb.read(".mcc/profiles/work/settings.json").as_bytes());
+    assert_eq!(settings["model"], "haiku", "{settings}");
+    assert!(settings["effortLevel"].is_null(), "{settings}");
+
+    // Edited through the link: the link itself is unchanged.
+    sb.write(
+        "dotfiles/settings.json",
+        r#"{"model":"opus","effortLevel":"high"}"#,
+    );
+    launch(&sb, "work");
+    let settings = json(sb.read(".mcc/profiles/work/settings.json").as_bytes());
+    assert_eq!(settings["effortLevel"], "high", "{settings}");
+    assert_eq!(settings["model"], "haiku", "{settings}");
+}
+
+#[test]
+fn auto_sync_keeps_only_its_latest_backups_and_never_prunes_mcc_syncs() {
+    let sb = sandbox();
+    // A backup of a manual `mcc sync`.
+    change_default(&sb);
+    sb.mcc().args(["sync", "work", "--yes"]).assert().success();
+    let (auto, manual) = backup_names(&sb, "work");
+    assert_eq!((auto.len(), manual.len()), (0, 1), "{manual:?}");
+    // More catch-ups than are kept.
+    for i in 0..12 {
+        sb.write(".claude/CLAUDE.md", &format!("# my rules v{i}\n"));
+        launch(&sb, "work");
+        assert_eq!(
+            sb.read(".mcc/profiles/work/CLAUDE.md"),
+            format!("# my rules v{i}\n")
+        );
+    }
+    let (kept, others) = backup_names(&sb, "work");
+    assert_eq!(others, manual, "the manual sync's backup stays");
+    assert_eq!(kept.len(), 10, "{kept:?}");
+    // The latest ones: the newest holds what the last catch-up replaced.
+    let newest = sb.path(&format!(".mcc/profiles/work/.mcc-backup/{}", kept[9]));
+    assert_eq!(
+        std::fs::read_to_string(newest.join("CLAUDE.md")).unwrap(),
+        "# my rules v10\n"
+    );
+}

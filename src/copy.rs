@@ -718,7 +718,7 @@ pub fn outermost_existing(dir: &Path, rels: impl IntoIterator<Item = PathBuf>) -
     out
 }
 
-fn is_noise(name: &str) -> bool {
+pub(crate) fn is_noise(name: &str) -> bool {
     name == ".DS_Store"
         || name == ".trash"
         || name.starts_with("temp_git_")
