@@ -59,6 +59,8 @@ jobs:
       - name: brew audit packaging/homebrew/mcc.rb
         run: |
           brew tap-new --no-git local/mcc
+          # Newer Homebrew refuses to load formulae from untrusted taps.
+          brew trust local/mcc
           tap="$(brew --repository local/mcc)"
           cp packaging/homebrew/mcc.rb "$tap/Formula/mcc.rb"
           brew audit --strict local/mcc/mcc
