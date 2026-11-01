@@ -41,6 +41,7 @@ pub const SETTABLE: &[(&str, &str)] = &[
     ("privacy.show_email", "true or false"),
     ("usage.live", "true or false"),
     ("launch.banner", "true or false"),
+    ("sync.auto", "true or false"),
     (
         "profiles.ALIAS.label",
         "a label of 1–64 characters (\"\" removes it)",
@@ -49,6 +50,7 @@ pub const SETTABLE: &[(&str, &str)] = &[
         "profiles.ALIAS.color",
         "black, red, green, yellow, blue, magenta, cyan or white (\"\" removes it)",
     ),
+    ("profiles.ALIAS.auto_sync", "true or false"),
 ];
 
 /// A key `mcc config set` accepts, parsed.
@@ -59,8 +61,10 @@ enum Key {
     ShowEmail,
     Live,
     Banner,
+    SyncAuto,
     Label(String),
     Color(String),
+    AutoSync(String),
 }
 
 pub fn run(paths: &Paths, args: &ConfigArgs) -> Result<()> {
@@ -107,8 +111,10 @@ fn settable(key: &str, parts: &[String]) -> Result<Key> {
         ["privacy" | "usage", "show_email"] => Key::ShowEmail,
         ["usage", "live"] => Key::Live,
         ["launch", "banner"] => Key::Banner,
+        ["sync", "auto"] => Key::SyncAuto,
         ["profiles", alias, "label"] => Key::Label(alias.to_string()),
         ["profiles", alias, "color"] => Key::Color(alias.to_string()),
+        ["profiles", alias, "auto_sync"] => Key::AutoSync(alias.to_string()),
         ["profiles", alias, f] if f.starts_with("share_") => {
             return Err(managed(&format!(
                 "session sharing is set with `mcc share {alias}` (see `mcc help share`)"
@@ -177,6 +183,11 @@ fn lookup(cfg: &Config, key: &str, parts: &[String]) -> Result<String> {
         (Some(v), _) => v.clone(),
         // Left out of the file while it has its default.
         (None, Ok(Key::Live | Key::Banner)) => toml::Value::Boolean(false),
+        (None, Ok(Key::SyncAuto)) => toml::Value::Boolean(true),
+        (None, Ok(Key::AutoSync(alias))) if cfg.profiles.contains_key(&alias) => {
+            toml::Value::Boolean(true)
+        }
+        (None, Ok(Key::AutoSync(alias))) => return Err(super::unknown_profile(&alias)),
         (None, Ok(Key::Label(alias))) if cfg.profiles.contains_key(&alias) => {
             return Err(CliError::runtime(format!("\"{key}\" is not set"))
                 .hint(format!("set it with `mcc config set {key} <LABEL>`"))
@@ -218,6 +229,7 @@ fn set(paths: &Paths, key: &str, value: &str) -> Result<()> {
     // Held since main.rs took the lock, so nothing changes it meanwhile.
     let mut cfg = load(paths)?;
     let banner = cfg.launch.banner;
+    let auto_before = auto_sync_on(&cfg, &which);
     apply(&mut cfg, &which, value)?;
     cfg.save(&paths.config_file)?;
     crate::log::write("INFO", &format!("config: set {key} = {value:?}"));
@@ -237,7 +249,42 @@ fn set(paths: &Paths, key: &str, value: &str) -> Result<()> {
             }
         ));
     }
+    // The same for auto sync: launchers call `mcc launch-sync` only while
+    // it is on for their profile (`mcc launch-sync` checks the settings
+    // itself, so turning it off works at once even before that).
+    let auto_after = auto_sync_on(&cfg, &which);
+    if auto_after != auto_before && !cfg.profiles.is_empty() {
+        let on = auto_after == Some(true);
+        ui::hint(&match &which {
+            Key::AutoSync(alias) => format!(
+                "run `mcc refresh-launchers {alias}` so `{alias}`'s launcher {} the default profile when it starts",
+                if on {
+                    "catches up with"
+                } else {
+                    "stops catching up with"
+                }
+            ),
+            _ => format!(
+                "run `mcc refresh-launchers` so profiles' launchers {} the default profile when they start",
+                if on {
+                    "catch up with"
+                } else {
+                    "stop catching up with"
+                }
+            ),
+        });
+    }
     Ok(())
+}
+
+/// For the auto-sync keys: whether `which` leaves auto sync on (for its
+/// profile, or for any profile); `None` for the other keys.
+fn auto_sync_on(cfg: &Config, which: &Key) -> Option<bool> {
+    match which {
+        Key::SyncAuto => Some(cfg.sync.auto != Some(false)),
+        Key::AutoSync(alias) => Some(cfg.auto_sync(alias).is_on()),
+        _ => None,
+    }
 }
 
 /// Set `which` to `value` in `cfg`, or fail (leaving `cfg` unusable for
@@ -261,6 +308,16 @@ fn apply(cfg: &mut Config, which: &Key, value: &str) -> Result<()> {
         Key::ShowEmail => cfg.privacy.show_email = Some(parse_bool(value)?),
         Key::Live => cfg.usage.live = parse_bool(value)?,
         Key::Banner => cfg.launch.banner = parse_bool(value)?,
+        // Written either way: a `false` left in the file would otherwise
+        // survive a save that leaves the key out.
+        Key::SyncAuto => cfg.sync.auto = Some(parse_bool(value)?),
+        Key::AutoSync(alias) => {
+            let on = parse_bool(value)?;
+            cfg.profiles
+                .get_mut(alias)
+                .ok_or_else(|| super::unknown_profile(alias))?
+                .auto_sync = Some(on);
+        }
         Key::Label(alias) => {
             let profile = cfg
                 .profiles
@@ -492,6 +549,11 @@ mod tests {
         assert_eq!(key("sync.exclude").unwrap(), Key::SyncExclude);
         assert_eq!(key("usage.live").unwrap(), Key::Live);
         assert_eq!(key("launch.banner").unwrap(), Key::Banner);
+        assert_eq!(key("sync.auto").unwrap(), Key::SyncAuto);
+        assert_eq!(
+            key("profiles.work.auto_sync").unwrap(),
+            Key::AutoSync("work".into())
+        );
         assert_eq!(
             key("profiles.work.label").unwrap(),
             Key::Label("work".into())
@@ -530,6 +592,40 @@ mod tests {
         assert!(apply(&mut cfg, &Key::SyncExclude, "nope").is_err());
         assert!(apply(&mut cfg, &Key::SyncExtra, "../x").is_err());
         assert!(apply(&mut cfg, &Key::Label("work".into()), "x").is_err());
+    }
+
+    #[test]
+    fn auto_sync_is_on_unless_turned_off_and_reads_true_while_unset() {
+        let mut cfg: Config =
+            toml::from_str("[profiles.work]\ndir = \"/d\"\nmode = \"clone\"\ncreated_at = \"t\"\n")
+                .unwrap();
+        let get = |cfg: &Config, k: &str| lookup(cfg, k, &split_key(k).unwrap()).unwrap();
+        assert_eq!(get(&cfg, "sync.auto"), "true\n");
+        assert_eq!(get(&cfg, "profiles.work.auto_sync"), "true\n");
+        assert!(
+            lookup(
+                &cfg,
+                "profiles.nope.auto_sync",
+                &split_key("profiles.nope.auto_sync").unwrap()
+            )
+            .is_err()
+        );
+        assert!(cfg.auto_sync("work").is_on());
+
+        apply(&mut cfg, &Key::AutoSync("work".into()), "off").unwrap();
+        assert_eq!(
+            cfg.auto_sync("work"),
+            crate::config::AutoSync::OffForProfile
+        );
+        assert!(cfg.auto_sync("default").is_on());
+        apply(&mut cfg, &Key::SyncAuto, "false").unwrap();
+        assert_eq!(cfg.auto_sync("default"), crate::config::AutoSync::OffForAll);
+        assert_eq!(cfg.auto_sync("work"), crate::config::AutoSync::OffForAll);
+        // Turning it back on writes `true`, so no `false` stays in the file.
+        apply(&mut cfg, &Key::SyncAuto, "true").unwrap();
+        assert_eq!(cfg.sync.auto, Some(true));
+        assert!(apply(&mut cfg, &Key::SyncAuto, "maybe").is_err());
+        assert!(apply(&mut cfg, &Key::AutoSync("nope".into()), "true").is_err());
     }
 
     #[test]

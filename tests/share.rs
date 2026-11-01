@@ -657,8 +657,9 @@ fn legacy_launchers_stay_as_they_are_until_refreshed() {
         .args(["list", "--no-usage"])
         .assert()
         .success()
+        // Auto sync is on by default, so the note names it too.
         .stderr(predicate::str::contains(
-            "1 launcher predates session sharing — run `mcc refresh-launchers`",
+            "1 launcher is out of date — run `mcc refresh-launchers` so `<alias> --mcc-share` and auto sync work",
         ));
     let o = sb
         .mcc()

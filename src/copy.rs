@@ -651,6 +651,28 @@ impl Plan {
         m
     }
 
+    /// How many paths [`apply`] would delete from `dst_dir` (MCP servers not
+    /// counted): every removal, every file or symlink of the profile the
+    /// default's directory replaces, and every file or non-dir symlink
+    /// standing where a copied path needs its parent dir (see
+    /// `blocks_parent`).
+    pub fn deletes(&self, dst_dir: &Path) -> usize {
+        let mut deleted: BTreeSet<&Path> = BTreeSet::new();
+        for c in &self.changes {
+            if c.action == Action::Remove || (c.action == Action::Update && c.dir) {
+                deleted.insert(&c.rel);
+            }
+            if matches!(c.action, Action::Add | Action::Update)
+                && let Some(parent) = c.rel.parent()
+                && !parent.as_os_str().is_empty()
+                && blocks_parent(&dst_dir.join(parent))
+            {
+                deleted.insert(parent);
+            }
+        }
+        deleted.len()
+    }
+
     /// Paths, relative to `dst_dir`, that [`apply`] will overwrite or delete
     /// and that exist now: every update or removal, a file standing where a
     /// copied path needs its parent dir (see `blocks_parent`), and
@@ -696,7 +718,7 @@ pub fn outermost_existing(dir: &Path, rels: impl IntoIterator<Item = PathBuf>) -
     out
 }
 
-fn is_noise(name: &str) -> bool {
+pub(crate) fn is_noise(name: &str) -> bool {
     name == ".DS_Store"
         || name == ".trash"
         || name.starts_with("temp_git_")
@@ -1389,6 +1411,7 @@ mod tests {
         let cfg = SyncConfig {
             exclude: vec!["hooks".into()],
             extra: vec![],
+            auto: None,
         };
         let rw = Rewriter::new(&paths, &paths.profile_dir("w"), &cfg);
         assert_eq!(rw.apply("~/.claude/hooks/h.sh"), "~/.claude/hooks/h.sh");
@@ -1878,6 +1901,7 @@ mod tests {
         let extra = |e: &str| SyncConfig {
             exclude: vec![],
             extra: vec![e.to_string()],
+            auto: None,
         };
         for bad in [
             "",
@@ -2222,6 +2246,7 @@ mod tests {
                 account: None,
                 settings: Some(toml::from_str("model = \"sonnet\"").unwrap()),
                 link: Vec::new(),
+                auto_sync: None,
             },
         );
         let rw = Rewriter::for_profile(&paths, &cfg, &dst).unwrap();
@@ -2290,6 +2315,7 @@ mod tests {
         let cfg = SyncConfig {
             exclude: vec![],
             extra: vec!["settings.mcc.json".into()],
+            auto: None,
         };
         assert!(spec(None, &cfg).is_err());
     }

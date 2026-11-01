@@ -784,7 +784,8 @@ fn launchers_from_before_sharing_or_the_banner_are_out_of_date() {
         .assert()
         .success()
         .stderr(predicate::str::contains(
-            "2 launchers are out of date — run `mcc refresh-launchers` so `<alias> --mcc-share` and the launch banner work",
+            // Auto sync is on by default, so the note names it too.
+            "2 launchers are out of date — run `mcc refresh-launchers` so `<alias> --mcc-share`, the launch banner and auto sync work",
         ));
     // A warning: doctor still passes, and refresh-launchers adds the block.
     passing(&sb);

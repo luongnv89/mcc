@@ -94,6 +94,12 @@ impl Paths {
         self.state_dir.join(profile)
     }
 
+    /// What the launch-time catch-up last did for `profile` (`[sync] auto`):
+    /// `~/.mcc/state/<profile>/auto-sync.json`.
+    pub fn auto_sync_state(&self, profile: &str) -> PathBuf {
+        self.profile_state_dir(profile).join("auto-sync.json")
+    }
+
     pub fn wrapper(&self, alias: &str) -> PathBuf {
         self.local_bin.join(alias)
     }
@@ -136,6 +142,10 @@ mod tests {
         assert_eq!(
             p.profile_state_dir("work"),
             PathBuf::from("/h/.mcc/state/work")
+        );
+        assert_eq!(
+            p.auto_sync_state("work"),
+            PathBuf::from("/h/.mcc/state/work/auto-sync.json")
         );
         assert_eq!(
             p.shared_projects_dir(),

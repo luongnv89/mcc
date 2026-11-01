@@ -39,8 +39,20 @@ fn usage_shows_every_profile_as_a_table() {
     let stub = usage_stub();
     let out = stdout_of(sb.mcc().env("MCC_USAGE_URL", &stub.url).arg("usage"));
 
+    // The 5-hour RESETS IN column is as wide as its widest cell, whose
+    // local time is one character longer on two-digit days, so the gap
+    // before WEEKLY is that width less the header, plus the separator.
+    let resets_width = regex::Regex::new(&format!(
+        r"(?m)^\S+(?: ★)? +\S+ \d+% +(2h 14m {LOCAL_TIME})  "
+    ))
+    .unwrap()
+    .captures_iter(&out)
+    .map(|c| c[1].chars().count())
+    .max()
+    .unwrap_or_else(|| panic!("no 5-hour reset cell\n{out}"));
+    let gap = resets_width - "RESETS IN".len() + 2;
     assert_match(
-        r"(?m)^PROFILE    5-HOUR          RESETS IN {18}WEEKLY          RESETS IN$",
+        &format!(r"(?m)^PROFILE    5-HOUR          RESETS IN {{{gap}}}WEEKLY          RESETS IN$"),
         &out,
     );
     assert_match(

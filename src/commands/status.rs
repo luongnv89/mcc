@@ -51,7 +51,7 @@ pub fn run(paths: &Paths, cfg: &Config) -> Result<()> {
         ui::warn(&w);
         problems += 1;
     }
-    super::list::sharing_notes(&all, cfg.launch.banner);
+    super::list::sharing_notes(&all, cfg);
     problems += all.iter().filter(|m| !m.launcher_current).count();
     let names: Vec<&str> = all.iter().map(|m| m.name.as_str()).collect();
     let usages: Vec<&usage::Usage> = all.iter().map(|m| &m.usage).collect();

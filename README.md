@@ -52,7 +52,7 @@ Claude Code keeps one login and one setup in `~/.claude`. A second account, such
 | `CLAUDE_CONFIG_DIR=~/.claude-work claude` on every start | `work` |
 | Copy skills, agents, settings and MCP servers into each directory | `mcc add work --clone` copies them, never the credentials |
 | Fix every `~/.claude/...` path in hooks and settings | Paths to copied items are rewritten per profile |
-| Copies drift, with no record of what changed where | `mcc list` shows `3 behind`; `mcc sync` catches up, keeping local edits |
+| Copies drift, with no record of what changed where | Each profile catches up when it starts, keeping local edits; `mcc list` shows what's left |
 | Open `/usage` in each account to see its limits | `mcc usage`: every account's 5-hour and weekly limits in one table |
 | Remember which repository belongs to which account | `mcc project set work` once, then `mcc run` |
 
@@ -95,6 +95,7 @@ Where each file lives, and what clone and sync copy: [How it works in detail](#h
 | One command per account | `work`, `lab` and so on start Claude Code with their own login |
 | Clone without credentials | Skills, agents, settings and MCP servers copied; logins never |
 | Three-way sync | Keeps profile edits, reports conflicts, backs up everything it replaces |
+| Auto sync | Profiles catch up with the default as they start; off for all or one profile |
 | Drift at a glance | `mcc list` and `mcc diff` show what is behind, edited or conflicting |
 | Usage in one table | 5-hour and weekly limits per account, read from the opt-in statusline cache |
 | Per-project profiles | `mcc run` starts the project's account; `mcc env` covers IDEs and direnv |
@@ -138,7 +139,7 @@ See every profile, its account, usage and sync state:
 mcc list
 ```
 
-Later, pull new skills, plugins and settings from the default:
+Later, new skills, plugins and settings in the default reach `work` the next time a profile starts ([auto sync](#auto-sync)). To pull them now, or for what auto sync leaves to you:
 
 ```sh
 mcc sync work
@@ -183,6 +184,7 @@ The full documentation, one collapsed section per topic. `mcc help COMMAND` prin
 - **`usage`.** Every profile's 5-hour and weekly limits in one compact table: a usage bar with the percent used, time until reset and the reset time. Near-limit accounts stand out with `!` / `!!` markers and colour. Account emails are hidden unless you ask for them. `--json` for scripts.
 - **`rename`.** Gives a profile a new name, and with it a new command. The new name is checked like an alias in `add`. The profile's directory, login and setup stay as they are.
 - **`sync`.** A one-way copy of setup from the default profile into a profile, with `--dry-run`, `--prune`, `--only`, and `--all`. It keeps edits made in the profile and reports a path changed on both sides as a conflict (`--force` overwrites it), once the profile has a sync record (a profile cloned by mcc 0.4.0 or later has one; any other profile gets it from its first sync). Everything it replaces is backed up first, and `mcc diff` shows what differs.
+- **Auto sync.** On by default: when a profile starts, mcc does the safe part of `mcc sync` for it and then for the other profiles the default changed for, so they don't fall behind. Edits in a profile and conflicts are kept; anything that needs a decision is left to `mcc sync`. `mcc config set sync.auto false` turns it off, or `profiles.ALIAS.auto_sync false` for one profile.
 - **Opt-in session sharing.** Off by default. `mcc share work` (or starting a profile with `work --mcc-share`) lets that profile's `--resume` see the sessions of the other sharing profiles in its group (`--group NAME`, else the `default` group). Joining a group whose profiles are in another organization is refused unless you pass `--allow-cross-org`. Credentials and account files are never shared.
 - **Per-project profiles.** `mcc project set work` makes `work` the profile `mcc run` starts in this repository, so a project stays on one account. mcc never switches accounts on its own: if that account is at its 5-hour or weekly limit, `mcc run` asks whether to wait (the default) or start it anyway, and offers another profile only when the project allows it (`--allow`). `mcc env` and `mcc exec` let plain `claude`, IDE extensions and scripts use a profile too.
 - **Linked items, shared plugins and settings overlays.** `mcc link` replaces a profile's copy of the default's skills, agents, commands, output styles or `CLAUDE.md` with a symlink (opt-in), and a clone shares the default's plugins instead of copying them (`mcc link ALIAS plugins` moves an older profile over). A settings overlay keeps a profile's own `model`, permissions or other settings through every sync.
@@ -289,7 +291,7 @@ mcc delete job              # remove it completely
 | `mcc exec PROFILE -- CMD...` | Run a command with a profile's `CLAUDE_CONFIG_DIR` and return its exit status; `--all` runs it once per profile and reports each result | `--all` |
 | `mcc config get\|set\|edit\|path` | Read or change `~/.mcc/config.toml` without hand-editing TOML; `set` and `edit` check values and leave the file unchanged when one is invalid (see [Changing settings](#changing-settings-mcc-config)) | `get KEY`, `set KEY VALUE`, `edit`, `path` |
 | `mcc statusline install` | Opt-in: show the active profile in Claude Code's status line and cache each profile's rate limits (see [Status line](#status-line-mcc-statusline)); it edits the default profile's `settings.json`; also `uninstall` | `--prefix`, `-y/--yes` |
-| `mcc refresh-launchers [ALIAS...]` | Rewrite launchers and shell aliases from the current templates (all profiles when none are given); needed once so `<alias> --mcc-share` works for profiles made by an older mcc, and after turning the [launch banner](#launch-banner-opt-in) on or off (launchers call it only while it is on) | |
+| `mcc refresh-launchers [ALIAS...]` | Rewrite launchers and shell aliases from the current templates (all profiles when none are given); needed once so `<alias> --mcc-share` and [auto sync](#auto-sync) work for profiles made by an older mcc, and after turning the [launch banner](#launch-banner-opt-in) or auto sync on or off (launchers call them only while they are on) | |
 | `mcc doctor [PROFILE]` | Check every profile's setup (launcher, alias, PATH, login, config directory, sharing, permissions, drift, a global `CLAUDE_CONFIG_DIR`) and print a fix for each problem; read-only, exits 1 when it finds one (see [Checking your setup](#checking-your-setup-mcc-doctor)) | `--json`, `--json-v2` |
 | `mcc delete ALIAS` (`rm`) | Log out and remove a profile | `-y/--yes`, `--keep-auth` |
 | `mcc completions SHELL` | Print a completion script | `bash`, `zsh`, `fish`, `elvish`, `powershell` |
@@ -430,6 +432,35 @@ mcc completions fish > ~/.config/fish/completions/mcc.fish
 
 </details>
 
+#### Auto sync
+
+<details>
+<summary>Profiles catch up with the default as they start; [sync] auto</summary>
+
+The default profile changes many times a day, and running `mcc sync` after each change is easy to forget. With auto sync, on by default, starting a profile from its command (its launcher, `~/.local/bin/<alias>`) or with `mcc run` first catches it up with the default, then the other profiles the default changed for, as long as a half-second budget lasts (the rest wait for a later start).
+
+It is the safe part of `mcc sync` only:
+
+- adds and updates, three-way against the profile's sync record: **local edits are kept, and conflicts are kept and reported** (`mcc list` shows them; `mcc sync ALIAS --force` overwrites them);
+- everything it replaces is backed up to `<profile>/.mcc-backup/<timestamp>-auto/` first, as with `mcc sync`. Only the 10 latest of these auto sync backups are kept per profile; backups made by `mcc sync` or `mcc link` are never removed;
+- nothing is written for a profile without a sync record (a `--fresh` profile never synced) or with one that can't be read, nor when catching up would remove something (a file or symlink of yours where the default has a folder, at any depth) or would overwrite a file or MCP server of the profile that its sync record doesn't cover yet (say, after adding a `[sync] extra` path the profile already has its own way). `mcc list` marks such a profile `(held)`; run `mcc sync ALIAS` once;
+- never `--prune` or `--force`, and nothing for items linked with `mcc link`.
+
+Starting a profile stays fast and quiet. mcc keeps a fingerprint of what a catch-up depends on (the default's files the profile syncs, by size and modification time, following symlinks such as a `settings.json` from your dotfiles; its MCP servers; the sync settings; and the profile's overlay, links and sync record) and compares nothing while it is unchanged. Items a profile links, such as shared plugins, are left out of its fingerprint, so a marketplace update doesn't make it check again. The half-second budget for the other profiles starts once the starting profile is done, and a profile whose check failed is tried again after an hour, or sooner when what it depends on changes. It never waits: a profile is skipped while another mcc command holds mcc's lock. It never stops Claude Code from starting and never writes to Claude Code's stdout, so `work -p "…" | jq` is unaffected; when stderr is a terminal and something was copied, one line says so (`↻ auto sync: work 3 updated from the default`). Each run is logged to `~/.mcc/logs/mcc.log`.
+
+`mcc list --long` shows, per profile, whether auto sync is on, when it last checked, and when it last copied something and what (`Last auto sync:  5m ago — 3 updated (skills/x/SKILL.md, …)`); `Last sync` is the last time any sync, automatic or not, copied something. `--json` has the same under `auto_sync` (`enabled`, `off_by`, `last_checked`, `last_applied`, `changed`, `held`). Each profile's record is `~/.mcc/state/<alias>/auto-sync.json`.
+
+Turn it off for every profile, or for one:
+
+```sh
+mcc config set sync.auto false                # every profile
+mcc config set profiles.lab.auto_sync false   # only lab
+```
+
+Either takes effect at once (mcc checks the settings each time); `mcc refresh-launchers` then takes the call out of the launchers. Launchers made by an older mcc don't catch up until you run `mcc refresh-launchers` once (`mcc list` and `mcc doctor` say so). Profiles that `mcc env` or `mcc exec` start, or that you start with `CLAUDE_CONFIG_DIR=… claude`, don't catch up on their own; another profile's start, or `mcc sync`, catches them up. `MCC_NO_AUTO_SYNC=1` turns it off for one run.
+
+</details>
+
 #### Changing settings: `mcc config`
 
 <details>
@@ -447,7 +478,7 @@ mcc config edit                                   # open the file in $VISUAL or 
 mcc config path                                   # print the file's path
 ```
 
-`set` accepts `sync.exclude`, `sync.extra`, `privacy.show_email` (also under its old name, `usage.show_email`), `usage.live`, `launch.banner`, `profiles.ALIAS.label` and `profiles.ALIAS.color`, and checks each value as the command that uses it would: an unknown sync item, a path outside the config dir, a value that isn't `true` or `false`, an invalid label or an unknown color is refused with exit 2 or 3, and the file is left unchanged. Keys that other commands manage point you to them (`mcc share`, `mcc link`, `mcc project`, `mcc init --force`). `get` reads any key, dotted as in TOML (`projects."/Users/me/app".profile`); a key that isn't set exits 1. Comments and formatting are kept.
+`set` accepts `sync.exclude`, `sync.extra`, `sync.auto`, `privacy.show_email` (also under its old name, `usage.show_email`), `usage.live`, `launch.banner`, `profiles.ALIAS.label`, `profiles.ALIAS.color` and `profiles.ALIAS.auto_sync`, and checks each value as the command that uses it would: an unknown sync item, a path outside the config dir, a value that isn't `true` or `false`, an invalid label or an unknown color is refused with exit 2 or 3, and the file is left unchanged. Keys that other commands manage point you to them (`mcc share`, `mcc link`, `mcc project`, `mcc init --force`). `get` reads any key, dotted as in TOML (`projects."/Users/me/app".profile`); a key that isn't set exits 1. Comments and formatting are kept.
 
 `edit` opens a copy of the file and saves it only when it is valid mcc config (it parses, and sync items, `link` items, labels, colors and `share_group` names pass the same checks); otherwise it offers to edit again, or leaves the file unchanged. mcc holds no lock while the editor is open, so other mcc commands, launches included, keep working; if one of them changes the file meanwhile, nothing is saved and your edited copy is kept next to it. `edit` also works on a file that no longer parses, so it can fix one. `get` and `path` never take the lock; `set` holds it like any other write.
 
@@ -464,6 +495,7 @@ In `~/.mcc/config.toml`:
 [sync]
 exclude = ["plugins"]          # built-in items to skip
 extra = ["my-tool/config.yml"] # additional paths (relative to the config dir) to copy
+auto = false                   # no auto sync when a profile starts (on by default)
 ```
 
 </details>
@@ -951,13 +983,14 @@ An alias must be 1–32 characters: lowercase letters, digits, `-` or `_`, start
 ### Environment variables
 
 <details>
-<summary>MCC_HOME, MCC_NO_USAGE, MCC_USAGE_URL and more</summary>
+<summary>MCC_HOME, MCC_NO_USAGE, MCC_NO_AUTO_SYNC, MCC_USAGE_URL and more</summary>
 
 | Variable | Effect |
 |---|---|
 | `MCC_HOME` | Use this directory instead of `$HOME` for everything mcc reads and writes (great for testing) |
 | `MCC_CLAUDE_BIN` | Path to the `claude` binary |
 | `MCC_NON_INTERACTIVE` | Set to any value (even empty) to never prompt, as when stdin or stderr isn't a terminal: required prompts stop and name the flag to pass instead, and optional ones take their default (useful in scripts and CI) |
+| `MCC_NO_AUTO_SYNC` | Any value except empty or `0`: no [auto sync](#auto-sync) for that run (`mcc doctor` sets it when it runs a launcher) |
 | `MCC_NO_USAGE` | Any value except empty or `0`: same as `mcc list --no-usage`; `mcc usage` shows usage as not fetched, and `mcc run` starts the project's profile without checking its usage |
 | `COLUMNS` | Terminal width used to size the usage bars in `mcc list` and `mcc usage` (default: the detected width; unlimited when piped) |
 | `MCC_USAGE_URL` | Test/debug override for the live usage endpoint (`[usage] live = true` or `mcc usage --all`). It receives bearer tokens, so only `https://` URLs and `http://` on loopback (`127.0.0.1`, `localhost`, `[::1]`) are accepted; any other value is refused and usage is not fetched at all |

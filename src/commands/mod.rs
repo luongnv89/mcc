@@ -8,6 +8,7 @@ pub mod doctor;
 pub mod env;
 pub mod exec;
 pub mod init;
+pub mod launch_sync;
 pub mod link;
 pub mod list;
 pub mod project;

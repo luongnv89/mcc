@@ -396,6 +396,196 @@ fn sync_one(
     Ok(())
 }
 
+/// What a launch-time catch-up ([`auto_catch_up`]) did for one profile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AutoOutcome {
+    /// Copied `changed` from the default: profile-relative paths, then
+    /// `MCP server "NAME"` for each server added or updated. `status` is
+    /// what the profile still differs in (the kept local edits and
+    /// conflicts).
+    Applied {
+        changed: Vec<String>,
+        status: Status,
+    },
+    /// Nothing to copy; `status` as in `Applied`.
+    UpToDate { status: Status },
+    /// Nothing written: catching up needs what only `mcc sync` does.
+    Held { reason: Held },
+}
+
+/// Why a launch-time catch-up wrote nothing ([`AutoOutcome::Held`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Held {
+    /// No sync manifest (a `--fresh` profile never synced, or one from
+    /// before manifests): every difference would be taken from the default,
+    /// local edits included, so only `mcc sync` (which warns) does that.
+    NoManifest,
+    /// The manifest can't be read (or is from a newer mcc).
+    InvalidManifest,
+    /// The sync would remove something from the profile (a symlink or file
+    /// where the default has a directory, say); removals need `mcc sync`'s
+    /// confirmation.
+    Removals,
+    /// The sync would overwrite what the profile has in an item its manifest
+    /// doesn't record (a new `[sync] extra` path, say), where local edits
+    /// can't be told apart from what mcc wrote; only `mcc sync` (which
+    /// warns) does that.
+    Untracked,
+}
+
+impl Held {
+    /// Its name in the auto-sync state file and in `mcc list --json`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Held::NoManifest => "no_manifest",
+            Held::InvalidManifest => "invalid_manifest",
+            Held::Removals => "removals",
+            Held::Untracked => "untracked",
+        }
+    }
+
+    /// The reason named `name` ([`Held::as_str`]).
+    pub fn from_name(name: &str) -> Option<Held> {
+        [
+            Held::NoManifest,
+            Held::InvalidManifest,
+            Held::Removals,
+            Held::Untracked,
+        ]
+        .into_iter()
+        .find(|h| h.as_str() == name)
+    }
+
+    /// Why, for people: "it has no sync record yet".
+    pub fn describe(self) -> &'static str {
+        match self {
+            Held::NoManifest => "it has no sync record yet",
+            Held::InvalidManifest => "its sync record can't be read",
+            Held::Removals => "the sync would remove files",
+            Held::Untracked => "it would overwrite files its sync record doesn't cover",
+        }
+    }
+}
+
+/// The safe part of `mcc sync ALIAS`, run when a profile starts (`[sync]
+/// auto`): with the profile's sync manifest only (three-way), never pruning,
+/// never forcing, and only when nothing would be removed and nothing outside
+/// what the manifest records would be overwritten. Adds and updates
+/// are copied (backed up first, as `mcc sync` does); local edits and
+/// conflicts are kept. Records the manifest and, when it copied something,
+/// `last_sync` in `cfg`, which it saves.
+///
+/// Silent: no output, no prompt. The caller holds the config lock and
+/// loaded `cfg` under it.
+pub fn auto_catch_up(paths: &Paths, cfg: &mut Config, alias: &str) -> Result<AutoOutcome> {
+    let dir = cfg
+        .profiles
+        .get(alias)
+        .map(|p| p.dir.clone())
+        .ok_or_else(|| super::unknown_profile(alias))?;
+    if !dir.is_dir() || !paths.default_dir.is_dir() {
+        return Err(CliError::runtime(format!(
+            "{} or the default profile is missing",
+            paths.display(&dir)
+        ))
+        .into());
+    }
+    let previous = match manifest::load(&dir) {
+        manifest::Loaded::Found(m) => m,
+        manifest::Loaded::Missing => {
+            return Ok(AutoOutcome::Held {
+                reason: Held::NoManifest,
+            });
+        }
+        manifest::Loaded::Invalid(_) => {
+            return Ok(AutoOutcome::Held {
+                reason: Held::InvalidManifest,
+            });
+        }
+    };
+    let spec = copy::spec(None, &cfg.sync)?;
+    let rw = Rewriter::for_profile(paths, cfg, &dir)?;
+    let plan = plan_for(paths, cfg, &dir, &spec, Some(&previous), false, false)?;
+    // Anything the profile has that applying the plan deletes: a removal,
+    // a file or symlink of the profile replaced by the default's directory,
+    // or one standing where a copied path needs its parent dir.
+    let removals = plan.deletes(&dir) + plan.mcp.as_ref().map_or(0, |m| m.removed.len());
+    if removals > 0 {
+        return Ok(AutoOutcome::Held {
+            reason: Held::Removals,
+        });
+    }
+    // Items the manifest doesn't record (a new `[sync] extra` path, one no
+    // longer excluded, a manifest written by `mcc sync --only`) are compared
+    // two-way: what the profile has there differently would be overwritten
+    // as if mcc had written it, its own edits included. Adding what the
+    // profile lacks is safe; replacing what it has is left to `mcc sync`.
+    let untracked: Vec<&Path> = spec
+        .items
+        .iter()
+        .map(|i| i.rel.as_path())
+        .filter(|rel| !previous.items.contains(&manifest::key(rel)))
+        .collect();
+    let overwrites_untracked = plan
+        .changes
+        .iter()
+        .any(|c| c.action == Action::Update && untracked.iter().any(|u| c.rel.starts_with(u)))
+        || (!previous.items.contains(manifest::MCP_ITEM)
+            && plan.mcp.as_ref().is_some_and(|m| !m.updated.is_empty()));
+    if overwrites_untracked {
+        return Ok(AutoOutcome::Held {
+            reason: Held::Untracked,
+        });
+    }
+    let status = plan.status();
+    let kept = Status {
+        behind: 0,
+        ..status
+    };
+    let next = plan.manifest(Some(&previous));
+    if plan.actionable() == 0 {
+        // As `mcc sync` does: record what the profile matches.
+        if next != previous {
+            next.save(&dir)?;
+        }
+        return Ok(AutoOutcome::UpToDate { status: kept });
+    }
+    backup_as(&dir, &plan, AUTO_BACKUP_SUFFIX)?;
+    copy::apply(&plan, &paths.default_dir, &dir, &rw, false)?;
+    next.save(&dir)?;
+    // Catch-ups run unasked on every change of the default: only their
+    // latest backups are kept. The profile is caught up either way.
+    if let Err(e) = prune_auto_backups(&dir, AUTO_BACKUPS_KEPT) {
+        crate::log::write(
+            "WARN",
+            &format!("auto sync: {alias}: pruning old auto-sync backups failed: {e:#}"),
+        );
+    }
+    let mut changed: Vec<String> = plan
+        .changes
+        .iter()
+        .filter(|c| !c.action.kept() && !c.dir)
+        .map(|c| c.rel.display().to_string())
+        .collect();
+    if let Some(m) = &plan.mcp {
+        changed.extend(
+            m.added
+                .iter()
+                .chain(&m.updated)
+                .map(|k| format!("MCP server \"{k}\"")),
+        );
+    }
+    if let Some(p) = cfg.profiles.get_mut(alias) {
+        p.last_sync =
+            Some(chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false));
+    }
+    cfg.save(&paths.config_file)?;
+    Ok(AutoOutcome::Applied {
+        changed,
+        status: kept,
+    })
+}
+
 /// Without a usable sync manifest the plan is two-way, so every path that
 /// differs from the default is taken from it, local edits included: list
 /// each path (and MCP server) whose profile content a sync replaces, and
@@ -547,12 +737,18 @@ fn print_plan(plan: &Plan, dry_run: bool) {
 /// backup leaves the profile untouched. Never reuses an earlier backup folder
 /// (two syncs can land in one millisecond).
 fn backup(dir: &Path, plan: &Plan) -> Result<Option<PathBuf>> {
-    backup_rels(
+    backup_as(dir, plan, "")
+}
+
+/// [`backup`], to `<timestamp><suffix>/`.
+fn backup_as(dir: &Path, plan: &Plan, suffix: &str) -> Result<Option<PathBuf>> {
+    backup_rels_as(
         dir,
         BACKED_UP
             .iter()
             .map(PathBuf::from)
             .chain(plan.backup_paths(dir)),
+        suffix,
     )
 }
 
@@ -561,24 +757,98 @@ fn backup(dir: &Path, plan: &Plan) -> Result<Option<PathBuf>> {
 /// followed) to a new `<dir>/.mcc-backup/<timestamp>/`. `None` when none of
 /// them exists.
 pub fn backup_rels(dir: &Path, rels: impl IntoIterator<Item = PathBuf>) -> Result<Option<PathBuf>> {
+    backup_rels_as(dir, rels, "")
+}
+
+/// [`backup_rels`], to `<timestamp><suffix>/`.
+fn backup_rels_as(
+    dir: &Path,
+    rels: impl IntoIterator<Item = PathBuf>,
+    suffix: &str,
+) -> Result<Option<PathBuf>> {
     let rels = copy::outermost_existing(dir, rels);
     if rels.is_empty() {
         return Ok(None);
     }
-    let dest = new_backup_dir(dir)?;
+    let dest = new_backup_dir_as(dir, suffix)?;
     for rel in rels {
         fsutil::copy_path(&dir.join(&rel), &dest.join(&rel))?;
     }
     Ok(Some(dest))
 }
 
+/// The format of a backup folder's timestamp.
+const BACKUP_TIME: &str = "%Y%m%d-%H%M%S%.3f";
+
+/// What ends the name of a backup folder auto sync made
+/// (`<timestamp>-auto`, or `<timestamp>-auto.N` on a clash).
+const AUTO_BACKUP_SUFFIX: &str = "-auto";
+
+/// How many of its backups auto sync keeps per profile
+/// ([`prune_auto_backups`]). Backups of `mcc sync` (and of `mcc link`) are
+/// never pruned.
+pub const AUTO_BACKUPS_KEPT: usize = 10;
+
+/// When the backup folder `name` was made by auto sync: its timestamp and
+/// clash number (`<timestamp>-auto` is 0, `<timestamp>-auto.N` is N).
+fn auto_backup_key(name: &str) -> Option<(chrono::NaiveDateTime, u64)> {
+    let (stamp, n) = match name.strip_suffix(AUTO_BACKUP_SUFFIX) {
+        Some(stamp) => (stamp, 0),
+        None => {
+            let (head, n) = name.rsplit_once('.')?;
+            if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            (head.strip_suffix(AUTO_BACKUP_SUFFIX)?, n.parse().ok()?)
+        }
+    };
+    let time = chrono::NaiveDateTime::parse_from_str(stamp, BACKUP_TIME).ok()?;
+    // Exactly as mcc names them: nothing else is ever touched.
+    (time.format(BACKUP_TIME).to_string() == stamp).then_some((time, n))
+}
+
+/// Remove all but the newest `keep` backup folders auto sync made in
+/// `<dir>/.mcc-backup/` (real directories named as [`auto_backup_key`]
+/// reads them; never a symlink, nor any other backup). Returns how many
+/// it removed.
+pub fn prune_auto_backups(dir: &Path, keep: usize) -> Result<usize> {
+    let root = dir.join(copy::BACKUP_DIR);
+    let entries = match std::fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", root.display())),
+    };
+    let mut auto = Vec::new();
+    for entry in entries {
+        let entry = entry.with_context(|| format!("reading {}", root.display()))?;
+        let Some(key) = entry.file_name().to_str().and_then(auto_backup_key) else {
+            continue;
+        };
+        if std::fs::symlink_metadata(entry.path()).is_ok_and(|m| m.file_type().is_dir()) {
+            auto.push((key, entry.path()));
+        }
+    }
+    auto.sort();
+    let stale = auto.len().saturating_sub(keep);
+    for (_, path) in &auto[..stale] {
+        std::fs::remove_dir_all(path).with_context(|| format!("removing {}", path.display()))?;
+    }
+    Ok(stale)
+}
+
 /// A new, empty, private `<dir>/.mcc-backup/<timestamp>/` (with a `.N`
 /// suffix when that name is taken).
 pub fn new_backup_dir(dir: &Path) -> Result<PathBuf> {
+    new_backup_dir_as(dir, "")
+}
+
+/// [`new_backup_dir`], named `<timestamp><suffix>` (`.N` after it on a
+/// clash).
+fn new_backup_dir_as(dir: &Path, suffix: &str) -> Result<PathBuf> {
     let root = dir.join(copy::BACKUP_DIR);
     std::fs::create_dir_all(&root).with_context(|| format!("creating {}", root.display()))?;
     fsutil::set_private_dir(&root)?;
-    let base = chrono::Local::now().format("%Y%m%d-%H%M%S%.3f").to_string();
+    let base = format!("{}{suffix}", chrono::Local::now().format(BACKUP_TIME));
     let mut dest = root.join(&base);
     let mut n = 1;
     loop {
@@ -593,4 +863,71 @@ pub fn new_backup_dir(dir: &Path) -> Result<PathBuf> {
     }
     fsutil::set_private_dir(&dest)?;
     Ok(dest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_auto_sync_backups_are_pruned_and_the_latest_kept() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join(copy::BACKUP_DIR);
+        let mut made = Vec::new();
+        for i in 0..12 {
+            let name = format!("20260101-0000{i:02}.000-auto");
+            std::fs::create_dir_all(root.join(&name).join("sub")).unwrap();
+            std::fs::write(root.join(&name).join("sub/f"), "x").unwrap();
+            made.push(name);
+        }
+        // A clash in one millisecond, after the plain name.
+        std::fs::create_dir(root.join("20260101-000011.000-auto.1")).unwrap();
+        made.push("20260101-000011.000-auto.1".into());
+        // Never touched: `mcc sync` backups, look-alikes, a symlink.
+        let manual = "20250101-000000.000";
+        let others = [
+            manual,
+            "20250101-000000.000.1",
+            "notes-auto",
+            "20250101-000000-auto",
+            "20250101-000000.000-auto.x",
+            "x20250101-000000.000-auto",
+        ];
+        for name in others {
+            std::fs::create_dir(root.join(name)).unwrap();
+        }
+        let elsewhere = d.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, root.join("20240101-000000.000-auto")).unwrap();
+
+        assert_eq!(prune_auto_backups(d.path(), 10).unwrap(), 3);
+        let mut left: Vec<String> = std::fs::read_dir(&root)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        let mut want: Vec<String> = made[3..].to_vec();
+        want.extend(others.iter().map(|s| s.to_string()));
+        want.push("20240101-000000.000-auto".into());
+        want.sort();
+        assert_eq!(left, want);
+        assert!(elsewhere.is_dir());
+        // Nothing more to prune; none at all is fine too.
+        assert_eq!(prune_auto_backups(d.path(), 10).unwrap(), 0);
+        assert_eq!(prune_auto_backups(&d.path().join("none"), 10).unwrap(), 0);
+    }
+
+    #[test]
+    fn an_auto_sync_backup_is_named_apart_from_the_others() {
+        let d = tempfile::tempdir().unwrap();
+        let auto = new_backup_dir_as(d.path(), AUTO_BACKUP_SUFFIX).unwrap();
+        let again = new_backup_dir_as(d.path(), AUTO_BACKUP_SUFFIX).unwrap();
+        let manual = new_backup_dir(d.path()).unwrap();
+        for dir in [&auto, &again] {
+            let name = dir.file_name().unwrap().to_str().unwrap();
+            assert!(auto_backup_key(name).is_some(), "{name}");
+        }
+        let name = manual.file_name().unwrap().to_str().unwrap();
+        assert_eq!(auto_backup_key(name), None, "{name}");
+    }
 }

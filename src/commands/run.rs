@@ -300,6 +300,8 @@ fn launch(paths: &Paths, cfg: &Config, p: &Profile, args: &RunArgs) -> Result<()
     let mut cmd = std::process::Command::new(&bin);
     cmd.args(&args.args);
     profile_env(&mut cmd, paths, p);
+    // Auto sync, as the launchers do: never fails, nothing on stdout.
+    super::launch_sync::on_launch(paths, &p.name);
     super::banner::show_on_stderr(paths, cfg, &p.name);
     crate::log::write(
         "INFO",
