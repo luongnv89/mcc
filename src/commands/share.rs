@@ -181,13 +181,13 @@ fn same_group(a: &Option<String>, b: &Option<String>) -> bool {
 }
 
 /// A group as people read it.
-fn group_name(group: &Option<String>) -> &str {
+pub(crate) fn group_name(group: &Option<String>) -> &str {
     group.as_deref().unwrap_or("default")
 }
 
 /// A profile's account, for the cross-organization guard.
 #[derive(Debug, Clone)]
-struct OrgId {
+pub(crate) struct OrgId {
     account: Account,
     kind: AccountKind,
 }
@@ -200,7 +200,7 @@ impl OrgId {
         }
     }
 
-    fn describe(&self) -> String {
+    pub(crate) fn describe(&self) -> String {
         let org = || {
             self.account
                 .organization
@@ -219,7 +219,7 @@ impl OrgId {
 
 /// How much sharing sessions between two profiles risks, least to most.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Risk {
+pub(crate) enum Risk {
     None,
     /// Neither profile is in a work organization, but at least one account
     /// is unknown, so they can't be told to be the same kind.
@@ -251,7 +251,7 @@ fn pair_risk(a: &OrgId, b: &OrgId) -> Risk {
 
 /// The other sharing profiles of `group` that `alias` would share with at
 /// some risk, each with what it is; and `alias`'s own [`OrgId`].
-fn group_risks(
+pub(crate) fn group_risks(
     cfg: &Config,
     alias: &str,
     profile: &Profile,
@@ -297,7 +297,7 @@ fn verdict(risk: Risk, allow: bool, interactive: bool) -> Verdict {
 }
 
 /// The profiles at risk, as `"lab" (organization Acme), …`.
-fn risk_list(others: &[(String, OrgId, Risk)]) -> String {
+pub(crate) fn risk_list(others: &[(String, OrgId, Risk)]) -> String {
     others
         .iter()
         .map(|(n, id, _)| format!("\"{n}\" ({})", id.describe()))

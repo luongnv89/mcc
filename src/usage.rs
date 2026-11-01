@@ -28,9 +28,10 @@
 //! `expiresAt` (the access token's own expiry). They are parsed into a struct
 //! that has no other field, so no token is ever bound, and nothing is sent
 //! anywhere. The macOS Keychain is consulted for them only where the token
-//! lookup may already read it (`[usage] live = true`, `mcc usage --all`);
-//! `MCC_NO_USAGE` turns the read
-//! off. mcc still never sends or refreshes a token itself.
+//! lookup may already read it (`[usage] live = true`, `mcc usage --all`) or
+//! when the user asks for it (`mcc login`); `MCC_NO_USAGE` turns the read
+//! off. mcc still never sends or refreshes a token itself: `mcc login
+//! --refresh-only` asks Claude Code to do it.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -369,6 +370,10 @@ pub fn token_state(config_dir: &Path, is_default: bool) -> TokenState {
     }
 }
 
+/// How long before `expiresAt` Claude Code treats its access token as expired
+/// and refreshes it (5 minutes).
+pub const ACCESS_REFRESH_MARGIN_MS: i64 = 300_000;
+
 /// Where a login deadline was read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -530,6 +535,17 @@ pub fn login_times(config_dir: &Path, is_default: bool, allow_keychain: bool) ->
     find_times(config_dir, is_default, allow_keychain, keychain_secret)
 }
 
+/// [`login_times`] for an explicit request (`mcc login`): the credentials
+/// file and the Keychain, whatever `MCC_NO_USAGE` says.
+pub fn read_login_times(config_dir: &Path, is_default: bool) -> LoginTimes {
+    find_times(config_dir, is_default, true, keychain_secret)
+}
+
+/// Whether mcc can read a Keychain here (macOS, or `MCC_SECURITY_BIN`).
+pub fn keychain_available() -> bool {
+    std::env::var_os("MCC_SECURITY_BIN").is_some_and(|v| !v.is_empty()) || cfg!(target_os = "macos")
+}
+
 /// The days before a login deadline when mcc starts warning, when
 /// `[usage] login_warn_days` is unset.
 pub const LOGIN_WARN_DAYS: u32 = 2;
@@ -547,6 +563,14 @@ pub fn login_warning(
     let window = chrono::Duration::try_days(i64::from(window_days))?;
     let left = deadline.signed_duration_since(now);
     (left <= window).then_some(left)
+}
+
+/// Whether Claude Code would refresh an access token expiring at `t` now
+/// (it does so 5 minutes early).
+pub fn access_token_due(t: DateTime<Utc>, now: DateTime<Utc>) -> bool {
+    t.timestamp_millis()
+        .checked_sub(ACCESS_REFRESH_MARGIN_MS)
+        .is_none_or(|due| due <= now.timestamp_millis())
 }
 
 /// `MCC_USAGE_URL` (a test/debug override) or the real endpoint. The override
@@ -1275,6 +1299,16 @@ mod tests {
         assert_eq!(login_warning(DateTime::<Utc>::MAX_UTC, now, 2), None);
         assert!(login_warning(DateTime::<Utc>::MAX_UTC, now, u32::MAX).is_some());
         assert!(login_warning(DateTime::<Utc>::MIN_UTC, now, 2).is_some());
+    }
+
+    #[test]
+    fn access_token_is_due_five_minutes_early() {
+        let now = at("2026-10-10T12:00:00Z");
+        let m = chrono::Duration::minutes(1);
+        assert!(!access_token_due(now + m * 6, now));
+        assert!(access_token_due(now + m * 5, now));
+        assert!(access_token_due(now + m * 4, now));
+        assert!(access_token_due(now - m, now));
     }
 
     #[test]
