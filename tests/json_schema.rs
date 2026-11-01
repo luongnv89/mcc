@@ -125,3 +125,36 @@ fn json_and_json_v2_conflict() {
             .stderr(predicate::str::contains("cannot be used with"));
     }
 }
+
+#[test]
+fn usage_json_only_gains_the_login_fields() {
+    // #100: four fields appended to each schema-1 object, the old ones
+    // unchanged and in place; the v2 envelope carries the same objects.
+    let sb = sandbox();
+    let bare = out(&sb, &["usage", "--json"]);
+    for p in bare.as_array().unwrap() {
+        let keys: Vec<&str> = p.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            [
+                "name",
+                "command",
+                "is_default",
+                "account",
+                "usage",
+                "last_activity",
+                "login_expires_at",
+                "login_expires_source",
+                "login_warning"
+            ],
+            "{p}"
+        );
+        assert!(p["login_warning"].is_boolean(), "{p}");
+    }
+    let raw = stdout_of(
+        sb.mcc()
+            .env("MCC_NO_USAGE", "1")
+            .args(["usage", "--json-v2"]),
+    );
+    assert_envelope(&raw, "profiles", &bare);
+}

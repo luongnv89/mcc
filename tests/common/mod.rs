@@ -21,7 +21,22 @@ const FAKE_CLAUDE: &str = r#"#!/bin/sh
 # $HOME/login-args, one per line. $FAKE_AUTH_METHOD replaces `claude.ai` and
 # $FAKE_API_KEY_SOURCE adds `apiKeySource` (a Console sign-in reports
 # "api_key" and "/login managed key").
+# `mcc login` tests: `auth login` writes $FAKE_LOGIN_CREDS (when set) as the
+# credentials and $FAKE_LOGIN_STATE as the state file (.claude.json), then,
+# with $FAKE_LOGIN_INTERRUPT, sends Ctrl+C (SIGINT) to its parent. `-p ok` (the
+# --refresh-only request) records its arguments in $HOME/p-args and its
+# directory in $HOME/p-cwd, exits 1 when $FAKE_REFRESH_MODE=fail, and writes
+# $FAKE_REFRESH_CREDS as the credentials when set. Both record the names
+# (never values) of credential variables they see in $HOME/claude-env.log.
 dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+state="$HOME/.claude.json"
+[ -n "$CLAUDE_CONFIG_DIR" ] && state="$CLAUDE_CONFIG_DIR/.claude.json"
+envlog() {
+  for v in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX ANTHROPIC_BASE_URL; do
+    eval "[ -n \"\${$v+x}\" ]" && echo "$1 $v" >> "$HOME/claude-env.log"
+  done
+  return 0
+}
 cfgdir=""
 [ -n "$FAKE_CONFIG_DIRECTORY" ] && cfgdir=", \"configDirectory\": \"$dir\""
 case "$1 $2" in
@@ -30,9 +45,23 @@ case "$1 $2" in
     shift 2
     printf '%s\n' "$@" > "$HOME/login-args"
     mkdir -p "$dir"
+    envlog login
     [ -n "$FAKE_LOGIN_FAIL" ] && { echo "login aborted" >&2; exit 1; }
-    echo '{"token":"fake"}' > "$dir/.credentials.json"
+    if [ -n "$FAKE_LOGIN_CREDS" ]; then
+      printf '%s' "$FAKE_LOGIN_CREDS" > "$dir/.credentials.json"
+    else
+      echo '{"token":"fake"}' > "$dir/.credentials.json"
+    fi
+    [ -n "$FAKE_LOGIN_STATE" ] && printf '%s' "$FAKE_LOGIN_STATE" > "$state"
+    if [ -n "$FAKE_LOGIN_INTERRUPT" ]; then kill -INT "$PPID"; sleep 1; fi
     echo "Login successful." ;;
+  "-p ok")
+    printf '%s\n' "$@" > "$HOME/p-args"
+    pwd > "$HOME/p-cwd"
+    envlog p
+    [ "$FAKE_REFRESH_MODE" = fail ] && exit 1
+    [ -n "$FAKE_REFRESH_CREDS" ] && printf '%s' "$FAKE_REFRESH_CREDS" > "$dir/.credentials.json"
+    echo "fake claude $*" ;;
   "auth status")
     if [ -f "$dir/.credentials.json" ]; then
       org=""
@@ -201,6 +230,14 @@ impl Sandbox {
         );
     }
 
+    /// [`Self::seed_oauth`] with a login deadline (`refreshTokenExpiresAt`).
+    pub fn seed_login(&self, rel_dir: &str, token: &str, expires_at_ms: i64, deadline_ms: i64) {
+        self.write(
+            &format!("{rel_dir}/.credentials.json"),
+            &oauth_blob_with_deadline(token, expires_at_ms, Some(deadline_ms)),
+        );
+    }
+
     /// The same credentials as a fake-keychain item for `service`.
     pub fn seed_keychain(&self, service: &str, token: &str, expires_at_ms: i64) {
         self.write(
@@ -211,8 +248,21 @@ impl Sandbox {
 }
 
 fn oauth_blob(token: &str, expires_at_ms: i64) -> String {
+    oauth_blob_with_deadline(token, expires_at_ms, None)
+}
+
+/// Claude Code OAuth credentials, with the login deadline
+/// (`refreshTokenExpiresAt`) when given.
+pub fn oauth_blob_with_deadline(
+    token: &str,
+    expires_at_ms: i64,
+    deadline_ms: Option<i64>,
+) -> String {
+    let deadline = deadline_ms
+        .map(|ms| format!(r#","refreshTokenExpiresAt":{ms}"#))
+        .unwrap_or_default();
     format!(
-        r#"{{"claudeAiOauth":{{"accessToken":"{token}","refreshToken":"refresh-{token}","expiresAt":{expires_at_ms},"scopes":["user:inference","user:profile"],"subscriptionType":"max"}}}}"#
+        r#"{{"claudeAiOauth":{{"accessToken":"{token}","refreshToken":"refresh-{token}","expiresAt":{expires_at_ms}{deadline},"scopes":["user:inference","user:profile"],"subscriptionType":"max"}}}}"#
     )
 }
 
@@ -321,6 +371,7 @@ pub fn with_profile(sb: &Sandbox, alias: &str, mode: &str) {
 }
 
 pub const HOUR_MS: i64 = 3_600_000;
+pub const DAY_MS: i64 = 24 * HOUR_MS;
 
 pub fn rfc3339_in(secs: i64) -> String {
     (chrono::Utc::now() + chrono::Duration::seconds(secs))
