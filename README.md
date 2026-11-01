@@ -613,7 +613,7 @@ show_email = true
 <details>
 <summary>[usage] live = true and mcc usage --all, with the risk notice</summary>
 
-By default `mcc list`, `mcc usage` and `mcc run` read usage only from what `mcc statusline` cached, and never read a token (`mcc usage` reads only each login's two expiry timestamps; see [Login expiry](#login-expiry-and-mcc-login)). To have them look usage up live with each profile's login instead, opt in:
+By default `mcc list`, `mcc usage` and `mcc run` read usage only from what `mcc statusline` cached, and never read a token (`mcc usage` reads only each login's deadline timestamp, `refreshTokenExpiresAt`; see [Login expiry](#login-expiry-and-mcc-login)). To have them look usage up live with each profile's login instead, opt in:
 
 ```toml
 [usage]
