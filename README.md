@@ -279,7 +279,8 @@ mcc delete job              # remove it completely
 | `mcc init` | Detect OS, arch, terminal, shell, rc file, the `claude` binary, and whether `~/.local/bin` is on PATH (and offer to add it) | `--force`, `--shell zsh\|bash\|fish` |
 | `mcc add [ALIAS]` | Create the default profile, or a new profile with its own command; records the account and its organization, warns when another profile already uses that account, and asks for an optional label. A clone shares the default's plugins instead of copying them | `--clone`, `--fresh`, `--link ITEMS`, `--copy-plugins`, `--no-login`, `--email ADDRESS`, `--sso`, `--label LABEL`, `--color COLOR`, `-y` |
 | `mcc list` (`ls`) | Show every profile with its account, 5-hour/weekly usage and sync state in a table that fits 120 columns; `--long` adds every metric | `--json`, `--json-v2`, `-l/--long`, `--no-usage`, `--show-email`, `--hide-email` |
-| `mcc usage [PROFILE]` | Show each profile's 5-hour and weekly usage in a table (`default` or `claude` for the default profile); `--all` looks every account up live for one run, with a risk notice (see [Live usage lookup](#live-usage-lookup-opt-in)) | `--all`, `--json`, `--json-v2`, `--show-email`, `--hide-email` |
+| `mcc usage [PROFILE]` | Show each profile's 5-hour and weekly usage in a table (`default` or `claude` for the default profile), with when it was last active and when its login ends, and warn before a login runs out; `--all` looks every account up live for one run, with a risk notice (see [Live usage lookup](#live-usage-lookup-opt-in)) | `--all`, `--json`, `--json-v2`, `--show-email`, `--hide-email` |
+| `mcc login PROFILE` (`renew`) | Renew a profile's Claude Code sign-in in place before its login runs out, and check that it worked (see [Login expiry](#login-expiry-and-mcc-login)) | `--refresh-only` |
 | `mcc sync [ALIAS]` | Copy the default's setup into a profile (default → profile only), keeping edits made in the profile | `--all`, `--dry-run`, `--prune`, `--force`, `--only ITEMS`, `-y` |
 | `mcc diff ALIAS` | Show how a profile differs from the default's setup, path by path, as `sync` classifies it | `--only ITEMS` |
 | `mcc rename ALIAS NEW` (`mv`) | Rename a profile and its command; directory and login are kept | |
@@ -323,6 +324,8 @@ mcc usage work                        # only the `work` profile
 mcc usage --all                       # every account looked up live for this run (prints a risk notice)
 mcc usage --show-email                # with each profile's account email
 mcc usage --json | jq '.[] | {name, weekly: .usage.weekly.percent}'
+mcc usage --json | jq '.[] | select(.login_warning) | .name'   # logins about to run out
+mcc login work                        # sign `work` in again before its login runs out
 mcc sync work --dry-run               # preview what would change
 mcc sync work --only skills,agents    # only some items
 mcc sync --all --prune --yes          # make every profile mirror the default exactly
@@ -478,7 +481,7 @@ mcc config edit                                   # open the file in $VISUAL or 
 mcc config path                                   # print the file's path
 ```
 
-`set` accepts `sync.exclude`, `sync.extra`, `sync.auto`, `privacy.show_email` (also under its old name, `usage.show_email`), `usage.live`, `launch.banner`, `profiles.ALIAS.label`, `profiles.ALIAS.color` and `profiles.ALIAS.auto_sync`, and checks each value as the command that uses it would: an unknown sync item, a path outside the config dir, a value that isn't `true` or `false`, an invalid label or an unknown color is refused with exit 2 or 3, and the file is left unchanged. Keys that other commands manage point you to them (`mcc share`, `mcc link`, `mcc project`, `mcc init --force`). `get` reads any key, dotted as in TOML (`projects."/Users/me/app".profile`); a key that isn't set exits 1. Comments and formatting are kept.
+`set` accepts `sync.exclude`, `sync.extra`, `sync.auto`, `privacy.show_email` (also under its old name, `usage.show_email`), `usage.live`, `usage.login_warn_days` (1 to 14, `""` for the default 2), `launch.banner`, `profiles.ALIAS.label`, `profiles.ALIAS.color` and `profiles.ALIAS.auto_sync`, and checks each value as the command that uses it would: an unknown sync item, a path outside the config dir, a value that isn't `true` or `false`, an invalid label or an unknown color is refused with exit 2 or 3, and the file is left unchanged. Keys that other commands manage point you to them (`mcc share`, `mcc link`, `mcc project`, `mcc init --force`). `get` reads any key, dotted as in TOML (`projects."/Users/me/app".profile`); a key that isn't set exits 1. Comments and formatting are kept.
 
 `edit` opens a copy of the file and saves it only when it is valid mcc config (it parses, and sync items, `link` items, labels, colors and `share_group` names pass the same checks); otherwise it offers to edit again, or leaves the file unchanged. mcc holds no lock while the editor is open, so other mcc commands, launches included, keep working; if one of them changes the file meanwhile, nothing is saved and your edited copy is kept next to it. `edit` also works on a file that no longer parses, so it can fix one. `get` and `path` never take the lock; `set` holds it like any other write.
 
@@ -610,7 +613,7 @@ show_email = true
 <details>
 <summary>[usage] live = true and mcc usage --all, with the risk notice</summary>
 
-By default `mcc list`, `mcc usage` and `mcc run` read usage only from what `mcc statusline` cached, and never read a login. To have them look usage up live with each profile's login instead, opt in:
+By default `mcc list`, `mcc usage` and `mcc run` read usage only from what `mcc statusline` cached, and never read a token (`mcc usage` reads only each login's two expiry timestamps; see [Login expiry](#login-expiry-and-mcc-login)). To have them look usage up live with each profile's login instead, opt in:
 
 ```toml
 [usage]
@@ -833,19 +836,22 @@ lab        —         —                      —                      1d ago 
 
 ```console
 $ mcc usage
-PROFILE    5-HOUR           RESETS IN                  WEEKLY            RESETS IN                 UPDATED
-default ★  ████░░░░░░ 42%   2h 14m (Sat Oct 10 16:00)  ██░░░░░░░░ 18%    3d 4h (Wed Oct 14 00:00)  12m ago
-lab        — (no recent usage cached; run /usage in Claude Code)
-work       █████████░ 85%!  35m (Sat Oct 10 14:21)     ██████████ 96%!!  3d 4h (Wed Oct 14 00:00)  just now
+PROFILE    LAST ACTIVE  LOGIN ENDS  5-HOUR           RESETS IN                  WEEKLY            RESETS IN                 UPDATED
+default ★  12m ago      27d 3h      ████░░░░░░ 42%   2h 14m (Sat Oct 10 16:00)  ██░░░░░░░░ 18%    3d 4h (Wed Oct 14 00:00)  12m ago
+lab        16d ago      1d 4h       — (no recent usage cached; run /usage in Claude Code)
+work       just now     unknown     █████████░ 85%!  35m (Sat Oct 10 14:21)     ██████████ 96%!!  3d 4h (Wed Oct 14 00:00)  just now
+  ⚠ Login for 'lab' expires in 1d 4h (Sun Oct 11 16:00) — run `mcc login lab` to renew it
 ```
 
-- **Where it comes from (default).** The rate limits [`mcc statusline`](#status-line-mcc-statusline) caches in `~/.mcc/state/<profile>/usage.json` while you use Claude Code. No login is read and nothing touches the network. `UPDATED` (and `· 12m ago` in `mcc run`) is how old the cached numbers are; the last `mcc usage --all` saves to the same cache. A window whose reset time has passed is obsolete and shown as `—`. A profile with nothing current cached (an idle profile, a Team or Enterprise seat that reports no rate limits, or no `mcc statusline install` yet) shows `—` and a hint to run `/usage` inside Claude Code.
+`LAST ACTIVE` and `LOGIN ENDS` are explained under [Login expiry](#login-expiry-and-mcc-login).
+
+- **Where it comes from (default).** The rate limits [`mcc statusline`](#status-line-mcc-statusline) caches in `~/.mcc/state/<profile>/usage.json` while you use Claude Code. No token is read (`mcc usage` reads only each login's expiry timestamps; see [Login expiry](#login-expiry-and-mcc-login)) and nothing touches the network. `UPDATED` (and `· 12m ago` in `mcc run`) is how old the cached numbers are; the last `mcc usage --all` saves to the same cache. A window whose reset time has passed is obsolete and shown as `—`. A profile with nothing current cached (an idle profile, a Team or Enterprise seat that reports no rate limits, or no `mcc statusline install` yet) shows `—` and a hint to run `/usage` inside Claude Code.
 
 - **Reading the bars.** Each bar is the share of the limit used. `!` after the percent marks 80% or more and `!!` 95% or more. In a colour terminal the bar is also green, yellow (80%+) or red (95%+), but the markers carry the same meaning, so nothing depends on colour alone (`--no-color`, `NO_COLOR`, or piped output).
 - **Narrow terminals.** When the output would not fit the terminal's width, bars shrink (`mcc usage` first drops the absolute reset time, keeping the time until the reset, then shrinks its bar in the same 10/5/0 steps as the `mcc list` table). From 80 columns up a compact bar always stays, even if the `mcc list` table has to wrap; below 80 columns bars disappear (leaving just the percent, such as `42%`) when nothing fits. Set `COLUMNS` to override the detected width. Piped output gets full-size bars unless `COLUMNS` is set, and `--json` never has bars or colour.
 - **Live lookup (opt-in: `[usage] live = true`, or one run of `mcc usage --all`).** mcc reads each profile's own Claude Code login (`<config dir>/.credentials.json`, or on macOS the login Keychain item Claude Code created for that config dir, under your login name: `$USER`, or the system's name for your user when `USER` is unset, as under launchd or cron) and asks Anthropic's usage endpoint (`https://api.anthropic.com/api/oauth/usage`, the one behind Claude Code's `/usage` screen). It is off by default: Claude Code's [legal and compliance page](https://code.claude.com/docs/en/legal-and-compliance) says developers may not collect or intermediate Claude.ai credentials, and the endpoint is **undocumented**, rate-limited and may change; when it does, mcc shows "unavailable" rather than failing. With `live = true`, the first live lookup prints a one-time disclosure; `mcc usage --all` prints its risk notice every time it runs.
 - **Never fatal.** If usage can't be determined (nothing cached; or, live: logged out, expired login, offline, API error), the profile shows `—` or `unavailable` with the reason (in `mcc usage` and `mcc list --long`), and the command still exits 0. Live requests run in parallel with short timeouts (2 s to connect, 4 s total).
-- **Tokens stay private.** With the live lookup, the access token is only sent to that endpoint, for its own profile. It is never printed, logged, or written anywhere. mcc never refreshes tokens: if a login has expired, start the profile in Claude Code once (`work`, `claude`, …) and it refreshes itself.
+- **Tokens stay private.** With the live lookup, the access token is only sent to that endpoint, for its own profile. It is never printed, logged, or written anywhere. mcc never refreshes tokens: if a login has expired, start the profile in Claude Code once (`work`, `claude`, …) and it refreshes itself, or renew it with [`mcc login`](#login-expiry-and-mcc-login).
 - **Turn it off** with `mcc list --no-usage` or `MCC_NO_USAGE=1` (which also applies to `mcc usage` and `mcc run`); usage then shows `—` and nothing reads the cache, the network or the keychain.
 
 In `mcc list --json`, every profile has a `usage` object. `mcc usage --json` prints one object per profile with `name`, `command`, `is_default`, `account` (`null` when logged out, or when emails are hidden, as they are by default since v0.2.0; scripts that read `account` need `--show-email` or `[privacy] show_email = true`) and the same `usage` object. `mcc list --json` and `--json-v2` keep `account` the same way: `null` while emails are hidden, as are an `organization` and a `label` that contain an email (personal plans' organizations are named after it); the fields are never left out:
@@ -876,6 +882,32 @@ In `mcc list --json`, every profile has a `usage` object. `mcc usage --json` pri
 | `no_data` | nothing current in the statusline cache: never cached, or every cached window has reset since; run `/usage` in Claude Code |
 
 The other reasons only come from the live lookup.
+
+</details>
+
+#### Login expiry and `mcc login`
+
+<details>
+<summary>LAST ACTIVE, LOGIN ENDS, the warning, and renewing a login</summary>
+
+A Claude Code login lasts about 30 days from its last sign-in, and using the account doesn't extend it: an account you rarely use simply stops working one day and asks you to `/login` again. `mcc usage` shows this coming:
+
+- **`LAST ACTIVE`** is when the profile was last used for a conversation: the newest of its prompt history (`history.jsonl`) and its transcripts (`projects/**/*.jsonl`). `.claude.json` and the credentials don't count, since they change without the account being used. A profile that shares its sessions (`mcc share`) counts only its own history, not the group's transcripts. `unknown` when there is neither.
+- **`LOGIN ENDS`** is the time left before the login needs a new sign-in (Claude Code's `claudeAiOauth.refreshTokenExpiresAt`), `expired` once it has passed, or `unknown`.
+- **The warning.** After the table, one line on stderr per profile whose login ends within `[usage] login_warn_days` (2 days by default), naming it and how to renew it: ``⚠ Login for 'work' expires in 1d 4h (…) — run `mcc login work` to renew it`` (or ``has expired — run `mcc login work` to sign in again``). Profiles further out get no warning. Set the window with `mcc config set usage.login_warn_days 5` (1 to 14 days, since a fresh sign-in lasts about 30; `""` goes back to 2).
+- **What it reads.** Plain `mcc usage` reads two timestamps from each profile's `.credentials.json` (`refreshTokenExpiresAt` and the access token's `expiresAt`) into a structure that has no other field, so no token is ever held, and nothing goes over the network. The macOS Keychain is read for them only where the live lookup may read it anyway (`[usage] live = true`, `mcc usage --all`); when both have one, the later deadline wins. So on a Mac where Claude Code keeps the login only in the Keychain, plain `mcc usage` shows `unknown`, and a hint suggests `mcc usage --all`. `MCC_NO_USAGE=1` reads nothing (`unknown`).
+- **JSON.** `mcc usage --json` (and `--json-v2`) adds to each profile, after `usage`: `last_activity` (RFC 3339 or `null`), `login_expires_at` (RFC 3339 or `null`), `login_expires_source` (`credentials_file`, `keychain` or `null`) and `login_warning` (`true` inside the warning window). Existing fields are unchanged.
+
+**Renewing: `mcc login PROFILE`** (also `mcc renew PROFILE`; `default` or `claude` for `~/.claude`) runs `claude auth login` for that profile, attached to your terminal: sign in in the browser with the same account. Nothing is logged out or reset first, and `~/.mcc/config.toml` isn't touched. mcc reads the login's deadline before and after (from `.credentials.json` and the macOS Keychain; timestamps only, and it says when it reads the Keychain) and reports success only when the new deadline is later than before and outside the warning window, so a sign-in that left the old login in place is reported as a failure (exit 1). If Claude Code records no deadline, it says the sign-in worked but the expiry is unknown (exit 0). Signing in to another account or organization than before is a failure too, naming both; and for a profile that shares its sessions, mcc checks the group again with the new account and fails if its sessions would now be shared across organizations, suggesting `mcc share PROFILE --off`. Ctrl+C during the sign-in exits 130.
+
+```console
+$ mcc login work
+  ● signing `work` in again: Claude Code opens the sign-in page; use the same account
+  …
+  ✓ Login for `work` renewed: it now runs out in 29d 23h (Tue Nov 10 12:00)
+```
+
+**`--refresh-only`** skips the browser: mcc runs one tiny `claude -p` request as the profile (`--model haiku --max-turns 1 --tools "" --no-session-persistence --strict-mcp-config --setting-sources user` with hooks off, in a new empty directory, output discarded, stopped after 2 minutes) so that Claude Code refreshes the access token itself. mcc never sends or refreshes a token, and variables that would make Claude Code use another credential (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, …) are removed for it. It spends a little quota, makes no request while the access token is still valid (it lasts about 8 hours; Claude Code refreshes it 5 minutes before it ends), and usually does **not** move the login deadline, because a token refresh keeps it. Then it says "access token refreshed but login deadline unchanged" and exits 1: `mcc login PROFILE` is the way to renew.
 
 </details>
 
@@ -991,10 +1023,10 @@ An alias must be 1–32 characters: lowercase letters, digits, `-` or `_`, start
 | `MCC_CLAUDE_BIN` | Path to the `claude` binary |
 | `MCC_NON_INTERACTIVE` | Set to any value (even empty) to never prompt, as when stdin or stderr isn't a terminal: required prompts stop and name the flag to pass instead, and optional ones take their default (useful in scripts and CI) |
 | `MCC_NO_AUTO_SYNC` | Any value except empty or `0`: no [auto sync](#auto-sync) for that run (`mcc doctor` sets it when it runs a launcher) |
-| `MCC_NO_USAGE` | Any value except empty or `0`: same as `mcc list --no-usage`; `mcc usage` shows usage as not fetched, and `mcc run` starts the project's profile without checking its usage |
+| `MCC_NO_USAGE` | Any value except empty or `0`: same as `mcc list --no-usage`; `mcc usage` shows usage as not fetched (and doesn't read login expiry), and `mcc run` starts the project's profile without checking its usage |
 | `COLUMNS` | Terminal width used to size the usage bars in `mcc list` and `mcc usage` (default: the detected width; unlimited when piped) |
 | `MCC_USAGE_URL` | Test/debug override for the live usage endpoint (`[usage] live = true` or `mcc usage --all`). It receives bearer tokens, so only `https://` URLs and `http://` on loopback (`127.0.0.1`, `localhost`, `[::1]`) are accepted; any other value is refused and usage is not fetched at all |
-| `MCC_SECURITY_BIN` | Test/debug override for the macOS `security` binary used to read Keychain logins with `[usage] live = true` or `mcc usage --all` (default `/usr/bin/security`, macOS only) |
+| `MCC_SECURITY_BIN` | Test/debug override for the macOS `security` binary used to read Keychain logins with `[usage] live = true`, `mcc usage --all` or `mcc login` (default `/usr/bin/security`, macOS only) |
 | `NO_COLOR` | Disable colors |
 
 </details>
