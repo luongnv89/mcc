@@ -23,7 +23,7 @@
     "description": "Manage multiple Claude Code profiles (accounts) from one CLI.",
     "applicationCategory": "DeveloperApplication",
     "operatingSystem": "macOS, Linux",
-    "softwareVersion": "0.5.0",
+    "softwareVersion": "0.6.0",
     "license": "https://www.apache.org/licenses/LICENSE-2.0",
     "codeRepository": "https://github.com/luongnv89/mcc",
     "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
@@ -56,7 +56,7 @@
   <section class="hero">
     <div class="wrap hero-grid">
       <div>
-        <p class="hero-release"><a class="pill pill-link" href="changelog.html#v0.5.0"><span class="pill-tag">v0.5.0</span> What's new: mcc usage --all<span aria-hidden="true">→</span></a></p>
+        <p class="hero-release"><a class="pill pill-link" href="changelog.html#v0.6.0"><span class="pill-tag">v0.6.0</span> What's new: auto sync and login expiry<span aria-hidden="true">→</span></a></p>
         <span class="eyebrow">Open-source CLI · macOS &amp; Linux</span>
         <h1>Run every Claude Code account <span class="hl">side by side.</span></h1>
         <p class="lede">mcc gives each account its own login, its own command, and a copy of your main setup. Type <code>work</code> for one account and <code>claude</code> for the other. No logging out in between.</p>
@@ -161,12 +161,12 @@ work       12%     4h 10m     30%     5d 2h      48m ago
         <article class="card feature">
           <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 01-15.5 6.2L3 16"/><path d="M3 12a9 9 0 0115.5-6.2L21 8"/><path d="M21 3v5h-5"/><path d="M3 21v-5h5"/></svg></div>
           <h3>Sync when your main setup changes</h3>
-          <p><code>mcc sync work</code> pulls new skills, settings and MCP servers from your default profile and keeps the changes you made in the profile: a file changed on both sides is reported as a conflict, not overwritten. <code>mcc diff work</code> shows what differs, <code>--dry-run</code> previews the sync, and every file it overwrites or removes is backed up first.</p>
+          <p><code>mcc sync work</code> pulls new skills, settings and MCP servers from your default profile and keeps the changes you made in the profile: a file changed on both sides is reported as a conflict, not overwritten. <code>mcc diff work</code> shows what differs, <code>--dry-run</code> previews the sync, and every file it overwrites or removes is backed up first. With auto sync, on by default, profiles also catch up on their own as they start, copying only what the default added or updated.</p>
         </article>
         <article class="card feature">
           <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M22 20H2"/></svg></div>
           <h3>Every limit on one screen</h3>
-          <p><code>mcc usage</code> shows each account's 5-hour and weekly usage and when it resets. Anything at 80% gets a <code>!</code>, at 95% a <code>!!</code>, so it reads the same without colour. <code>mcc usage --all</code> looks every account up live for one run, with a risk notice each time, and caches what it finds.</p>
+          <p><code>mcc usage</code> shows each account's 5-hour and weekly usage and when it resets. Anything at 80% gets a <code>!</code>, at 95% a <code>!!</code>, so it reads the same without colour. <code>mcc usage --all</code> looks every account up live for one run, with a risk notice each time, and caches what it finds. It also shows when each login ends and, by default, warns two days ahead; <code>mcc login work</code> renews it in place.</p>
         </article>
         <article class="card feature">
           <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 00-15-6.7L3 13"/></svg></div>
@@ -194,10 +194,11 @@ work       12%     4h 10m     30%     5d 2h      48m ago
         <div>
         <span class="eyebrow">mcc usage</span>
         <h2 id="usage-title">See which account has room before you start.</h2>
-        <p class="lede" style="margin:0">Each profile's 5-hour and weekly limits, as Claude Code last reported them to <code>mcc statusline</code>, or as the last <code>mcc usage --all</code> found them. Plain <code>mcc usage</code> reads no login and touches no network.</p>
+        <p class="lede" style="margin:0">Each profile's 5-hour and weekly limits, as Claude Code last reported them to <code>mcc statusline</code>, or as the last <code>mcc usage --all</code> found them. Plain <code>mcc usage</code> reads no token and touches no network.</p>
         </div>
         <ul class="checks">
-          <li>One compact table: percent used, time until reset, the reset time in your time zone, and how old the numbers are</li>
+          <li>One compact table: percent used, time until reset, the reset time in your time zone, and how old the numbers are, plus when each profile was last active and when its login ends</li>
+          <li>A warning for each login that ends within two days (by default), with the command that renews it in place: <code>mcc login work</code></li>
           <li>Account emails stay hidden unless you ask for them, so it is safe to share on screen</li>
           <li>Bars shrink to fit narrow terminals; <code>--json</code> for scripts</li>
           <li>A profile with nothing current cached shows <em>—</em> and a hint to run <code>/usage</code> in Claude Code. The command still exits 0</li>
@@ -207,10 +208,11 @@ work       12%     4h 10m     30%     5d 2h      48m ago
       <figure class="term" style="margin:0" aria-label="Terminal: mcc usage output for three profiles">
         <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>~ — zsh</span></div>
 <pre><span class="p">$ </span><span class="c">mcc usage</span>
-<span class="w">PROFILE    5-HOUR           RESETS IN                  WEEKLY            RESETS IN                 UPDATED</span>
-default ★  <span class="g">████</span><span class="d">░░░░░░</span> 42%   2h 14m <span class="d">(Sat Oct 10 16:00)</span>  <span class="g">██</span><span class="d">░░░░░░░░</span> 18%    3d 4h <span class="d">(Wed Oct 14 00:00)</span>  12m ago
-lab        <span class="d">— (no usage cached; run /usage)</span>
-work       <span class="y">█████████</span><span class="d">░</span> <span class="y">85%!</span>  35m <span class="d">(Sat Oct 10 14:21)</span>     <span class="r">██████████</span> <span class="r">96%!!</span>  3d 4h <span class="d">(Wed Oct 14 00:00)</span>  just now</pre>
+<span class="w">PROFILE    LAST ACTIVE  LOGIN ENDS  5-HOUR           RESETS IN                  WEEKLY            RESETS IN                 UPDATED</span>
+default ★  12m ago      27d 3h      <span class="g">████</span><span class="d">░░░░░░</span> 42%   2h 14m <span class="d">(Sat Oct 10 16:00)</span>  <span class="g">██</span><span class="d">░░░░░░░░</span> 18%    3d 4h <span class="d">(Wed Oct 14 00:00)</span>  12m ago
+lab        16d ago      1d 4h       <span class="d">— (no usage cached; run /usage)</span>
+work       just now     unknown     <span class="y">█████████</span><span class="d">░</span> <span class="y">85%!</span>  35m <span class="d">(Sat Oct 10 14:21)</span>     <span class="r">██████████</span> <span class="r">96%!!</span>  3d 4h <span class="d">(Wed Oct 14 00:00)</span>  just now
+  <span class="y">⚠</span> Login for 'lab' expires in 1d 4h (Sun Oct 11 16:00) — run `mcc login lab` to renew it</pre>
       </figure>
     </div>
   </section>

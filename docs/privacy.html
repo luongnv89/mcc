@@ -41,7 +41,7 @@
       <span class="eyebrow">Privacy</span>
       <h1>Privacy policy</h1>
       <p class="lede">mcc runs on your computer. It has no accounts, no telemetry and no analytics, and the project receives no data from you.</p>
-      <p class="meta">Effective October 21, 2026 · Applies to the mcc command-line tool and this website</p>
+      <p class="meta">Effective November 2, 2026 · Applies to the mcc command-line tool and this website</p>
     </div>
   </div>
 
@@ -70,7 +70,7 @@
         <div class="summary-grid">
           <div class="card"><h3>No telemetry</h3><p>mcc does not report usage, crashes or any other data to the project or anyone else.</p></div>
           <div class="card"><h3>Local files only</h3><p>Everything mcc stores stays in your home directory, mostly under <code>~/.mcc</code>.</p></div>
-          <div class="card"><h3>No logins read by default</h3><p>Usage comes from what <code>mcc statusline</code> cached on your machine. Asking Anthropic with each account's login is an opt-in.</p></div>
+          <div class="card"><h3>No tokens read by default</h3><p>Usage comes from what <code>mcc statusline</code> cached on your machine, and login expiry from the date stored next to each login, not the login itself. Asking Anthropic with each account's login is an opt-in.</p></div>
           <div class="card"><h3>No cookies on this site</h3><p>This website sets no cookies and loads no analytics, fonts or scripts from other hosts.</p></div>
         </div>
       </section>
@@ -79,28 +79,29 @@
         <h2>What mcc reads <a class="anchor" href="#reads" aria-label="Link to What mcc reads">#</a></h2>
         <p>To do its job, mcc reads these files and settings on your computer. None of it leaves your machine except as described under <a href="#network">Network requests</a>.</p>
         <ul>
-          <li><strong>Your Claude Code setup</strong>: <code>~/.claude</code>, <code>~/.claude.json</code> and each profile directory, to copy, sync and count settings, skills, agents, plugins, MCP servers and hooks.</li>
+          <li><strong>Your Claude Code setup</strong>: <code>~/.claude</code>, <code>~/.claude.json</code> and each profile directory, to copy, sync and count settings, skills, agents, plugins, MCP servers and hooks, and to show when each profile was last active (from the modification times of its prompt history and transcripts, never their contents).</li>
           <li><strong>Your shell environment</strong>: your OS, terminal, shell, <code>$PATH</code>, and your shell rc files (<code>.zshrc</code>, <code>.bashrc</code>, fish config and similar), to check that a new alias doesn't clash with an existing command and to manage its own alias block.</li>
           <li><strong>Cached usage</strong>: the rate limits <code>mcc statusline</code>, or the last <code>mcc usage --all</code>, saved in <code>~/.mcc/state/&lt;profile&gt;/usage.json</code> (percent used and reset times only), which <code>mcc list</code>, <code>mcc usage</code> and <code>mcc run</code> show by default.</li>
-          <li><strong>Claude Code logins</strong>, only if you turn on the live usage lookup (<code>live = true</code> under <code>[usage]</code> in <code>~/.mcc/config.toml</code>; off by default) or run <code>mcc usage --all</code> (that one run only, with a risk notice each time): each profile's <code>.credentials.json</code>, or on macOS the Keychain item Claude Code created for that profile, under your login name (<code>$USER</code>, or the system's name for your user when <code>USER</code> is unset). The access token is held in memory for the request and then discarded.</li>
+          <li><strong>Login expiry dates</strong>: <code>mcc usage</code> reads one date from each profile's <code>.credentials.json</code>, when its login needs a new sign-in (<code>refreshTokenExpiresAt</code>), and sends nothing. It reads that date from the profile's macOS Keychain item too only with the live usage lookup or <code>mcc usage --all</code>, and with <code>MCC_NO_USAGE=1</code> it reads nothing. <code>mcc login</code> reads the same date from the file and, on macOS, the Keychain item before and after it renews a profile's sign-in, and <code>mcc login --refresh-only</code> also reads when the access token expires (<code>expiresAt</code>). Only these dates are taken: the tokens stored with them are skipped, never kept or sent.</li>
+          <li><strong>Claude Code access tokens</strong>, only if you turn on the live usage lookup (<code>live = true</code> under <code>[usage]</code> in <code>~/.mcc/config.toml</code>; off by default) or run <code>mcc usage --all</code> (that one run only, with a risk notice each time): the access token in each profile's <code>.credentials.json</code>, or on macOS in the Keychain item Claude Code created for that profile, under your login name (<code>$USER</code>, or the system's name for your user when <code>USER</code> is unset). The access token is held in memory for the request and then discarded.</li>
           <li><strong>Account status</strong>: mcc runs <code>claude auth status</code> to show which account each profile is signed in to.</li>
         </ul>
       </section>
 
       <section id="writes">
         <h2>What mcc stores <a class="anchor" href="#writes" aria-label="Link to What mcc stores">#</a></h2>
-        <p>mcc writes only to your home directory (or to <code>MCC_HOME</code> if you set it):</p>
+        <p>mcc writes only to your home directory (or to <code>MCC_HOME</code> if you set it), except that <code>mcc login --refresh-only</code> creates an empty, private folder in the system's temporary directory for its one request and removes it when the request ends:</p>
         <div class="table-wrap"><table>
           <thead><tr><th>Location</th><th>Contents</th></tr></thead>
           <tbody>
             <tr><td><code>~/.mcc/config.toml</code></td><td>Detected environment (OS, shell, rc file, <code>claude</code> path), the list of profiles, the account each mcc profile signed in to as Claude Code reports it (email, account ID, and organization name, ID and type), each profile's label and color, project defaults, your settings, and when one-time notes (such as the live usage lookup disclosure) were shown</td></tr>
             <tr><td><code>~/.mcc/.lock</code></td><td>An empty file that mcc commands lock while they change <code>config.toml</code>, so two runs don't lose each other's changes</td></tr>
-            <tr><td><code>~/.mcc/state/&lt;profile&gt;/</code></td><td>After <code>mcc statusline install</code> or <code>mcc usage --all</code>: the 5-hour and weekly rate limits (percent used and reset time), cached by the status line or saved by the last <code>mcc usage --all</code>, and the <code>statusLine</code> setting the shim replaced (only after <code>mcc statusline install</code>). No login or token</td></tr>
+            <tr><td><code>~/.mcc/state/&lt;profile&gt;/</code></td><td>After <code>mcc statusline install</code> or <code>mcc usage --all</code>: the 5-hour and weekly rate limits (percent used and reset time), cached by the status line or saved by the last <code>mcc usage --all</code>, and the <code>statusLine</code> setting the shim replaced (only after <code>mcc statusline install</code>). With <a href="docs.html#auto-sync">auto sync</a>, on by default: <code>auto-sync.json</code>, when it last checked the profile, when it last copied something and which paths, what it held back, and a hash of what it compared. No login, token or file contents</td></tr>
             <tr><td><code>~/.mcc/profiles/&lt;alias&gt;/</code></td><td>Each profile's Claude Code configuration. Claude Code itself stores that profile's login and history here</td></tr>
             <tr><td><code>&lt;profile&gt;/.mcc-sync.json</code></td><td>The paths and MCP server names mcc last copied into the profile, each with a hash of what it wrote, so <code>mcc sync</code> can tell your edits from the default's changes. No file contents</td></tr>
             <tr><td><code>~/.mcc/shared/projects/</code>, <code>~/.mcc/shared/groups/&lt;name&gt;/projects/</code></td><td>Session transcripts of the profiles you opted in with <code>mcc share</code>, one store per group. They exist only once sharing is turned on</td></tr>
             <tr><td><code>~/.mcc/logs/mcc.log</code></td><td>A log of each command's steps and results, which can include file paths and a profile's account email. It never contains access tokens. At about 1 MB it is moved to <code>mcc.log.1</code>, replacing the previous one, so at most about 2 MB of log is kept</td></tr>
-            <tr><td><code>~/.mcc/backups/</code>, <code>&lt;profile&gt;/.mcc-backup/</code></td><td>Copies of your rc file, of the <code>settings.json</code> files <code>mcc statusline</code> changes, and of the profile files a sync overwrites or removes, taken before mcc changes them; a profile's own copy of what <code>mcc link</code> replaces, its plugins included; and session files that <code>mcc share</code> could not merge</td></tr>
+            <tr><td><code>~/.mcc/backups/</code>, <code>&lt;profile&gt;/.mcc-backup/</code></td><td>Copies of your rc file, of the <code>settings.json</code> files <code>mcc statusline</code> changes, and of the profile files a sync overwrites or removes (auto sync's go in <code>&lt;timestamp&gt;-auto/</code> folders, of which each profile keeps the 10 latest), taken before mcc changes them; a profile's own copy of what <code>mcc link</code> replaces, its plugins included; and session files that <code>mcc share</code> could not merge</td></tr>
             <tr><td><code>~/.local/bin/&lt;alias&gt;</code> and your rc file</td><td>The launcher for each profile and a marked alias block</td></tr>
           </tbody>
         </table></div>
@@ -115,11 +116,11 @@
           <li>that profile's own access token, in the <code>Authorization</code> header</li>
           <li>a <code>User-Agent</code> of <code>mcc/&lt;version&gt;</code></li>
         </ul>
-        <p>Anthropic returns the percent of the 5-hour and weekly limits used and when they reset. A token is never sent to any other host, never sent for another profile, and never sent once it has expired. mcc never refreshes tokens.</p>
+        <p>Anthropic returns the percent of the 5-hour and weekly limits used and when they reset. A token is never sent to any other host, never sent for another profile, and never sent once it has expired. mcc itself never refreshes a token.</p>
         <p>The only exception is the <code>MCC_USAGE_URL</code> override, intended for testing. It accepts only <code>https://</code> URLs or <code>http://</code> on your own machine (loopback); any other value is refused and nothing is sent.</p>
 
         <h3>Claude Code sign-in and sign-out</h3>
-        <p><code>mcc add</code> runs <code>claude auth login</code>, and <code>mcc delete</code> runs <code>claude auth logout</code>. Those are Claude Code's own commands. They talk to Anthropic under Anthropic's terms, and mcc does not see your password or the sign-in exchange.</p>
+        <p><code>mcc add</code> and <code>mcc login</code> run <code>claude auth login</code>, and <code>mcc delete</code> runs <code>claude auth logout</code>. <code>mcc login --refresh-only</code> instead runs one small <code>claude -p</code> request on the haiku model, in an empty folder and without your tools, MCP servers or hooks, so that Claude Code refreshes the profile's access token itself; it spends a little of that account's usage, and runs nothing while the access token is still valid. Those are Claude Code's own commands. They talk to Anthropic under Anthropic's terms, and mcc does not see your password or the sign-in exchange.</p>
 
         <h3>Installing mcc</h3>
         <p>The install script downloads a prebuilt mcc binary and its SHA-256 checksum from mcc's GitHub releases, over HTTPS only. It builds from source instead, as <code>cargo install</code> and <code>brew install</code> do, when a release has no binary for your platform, with <code>MCC_FROM_SOURCE=1</code>, or when run from a clone. Building downloads mcc's source from GitHub and its dependencies from crates.io, and Homebrew also downloads its own Rust to build mcc. Those services see the request like any other download.</p>
@@ -129,7 +130,7 @@
       <section id="third-parties">
         <h2>Third parties <a class="anchor" href="#third-parties" aria-label="Link to Third parties">#</a></h2>
         <ul>
-          <li><strong>Anthropic</strong> receives the usage requests described above, if you turn them on, and handles Claude Code sign-in. See <a href="https://www.anthropic.com/legal/privacy">Anthropic's privacy policy</a>.</li>
+          <li><strong>Anthropic</strong> receives the usage requests described above, if you turn them on, and handles Claude Code sign-in, including the request <code>mcc login --refresh-only</code> has Claude Code make. See <a href="https://www.anthropic.com/legal/privacy">Anthropic's privacy policy</a>.</li>
           <li><strong>GitHub</strong> hosts the source code, the install script, the release binaries and this website. See the <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub General Privacy Statement</a>.</li>
           <li><strong>crates.io</strong> serves Rust dependencies when you build mcc. See the <a href="https://foundation.rust-lang.org/policies/privacy-policy/">Rust Foundation privacy policy</a>.</li>
           <li><strong>Homebrew</strong>, if you install mcc with it, serves the Rust used to build mcc and has its own analytics. See <a href="https://docs.brew.sh/Analytics">Homebrew's analytics page</a>.</li>
@@ -146,7 +147,7 @@
       <section id="control">
         <h2>Your control <a class="anchor" href="#control" aria-label="Link to Your control">#</a></h2>
         <ul>
-          <li><strong>Live usage lookups are off</strong> unless you set <code>live = true</code> under <code>[usage]</code>, or run <code>mcc usage --all</code> for a single lookup; set <code>live</code> back to <code>false</code> (or remove it) to stop them. <code>mcc list --no-usage</code> or <code>MCC_NO_USAGE=1</code> skip usage entirely, cache included.</li>
+          <li><strong>Live usage lookups are off</strong> unless you set <code>live = true</code> under <code>[usage]</code>, or run <code>mcc usage --all</code> for a single lookup; set <code>live</code> back to <code>false</code> (or remove it) to stop them. <code>mcc list --no-usage</code> or <code>MCC_NO_USAGE=1</code> skip usage entirely, cache included; <code>MCC_NO_USAGE=1</code> also stops <code>mcc usage</code> reading login expiry dates.</li>
           <li><strong>Remove a profile</strong> with <code>mcc delete &lt;alias&gt;</code>. It signs the profile out and deletes its directory, launcher and alias block.</li>
           <li><strong>Remove everything</strong> by following <a href="docs.html#uninstall">Uninstall</a>, which ends with <code>rm -rf ~/.mcc</code>.</li>
         </ul>

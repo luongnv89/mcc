@@ -31,8 +31,8 @@
 class Mcc < Formula
   desc "Manage multiple Claude Code profiles (accounts) from one CLI"
   homepage "https://github.com/luongnv89/mcc"
-  url "https://github.com/luongnv89/mcc/archive/refs/tags/v0.5.0.tar.gz"
-  sha256 "833fd6d0ec7a4cec04e069ad7b923eef8e72d5aae3f395d47bfa27a9e89ee433"
+  url "https://github.com/luongnv89/mcc/archive/refs/tags/v0.6.0.tar.gz"
+  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   license "Apache-2.0"
   head "https://github.com/luongnv89/mcc.git", branch: "main"
 

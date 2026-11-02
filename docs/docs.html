@@ -38,7 +38,7 @@
 <main id="main">
   <div class="page-head">
     <div class="wrap">
-      <span class="eyebrow">Documentation · v0.5.0</span>
+      <span class="eyebrow">Documentation · v0.6.0</span>
       <h1>Using mcc</h1>
       <p class="lede">Install mcc, add profiles, keep them in sync and check their limits. Every command and option, with examples.</p>
     </div>
@@ -115,7 +115,7 @@
         <div class="code"><pre><span class="p">$ </span>git clone https://github.com/luongnv89/mcc &amp;&amp; cd mcc &amp;&amp; ./install.sh</pre></div>
         <p class="label">Directly with Cargo</p>
         <div class="code"><pre><span class="p">$ </span>cargo install --git https://github.com/luongnv89/mcc --locked</pre></div>
-        <p>The one-liner downloads the prebuilt binary for your platform (macOS or Linux, x86_64 or arm64) from the latest GitHub release, checks its SHA-256 checksum, and installs it into <code>~/.local/bin</code> (override with <code>MCC_INSTALL_DIR</code>); you don't need Rust. If <code>~/.local/bin</code> is not on your <code>PATH</code> (it isn't by default on macOS), the script tells you; add it with <code>export PATH="$HOME/.local/bin:$PATH"</code> in your shell profile. A checksum mismatch stops the install. <code>MCC_VERSION=v0.5.0</code> picks a release. When a release has no binary for your platform (releases up to v0.3.0 have none), or with <code>MCC_FROM_SOURCE=1</code>, or when run from a clone, the script builds with <code>cargo</code> and installs into <code>~/.cargo/bin</code> (override with <code>CARGO_INSTALL_ROOT</code>). Check it worked:</p>
+        <p>The one-liner downloads the prebuilt binary for your platform (macOS or Linux, x86_64 or arm64) from the latest GitHub release, checks its SHA-256 checksum, and installs it into <code>~/.local/bin</code> (override with <code>MCC_INSTALL_DIR</code>); you don't need Rust. If <code>~/.local/bin</code> is not on your <code>PATH</code> (it isn't by default on macOS), the script tells you; add it with <code>export PATH="$HOME/.local/bin:$PATH"</code> in your shell profile. A checksum mismatch stops the install. <code>MCC_VERSION=v0.6.0</code> picks a release. When a release has no binary for your platform (releases up to v0.3.0 have none), or with <code>MCC_FROM_SOURCE=1</code>, or when run from a clone, the script builds with <code>cargo</code> and installs into <code>~/.cargo/bin</code> (override with <code>CARGO_INSTALL_ROOT</code>). Check it worked:</p>
         <div class="code"><pre><span class="p">$ </span>mcc --version</pre></div>
       </section>
 
@@ -240,7 +240,7 @@ work       Acme     ████░░░░░░ 42% (2h) ██░░░░�
 
         <h3 id="cmd-list"><code>mcc list</code> <a class="anchor" href="#cmd-list" aria-label="Link to mcc list">#</a></h3>
         <p class="synopsis">mcc list [--json | --json-v2 | -l/--long] [--no-usage] [--show-email | --hide-email]   <span style="color:var(--muted)">alias: mcc ls</span></p>
-        <p>One row per profile, the default included, in a table that fits 120 columns: name, account (the profile's label, else its organization, after the email only when emails are shown; a long cell is cut with <code>…</code>), 5-hour and weekly usage (with a bar), last used, and a <code>SYNC</code> column saying how the profile compares with the default (<code>✓</code>, <code>3 behind</code>, <code>2 local edits</code>, <code>1 conflict</code>; <code>sync</code> in <code>--json</code>). When projects have a default profile (<code>mcc project set</code>), a second table lists each project with its profile and account, marking the one that applies in the current directory with <code>← here</code>. <code>--long</code> cards show them in a <code>Default for</code> row, and <code>--json</code> has a <code>project_defaults</code> array per profile. <code>--long</code> cards have everything else: the command, the organization and its ID, the label, skills, agents, commands, plugins (enabled/installed), MCP servers, hooks, size, last sync and how old cached usage is; <code>--json</code> has <code>organization</code>, <code>organization_uuid</code> and <code>label</code> too.</p>
+        <p>One row per profile, the default included, in a table that fits 120 columns: name, account (the profile's label, else its organization, after the email only when emails are shown; a long cell is cut with <code>…</code>), 5-hour and weekly usage (with a bar), last used, and a <code>SYNC</code> column saying how the profile compares with the default (<code>✓</code>, <code>3 behind</code>, <code>2 local edits</code>, <code>1 conflict</code>; <code>sync</code> in <code>--json</code>). When projects have a default profile (<code>mcc project set</code>), a second table lists each project with its profile and account, marking the one that applies in the current directory with <code>← here</code>. <code>--long</code> cards show them in a <code>Default for</code> row, and <code>--json</code> has a <code>project_defaults</code> array per profile. <code>--long</code> cards have everything else: the command, the organization and its ID, the label, skills, agents, commands, plugins (enabled/installed), MCP servers, hooks, size, last sync, how old cached usage is, and whether <a href="#auto-sync">auto sync</a> is on, when it last checked and when and what it last copied; <code>--json</code> has <code>organization</code>, <code>organization_uuid</code>, <code>label</code> and <code>auto_sync</code> too.</p>
         <p>Account emails are hidden by default, as in <code>mcc usage</code>: <code>account</code> is <code>null</code> in <code>--json</code> and <code>--json-v2</code> (so are an <code>organization</code> and <code>label</code> that contain an email, as personal plans' organization names do; no field is left out). <code>--show-email</code> shows them for one run, and <code>show_email = true</code> under <code>[privacy]</code> every time.</p>
         <div class="table-wrap"><table>
           <thead><tr><th>Option</th><th>Effect</th></tr></thead>
@@ -497,6 +497,7 @@ show_email = true              <span class="cm"># show account emails in `mcc li
 
 [usage]
 <span class="cm"># live = true                  # look usage up live with each profile's login (default: off)</span>
+<span class="cm"># login_warn_days = 2          # warn when a login ends within this many days (1–14, default: 2)</span>
 
 [profiles.work]
 share_sessions = true          <span class="cm"># default: false; set it with `mcc share work`</span>
