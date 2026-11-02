@@ -43,6 +43,8 @@ fn every_subcommand_has_help() {
         "sync",
         "diff",
         "usage",
+        "login",
+        "renew",
         "rename",
         "mv",
         "share",

@@ -11,6 +11,7 @@ pub mod init;
 pub mod launch_sync;
 pub mod link;
 pub mod list;
+pub mod login;
 pub mod project;
 pub mod refresh_launchers;
 pub mod rename;

@@ -217,6 +217,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Add(args) => commands::add::run(&paths, &mut cfg, &args),
         Command::List(args) => commands::list::run(&paths, &cfg, &args),
         Command::Usage(args) => commands::usage::run(&paths, &cfg, &args),
+        Command::Login(args) => commands::login::run(&paths, &cfg, &args),
         Command::Delete(args) => commands::delete::run(&paths, &mut cfg, &args),
         Command::Sync(args) => commands::sync::run(&paths, &mut cfg, &args),
         Command::Diff(args) => commands::diff::run(&paths, &cfg, &args),
@@ -248,6 +249,8 @@ fn needs_live_disclosure(command: &Command, cfg: &config::Config) -> bool {
         Command::List(args) => !args.no_usage,
         Command::Usage(_) => true,
         Command::Run(args) => args.profile.is_none(),
+        // Reads the login's timestamps, never usage.
+        Command::Login(_) => false,
         _ => false,
     };
     reads_usage
@@ -284,6 +287,10 @@ fn writes_config(command: &Command) -> bool {
         | Command::Completions(_) => false,
         // Read-only, and never locked: it reports, it doesn't fix.
         Command::Doctor(_) => false,
+        // Claude Code writes the new login; mcc writes nothing, and holding
+        // the lock while the browser sign-in is open would block every
+        // other mcc command.
+        Command::Login(_) => false,
         // Runs on every launch: reads the config, never writes it.
         Command::LaunchBanner(_) => false,
         // Runs on every launch, and never waits: it only tries the lock,

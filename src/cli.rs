@@ -63,6 +63,7 @@ Examples:
   mcc list --json | jq '.[].name'
   mcc usage                      5-hour and weekly usage of every profile, in detail
   mcc usage work --json          The same for `work`, as JSON
+  mcc login work                 Sign `work` in again before its login runs out
   mcc sync work --dry-run        Preview copying the default's setup into `work`
   mcc sync --all                 Bring every profile up to date with the default
   mcc diff work                  Show how `work` differs from the default
@@ -154,6 +155,14 @@ pub enum Command {
         "cached shows \"—\" (run /usage in Claude Code), and one whose usage can't\n",
         "be read shows \"unavailable\" and why. MCC_NO_USAGE=1 skips usage entirely.\n",
         "\n",
+        "LAST ACTIVE is when the profile was last used (its prompt history or\n",
+        "transcripts) and LOGIN ENDS the time left before its login needs a new\n",
+        "sign-in (about 30 days after the last one); \"unknown\" when mcc can't\n",
+        "tell. Each login ending within [usage] login_warn_days (2 by default) gets\n",
+        "a warning on stderr naming the profile; `mcc login PROFILE` renews it.\n",
+        "Only the login deadline is read from .credentials.json, never a token;\n",
+        "the macOS Keychain only with `[usage] live` or --all.\n",
+        "\n",
         "Account emails are hidden by default (also `null` in --json). To always\n",
         "show them, or to look usage up live with each profile's login (off by\n",
         "default; a one-time note explains what it sends), set in ~/.mcc/config.toml:\n",
@@ -179,6 +188,43 @@ pub enum Command {
         usage_all_note!()
     ))]
     Usage(UsageArgs),
+
+    /// Renew a profile's Claude Code sign-in before its login runs out
+    #[command(
+        visible_alias = "renew",
+        after_help = concat!(
+            "Examples:\n",
+            "  mcc login work                Sign `work` in again in the browser, in place\n",
+            "  mcc login default             The same for the default profile (~/.claude)\n",
+            "  mcc renew work                The same as `mcc login work`\n",
+            "  mcc login work --refresh-only Ask Claude Code to refresh the access token (no browser)\n",
+            "\n",
+            "A Claude Code login lasts about 30 days from its last sign-in; using the\n",
+            "account does not extend it. `mcc usage` shows when each profile's login\n",
+            "runs out (LOGIN ENDS) and warns [usage] login_warn_days (2 by default)\n",
+            "before. `mcc login PROFILE` runs `claude auth login` for that profile,\n",
+            "attached to the terminal: sign in with the same account. Nothing is logged\n",
+            "out, reset or written to ~/.mcc/config.toml.\n",
+            "\n",
+            "It succeeds only when the login's deadline (refreshTokenExpiresAt, read\n",
+            "from the profile's .credentials.json and the macOS Keychain; timestamps\n",
+            "only, never a token) moved later and out of the warning window. When\n",
+            "Claude Code records no deadline before or after, it says the sign-in\n",
+            "worked but the expiry is unknown; a deadline known before but unreadable\n",
+            "after is a failure. Signing in to another account or organization than\n",
+            "before is reported as a failure, as is a profile that shares sessions\n",
+            "(`mcc share`) ending up across organizations from its group.\n",
+            "\n",
+            "--refresh-only skips the browser: it runs one tiny `claude -p` request as\n",
+            "the profile (haiku, no tools, hooks, MCP servers or saved session, in an\n",
+            "empty directory) so Claude Code refreshes the access token itself; mcc\n",
+            "never sends or refreshes a token. It spends a little quota, does nothing\n",
+            "while the access token is still valid (it lasts about 8 hours), and\n",
+            "usually does not move the login deadline, since a refresh keeps it: then\n",
+            "it says so and fails, and `mcc login PROFILE` is the way to renew."
+        )
+    )]
+    Login(LoginArgs),
 
     /// Delete a profile: log out, remove its directory, command and shell alias
     #[command(
@@ -435,6 +481,8 @@ pub enum Command {
         "  sync.extra             extra paths to sync, relative to the config dir\n",
         "  privacy.show_email     true or false (account emails in list and usage)\n",
         "  usage.live             true or false\n",
+        "  usage.login_warn_days  days before a login runs out that `mcc usage`\n",
+        "                         warns, 1–14 (\"\" for the default, 2)\n",
         "  launch.banner          true or false (a one-line banner on stderr when a\n",
         "                         profile starts; then run `mcc refresh-launchers`)\n",
         "  sync.auto              true or false (catch profiles up with the default\n",
@@ -592,6 +640,16 @@ pub struct UsageArgs {
     /// Hide account emails (the default)
     #[arg(long)]
     pub hide_email: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct LoginArgs {
+    /// Profile whose login to renew (`default` or `claude` for ~/.claude)
+    pub profile: String,
+
+    /// Ask Claude Code to refresh the access token instead of signing in (no browser; usually leaves the login deadline as it is)
+    #[arg(long)]
+    pub refresh_only: bool,
 }
 
 #[derive(Debug, Args)]

@@ -52,7 +52,12 @@
           <h2>Unreleased</h2>
           <span class="pill pill-muted">main</span>
         </div>
-        <p style="margin:0">Nothing yet beyond 0.5.0. Follow <a href="https://github.com/luongnv89/mcc/commits/main">commits on <code>main</code></a> for work in progress.</p>
+        <p>Follow <a href="https://github.com/luongnv89/mcc/commits/main">commits on <code>main</code></a> for work in progress.</p>
+
+        <h3>Added</h3>
+        <ul>
+          <li>Login expiry: <code>mcc usage</code> shows each profile's <code>LAST ACTIVE</code> (its newest prompt history or transcript; never <code>.claude.json</code> or the credentials, and for a session-sharing profile only its own history) and <code>LOGIN ENDS</code> (when its login needs a new sign-in, from Claude Code's <code>refreshTokenExpiresAt</code>), <code>unknown</code> when unknown, and warns on stderr for each profile whose login ends within <code>[usage] login_warn_days</code> (2 days by default, 1–14, <code>mcc config set usage.login_warn_days</code>), naming it and how to renew it. Plain <code>mcc usage</code> reads only the login deadline (<code>refreshTokenExpiresAt</code>) from <code>.credentials.json</code>, never a token nor the access token's <code>expiresAt</code> (<code>mcc login --refresh-only</code> additionally reads that), and nothing goes over the network; the macOS Keychain is read for them only with <code>[usage] live = true</code> or <code>mcc usage --all</code>, and <code>MCC_NO_USAGE</code> reads nothing. <code>--json</code> and <code>--json-v2</code> add <code>last_activity</code>, <code>login_expires_at</code>, <code>login_expires_source</code> and <code>login_warning</code>. New <code>mcc login PROFILE</code> (alias <code>mcc renew</code>) signs the profile in again in place with <code>claude auth login</code> and succeeds only when the login deadline moved later and out of the warning window; signing in to another account or organization, or a session-sharing profile ending up across organizations, is reported as a failure. <code>--refresh-only</code> asks Claude Code to refresh the access token with one tiny isolated request instead (no browser), which usually leaves the deadline as it is and then says so. <span class="ref"><a href="https://github.com/luongnv89/mcc/issues/100">#100</a></span></li>
+        </ul>
       </article>
 
       <article class="release" id="v0.5.0">
