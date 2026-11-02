@@ -20,35 +20,57 @@ use crate::usage::{self, DeadlineSource, LoginDeadline, Reason, Status, Usage, W
 /// usage up live (even with `--quiet`; never with `MCC_NO_USAGE`).
 pub const USAGE_ALL_NOTE: &str = crate::cli::usage_all_note!();
 
-/// How the table is laid out: the bar width of the usage cells (0 = no bar)
-/// and whether the absolute reset time follows the relative one.
+/// How the table is laid out: the bar width of the usage cells (0 = no bar),
+/// whether the absolute reset time follows the relative one, and whether
+/// the UPDATED column (the age of cached usage) is shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Layout {
     bar: usize,
     reset_time: bool,
+    updated: bool,
 }
 
 /// Layouts tried, most generous first: the absolute reset time goes first,
 /// then the bar shrinks in the same 10/5/0 steps as the `mcc list` table
-/// (narrow terminals).
-const LAYOUTS: [Layout; 4] = [
+/// (narrow terminals). Cached usage's UPDATED column goes before the 5-cell
+/// bar does, so the table (LAST ACTIVE and LOGIN ENDS included) still fits
+/// 80 columns with a bar.
+const LAYOUTS: [Layout; 6] = [
     Layout {
         bar: 10,
         reset_time: true,
+        updated: true,
     },
     Layout {
         bar: 10,
         reset_time: false,
+        updated: true,
     },
     Layout {
         bar: 5,
         reset_time: false,
+        updated: true,
+    },
+    Layout {
+        bar: 5,
+        reset_time: false,
+        updated: false,
     },
     Layout {
         bar: 0,
         reset_time: false,
+        updated: true,
+    },
+    Layout {
+        bar: 0,
+        reset_time: false,
+        updated: false,
     },
 ];
+
+/// In the table's place for usage when nothing is cached: short enough for
+/// the row to fit 80 columns. The hint on stderr says more.
+const NO_DATA_CELL: &str = "— (no usage cached; run /usage)";
 
 /// One profile's usage, as printed and as serialized by `--json`. The fields
 /// after `usage` were added in #100 (schema 1 only gains fields).
@@ -257,14 +279,15 @@ fn login_cell(e: &Entry, now: DateTime<Utc>) -> String {
 /// ```text
 /// PROFILE    LAST ACTIVE  LOGIN ENDS  5-HOUR          RESETS IN                  WEEKLY          RESETS IN                 UPDATED
 /// default ★  2h ago       27d 3h      ████░░░░░░ 42%  2h 14m (Sat Oct 10 16:00)  ██░░░░░░░░ 18%  3d 4h (Wed Oct 14 00:00)  12m ago
-/// lab        unknown      unknown     — (no recent usage cached; run /usage in Claude Code)
+/// lab        unknown      unknown     — (no usage cached; run /usage)
 /// ```
 ///
 /// An ACCOUNT column follows PROFILE when `show_email` is set. LAST ACTIVE
 /// and LOGIN ENDS lead the usage, so a profile without usage (an idle
 /// one, typically) shows them too. UPDATED, the age of usage read from the
-/// statusline cache, is there only for cached usage. A profile without usage
-/// has its reason in place of the usage columns.
+/// statusline cache, is there only for cached usage, and only when `layout`
+/// keeps it. A profile without usage has its reason in place of the usage
+/// columns.
 fn render(entries: &[Entry], layout: Layout, show_email: bool, now: DateTime<Utc>) -> Vec<String> {
     let mut headers = vec!["PROFILE"];
     if show_email {
@@ -272,7 +295,7 @@ fn render(entries: &[Entry], layout: Layout, show_email: bool, now: DateTime<Utc
     }
     headers.extend(["LAST ACTIVE", "LOGIN ENDS"]);
     headers.extend(["5-HOUR", "RESETS IN", "WEEKLY", "RESETS IN"]);
-    let cached = entries.iter().any(|e| e.usage.updated_at.is_some());
+    let cached = layout.updated && entries.iter().any(|e| e.usage.updated_at.is_some());
     if cached {
         headers.push("UPDATED");
     }
@@ -301,7 +324,8 @@ fn render(entries: &[Entry], layout: Layout, show_email: bool, now: DateTime<Utc
                         cells.push(u.age(now).unwrap_or_default());
                     }
                 }
-                (_, Some(r @ (Reason::Disabled | Reason::NoData))) => {
+                (_, Some(Reason::NoData)) => cells.push(NO_DATA_CELL.into()),
+                (_, Some(r @ Reason::Disabled)) => {
                     cells.push(format!("— ({})", r.describe()));
                 }
                 (_, reason) => cells.push(format!(
@@ -399,7 +423,7 @@ mod tests {
             ("██░░░ 42%".into(), "2h 14m".into())
         );
         assert_eq!(
-            cells(Some(&w(85.0, Some(reset))), LAYOUTS[3]),
+            cells(Some(&w(85.0, Some(reset))), LAYOUTS[4]),
             ("85%!".into(), "2h 14m".into())
         );
         assert_eq!(cells(None, LAYOUTS[0]), ("—".into(), String::new()));
@@ -506,7 +530,7 @@ mod tests {
             .collect();
         assert_eq!(
             lines[1],
-            "idle     unknown      unknown     — (no recent usage cached; run /usage in Claude Code)"
+            "idle     unknown      unknown     — (no usage cached; run /usage)"
         );
     }
 

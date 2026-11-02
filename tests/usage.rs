@@ -504,7 +504,7 @@ fn usage_reads_the_statusline_cache_by_default() {
     );
     // No cached data: a dash, and a hint to use /usage.
     assert_match(
-        r"(?m)^lab        unknown      unknown     — \(no recent usage cached; run /usage in Claude Code\)$",
+        r"(?m)^lab        unknown      unknown     — \(no usage cached; run /usage\)$",
         &out,
     );
     assert!(err.contains("no recent usage cached for `lab`"), "{err}");
@@ -522,6 +522,49 @@ fn usage_reads_the_statusline_cache_by_default() {
     assert_eq!(lab["status"], "unavailable");
     assert_eq!(lab["reason"], "no_data");
     assert_eq!(lab["source"], "cache");
+}
+
+#[test]
+fn cached_usage_fits_80_columns() {
+    // The cached table (UPDATED column, a profile with nothing cached) keeps
+    // to 80 columns: UPDATED goes before the 5-cell bar, and LAST ACTIVE and
+    // LOGIN ENDS stay (#100).
+    let sb = cache_sandbox();
+    let stub = usage_stub();
+    for cols in ["80", "76"] {
+        let out = stdout_of(
+            sb.mcc()
+                .env("MCC_USAGE_URL", &stub.url)
+                .env("COLUMNS", cols)
+                .arg("usage"),
+        );
+        let header = out.lines().next().unwrap_or_default();
+        assert!(
+            header.contains("LAST ACTIVE") && header.contains("LOGIN ENDS"),
+            "{out}"
+        );
+        for line in out.lines() {
+            assert!(
+                console::measure_text_width(line) <= cols.parse().unwrap(),
+                "{cols} columns: {line}"
+            );
+        }
+        assert_match(
+            r"(?m)^lab        unknown      unknown     — \(no usage cached; run /usage\)$",
+            &out,
+        );
+    }
+    let out = stdout_of(
+        sb.mcc()
+            .env("MCC_USAGE_URL", &stub.url)
+            .env("COLUMNS", "80")
+            .arg("usage"),
+    );
+    assert_match(
+        r"(?m)^default ★  just now     unknown     ██░░░ 42%  2h 14m     █░░░░ 18%  3d 4h$",
+        &out,
+    );
+    assert!(!out.contains("UPDATED"), "{out}");
 }
 
 #[test]
@@ -544,7 +587,7 @@ fn cached_usage_past_its_reset_is_obsolete() {
     assert_eq!(by_name(&arr, "work")["usage"]["reason"], "no_data");
     let out = stdout_of(sb.mcc().arg("usage"));
     assert_match(
-        r"(?m)^work       unknown      unknown     — \(no recent usage cached; run /usage in Claude Code\)$",
+        r"(?m)^work       unknown      unknown     — \(no usage cached; run /usage\)$",
         &out,
     );
 }
