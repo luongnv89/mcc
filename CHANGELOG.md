@@ -4,6 +4,10 @@ All notable changes to mcc are recorded here. The format follows [Keep a Changel
 
 ## [Unreleased]
 
+### Added
+
+- A Herdr plugin, `herdr-plugin/` (`mcc-usage`), that shows every account's 5-hour and weekly usage in a pane at the bottom-left of a [Herdr](https://herdr.dev) tab, under the sidebar's agent list. Each row has a bar, the percent used and the time until reset, with the same `!`/`!!` marks as `mcc usage`, and a ⚠ with the `mcc login` command for an account whose login has expired or ends soon. A refresh button runs `mcc usage --all` to look every account up live, only when you click it. Between refreshes the panel rereads mcc's cache every 30 seconds. The pane collapses to give its rows back to the panes above it, and grows to fit its rows when expanded. Its `bind-key` action binds `prefix+u`, or the first free key, in Herdr's config. Install it with `herdr plugin link herdr-plugin`; see `herdr-plugin/README.md`.
+
 ## [0.6.0] - 2026-11-02
 
 Profiles now catch up with the default profile as they start: auto sync, on by default, does the safe part of `mcc sync` when a profile starts from its launcher or with `mcc run`, copying only what the default added or updated, after a backup and keeping the profile's own edits (run `mcc refresh-launchers` once so existing launchers catch up). `mcc usage` now shows when each profile was last active and when its login ends, warning when one ends within 2 days by default, and the new `mcc login PROFILE` renews a login in place.
