@@ -4,6 +4,10 @@ All notable changes to mcc are recorded here. The format follows [Keep a Changel
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-03
+
+This release makes no change to the `mcc` binary apart from its version number. The README and changelog now point to [mcc-herdr-plugin](https://github.com/luongnv89/mcc-herdr-plugin), a separate [Herdr](https://herdr.dev) plugin that reads `mcc usage --json-v2` to show every account's 5-hour and weekly usage in a pane under Herdr's agent list.
+
 ### Added
 
 - [mcc-herdr-plugin](https://github.com/luongnv89/mcc-herdr-plugin), a [Herdr](https://herdr.dev) plugin that shows every account's 5-hour and weekly usage in a pane at the bottom-left of a Herdr tab, under the sidebar's agent list. It reads `mcc usage --json-v2`, with the same `!`/`!!` marks as `mcc usage` and a ⚠ with the `mcc login` command for an account whose login has expired or ends soon. A refresh button runs `mcc usage --all` to look every account up live, only when you click it. The pane collapses to give its rows back to the panes above it. Install it with `herdr plugin install luongnv89/mcc-herdr-plugin`, then bind a key with `herdr plugin action invoke mcc-herdr-plugin.bind-key`.
@@ -140,7 +144,8 @@ The first version of mcc.
 - Access tokens are kept in memory only, sent only to the usage endpoint for their own profile, and never printed, logged or written to disk. Expired tokens are never sent. ([#15](https://github.com/luongnv89/mcc/pull/15))
 - GitHub private vulnerability reporting is enabled, and `contact@luongnv.com` is listed as the security contact. ([#21](https://github.com/luongnv89/mcc/pull/21))
 
-[Unreleased]: https://github.com/luongnv89/mcc/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/luongnv89/mcc/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/luongnv89/mcc/releases/tag/v0.6.1
 [0.6.0]: https://github.com/luongnv89/mcc/releases/tag/v0.6.0
 [0.5.0]: https://github.com/luongnv89/mcc/releases/tag/v0.5.0
 [0.4.0]: https://github.com/luongnv89/mcc/releases/tag/v0.4.0

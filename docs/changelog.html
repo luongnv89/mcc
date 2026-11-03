@@ -52,7 +52,20 @@
           <h2>Unreleased</h2>
           <span class="pill pill-muted">main</span>
         </div>
-        <p style="margin:0">Nothing yet beyond 0.6.0. Follow <a href="https://github.com/luongnv89/mcc/commits/main">commits on <code>main</code></a> for work in progress.</p>
+        <p style="margin:0">Nothing yet beyond 0.6.1. Follow <a href="https://github.com/luongnv89/mcc/commits/main">commits on <code>main</code></a> for work in progress.</p>
+      </article>
+
+      <article class="release" id="v0.6.1">
+        <div class="release-head">
+          <h2>0.6.1</h2>
+          <span class="pill pill-muted">2026-11-03</span>
+        </div>
+        <p>This release makes no change to the <code>mcc</code> binary apart from its version number. The README and changelog now point to <a href="https://github.com/luongnv89/mcc-herdr-plugin">mcc-herdr-plugin</a>, a separate <a href="https://herdr.dev">Herdr</a> plugin that reads <code>mcc usage --json-v2</code> to show every account's 5-hour and weekly usage in a pane under Herdr's agent list. <a href="https://github.com/luongnv89/mcc/releases/tag/v0.6.1">Release v0.6.1</a>.</p>
+
+        <h3>Added</h3>
+        <ul>
+          <li><a href="https://github.com/luongnv89/mcc-herdr-plugin">mcc-herdr-plugin</a>, a <a href="https://herdr.dev">Herdr</a> plugin that shows every account's 5-hour and weekly usage in a pane at the bottom-left of a Herdr tab, under the sidebar's agent list. It reads <code>mcc usage --json-v2</code>, with the same <code>!</code>/<code>!!</code> marks as <code>mcc usage</code> and a ⚠ with the <code>mcc login</code> command for an account whose login has expired or ends soon. A refresh button runs <code>mcc usage --all</code> to look every account up live, only when you click it. The pane collapses to give its rows back to the panes above it. Install it with <code>herdr plugin install luongnv89/mcc-herdr-plugin</code>, then bind a key with <code>herdr plugin action invoke mcc-herdr-plugin.bind-key</code>.</li>
+        </ul>
       </article>
 
       <article class="release" id="v0.6.0">

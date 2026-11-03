@@ -23,7 +23,7 @@
     "description": "Manage multiple Claude Code profiles (accounts) from one CLI.",
     "applicationCategory": "DeveloperApplication",
     "operatingSystem": "macOS, Linux",
-    "softwareVersion": "0.6.0",
+    "softwareVersion": "0.6.1",
     "license": "https://www.apache.org/licenses/LICENSE-2.0",
     "codeRepository": "https://github.com/luongnv89/mcc",
     "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
@@ -56,7 +56,7 @@
   <section class="hero">
     <div class="wrap hero-grid">
       <div>
-        <p class="hero-release"><a class="pill pill-link" href="changelog.html#v0.6.0"><span class="pill-tag">v0.6.0</span> What's new: auto sync and login expiry<span aria-hidden="true">→</span></a></p>
+        <p class="hero-release"><a class="pill pill-link" href="changelog.html#v0.6.1"><span class="pill-tag">v0.6.1</span> What's new: usage in Herdr<span aria-hidden="true">→</span></a></p>
         <span class="eyebrow">Open-source CLI · macOS &amp; Linux</span>
         <h1>Run every Claude Code account <span class="hl">side by side.</span></h1>
         <p class="lede">mcc gives each account its own login, its own command, and a copy of your main setup. Type <code>work</code> for one account and <code>claude</code> for the other. No logging out in between.</p>
@@ -166,7 +166,7 @@ work       12%     4h 10m     30%     5d 2h      48m ago
         <article class="card feature">
           <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M22 20H2"/></svg></div>
           <h3>Every limit on one screen</h3>
-          <p><code>mcc usage</code> shows each account's 5-hour and weekly usage and when it resets. Anything at 80% gets a <code>!</code>, at 95% a <code>!!</code>, so it reads the same without colour. <code>mcc usage --all</code> looks every account up live for one run, with a risk notice each time, and caches what it finds. It also shows when each login ends and, by default, warns two days ahead; <code>mcc login work</code> renews it in place.</p>
+          <p><code>mcc usage</code> shows each account's 5-hour and weekly usage and when it resets. Anything at 80% gets a <code>!</code>, at 95% a <code>!!</code>, so it reads the same without colour. <code>mcc usage --all</code> looks every account up live for one run, with a risk notice each time, and caches what it finds. It also shows when each login ends and, by default, warns two days ahead; <code>mcc login work</code> renews it in place. In <a href="https://herdr.dev">Herdr</a>, the separate <a href="https://github.com/luongnv89/mcc-herdr-plugin">mcc-herdr-plugin</a> shows the same numbers in a pane under the agent list.</p>
         </article>
         <article class="card feature">
           <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 00-15-6.7L3 13"/></svg></div>

@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-mcc is pre-1.0 (currently 0.6.0). Security fixes are made on `main` and shipped in the next release; only the latest release and `main` are supported.
+mcc is pre-1.0 (currently 0.6.1). Security fixes are made on `main` and shipped in the next release; only the latest release and `main` are supported.
 
 | Version | Supported |
 |---|---|

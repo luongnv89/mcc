@@ -38,7 +38,7 @@
 <main id="main">
   <div class="page-head">
     <div class="wrap">
-      <span class="eyebrow">Documentation · v0.6.0</span>
+      <span class="eyebrow">Documentation · v0.6.1</span>
       <h1>Using mcc</h1>
       <p class="lede">Install mcc, add profiles, keep them in sync and check their limits. Every command and option, with examples.</p>
     </div>
@@ -115,7 +115,7 @@
         <div class="code"><pre><span class="p">$ </span>git clone https://github.com/luongnv89/mcc &amp;&amp; cd mcc &amp;&amp; ./install.sh</pre></div>
         <p class="label">Directly with Cargo</p>
         <div class="code"><pre><span class="p">$ </span>cargo install --git https://github.com/luongnv89/mcc --locked</pre></div>
-        <p>The one-liner downloads the prebuilt binary for your platform (macOS or Linux, x86_64 or arm64) from the latest GitHub release, checks its SHA-256 checksum, and installs it into <code>~/.local/bin</code> (override with <code>MCC_INSTALL_DIR</code>); you don't need Rust. If <code>~/.local/bin</code> is not on your <code>PATH</code> (it isn't by default on macOS), the script tells you; add it with <code>export PATH="$HOME/.local/bin:$PATH"</code> in your shell profile. A checksum mismatch stops the install. <code>MCC_VERSION=v0.6.0</code> picks a release. When a release has no binary for your platform (releases up to v0.3.0 have none), or with <code>MCC_FROM_SOURCE=1</code>, or when run from a clone, the script builds with <code>cargo</code> and installs into <code>~/.cargo/bin</code> (override with <code>CARGO_INSTALL_ROOT</code>). Check it worked:</p>
+        <p>The one-liner downloads the prebuilt binary for your platform (macOS or Linux, x86_64 or arm64) from the latest GitHub release, checks its SHA-256 checksum, and installs it into <code>~/.local/bin</code> (override with <code>MCC_INSTALL_DIR</code>); you don't need Rust. If <code>~/.local/bin</code> is not on your <code>PATH</code> (it isn't by default on macOS), the script tells you; add it with <code>export PATH="$HOME/.local/bin:$PATH"</code> in your shell profile. A checksum mismatch stops the install. <code>MCC_VERSION=v0.6.1</code> picks a release. When a release has no binary for your platform (releases up to v0.3.0 have none), or with <code>MCC_FROM_SOURCE=1</code>, or when run from a clone, the script builds with <code>cargo</code> and installs into <code>~/.cargo/bin</code> (override with <code>CARGO_INSTALL_ROOT</code>). Check it worked:</p>
         <div class="code"><pre><span class="p">$ </span>mcc --version</pre></div>
       </section>
 
@@ -273,7 +273,7 @@ lab        —         <span class="d">—                      —</span>      
             <tr><td><code>PROFILE</code></td><td>Only this profile (<code>default</code> or <code>claude</code> for the default)</td></tr>
             <tr><td><code>--all</code></td><td>Look every account's usage up live for this run, the default included, with each profile's login instead of the statusline cache, save what it finds to that cache, and print a risk notice on stderr each time (see <a href="#usage-limits">Usage limits</a>). Can't be combined with <code>PROFILE</code>; <code>MCC_NO_USAGE=1</code> still skips usage</td></tr>
             <tr><td><code>--json</code></td><td>Print one JSON object per profile with <code>name</code>, <code>command</code>, <code>is_default</code>, <code>account</code>, <code>usage</code>, <code>last_activity</code>, <code>login_expires_at</code>, <code>login_expires_source</code> and <code>login_warning</code> (<code>account</code> is <code>null</code> while emails are hidden)</td></tr>
-            <tr><td><code>--json-v2</code></td><td>Print versioned JSON: <code>{"schema": 2, "profiles": [...]}</code>, the same objects as <code>--json</code></td></tr>
+            <tr><td><code>--json-v2</code></td><td>Print versioned JSON: <code>{"schema": 2, "profiles": [...]}</code>, the same objects as <code>--json</code>; <a href="https://github.com/luongnv89/mcc-herdr-plugin">mcc-herdr-plugin</a> reads it to show every account's usage in a <a href="https://herdr.dev">Herdr</a> pane</td></tr>
             <tr><td><code>--show-email</code></td><td>Show account emails for this run</td></tr>
             <tr><td><code>--hide-email</code></td><td>Hide account emails for this run, even with <code>show_email = true</code> in the config</td></tr>
           </tbody>
