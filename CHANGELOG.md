@@ -6,7 +6,7 @@ All notable changes to mcc are recorded here. The format follows [Keep a Changel
 
 ### Added
 
-- A Herdr plugin, `herdr-plugin/` (`mcc-usage`), that shows every account's 5-hour and weekly usage in a pane at the bottom-left of a [Herdr](https://herdr.dev) tab, under the sidebar's agent list. Each row has a bar, the percent used and the time until reset, with the same `!`/`!!` marks as `mcc usage`, and a ⚠ with the `mcc login` command for an account whose login has expired or ends soon. A refresh button runs `mcc usage --all` to look every account up live, only when you click it. Between refreshes the panel rereads mcc's cache every 30 seconds. The pane collapses to give its rows back to the panes above it, and grows to fit its rows when expanded. Its `bind-key` action binds `prefix+u`, or the first free key, in Herdr's config. Install it with `herdr plugin link herdr-plugin`; see `herdr-plugin/README.md`.
+- [mcc-herdr-plugin](https://github.com/luongnv89/mcc-herdr-plugin), a [Herdr](https://herdr.dev) plugin that shows every account's 5-hour and weekly usage in a pane at the bottom-left of a Herdr tab, under the sidebar's agent list. It reads `mcc usage --json-v2`, with the same `!`/`!!` marks as `mcc usage` and a ⚠ with the `mcc login` command for an account whose login has expired or ends soon. A refresh button runs `mcc usage --all` to look every account up live, only when you click it. The pane collapses to give its rows back to the panes above it. Install it with `herdr plugin install luongnv89/mcc-herdr-plugin`, then bind a key with `herdr plugin action invoke mcc-herdr-plugin.bind-key`.
 
 ## [0.6.0] - 2026-11-02
 
