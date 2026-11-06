@@ -63,6 +63,7 @@
               <li><a href="#cmd-sync">sync</a></li>
               <li><a href="#cmd-diff">diff</a></li>
               <li><a href="#cmd-rename">rename</a></li>
+              <li><a href="#cmd-default">default</a></li>
               <li><a href="#cmd-share">share</a></li>
               <li><a href="#cmd-link">link</a></li>
               <li><a href="#cmd-project">project</a></li>
@@ -129,6 +130,7 @@
 <span class="p">$ </span>mcc usage                   <span class="cm"># how much of each account's limits is used</span>
 <span class="p">$ </span>mcc sync work               <span class="cm"># later: pull the default's new skills and settings, keeping your edits</span>
 <span class="p">$ </span>mcc rename work job         <span class="cm"># rename the profile: its command becomes `job`</span>
+<span class="p">$ </span>mcc default job             <span class="cm"># plain `claude` (new shells) and `mcc run` now start `job`</span>
 <span class="p">$ </span>mcc delete job              <span class="cm"># remove it completely</span></pre></div>
         <p>After <code>mcc add</code> finishes, the new command works in any shell straight away, because the launcher is written to <code>~/.local/bin</code>. The shell alias takes effect in new terminals.</p>
       </section>
@@ -163,6 +165,7 @@
             <tr><td><a href="#cmd-sync"><code>mcc sync [ALIAS]</code></a></td><td>Copy the default's setup into a profile</td><td><code>--all</code>, <code>--dry-run</code>, <code>--prune</code>, <code>--force</code>, <code>--only</code>, <code>-y</code></td></tr>
             <tr><td><a href="#cmd-diff"><code>mcc diff ALIAS</code></a></td><td>Show how a profile differs from the default's setup</td><td><code>--only</code></td></tr>
             <tr><td><a href="#cmd-rename"><code>mcc rename ALIAS NEW</code></a> (<code>mv</code>)</td><td>Rename a profile and its command</td><td></td></tr>
+            <tr><td><a href="#cmd-default"><code>mcc default [PROFILE]</code></a></td><td>Show the default profile, or make PROFILE the one plain <code>claude</code> and <code>mcc run</code> start; no data moves</td><td></td></tr>
             <tr><td><a href="#cmd-share"><code>mcc share ALIAS</code></a></td><td>Share the profile's sessions with the other sharing profiles of its group (off by default)</td><td><code>--off</code>, <code>--group NAME</code>, <code>--allow-cross-org</code></td></tr>
             <tr><td><a href="#cmd-link"><code>mcc link ALIAS [ITEMS]</code></a></td><td>Link read-mostly items to the default's copy instead of copying them; edits write through to the default (off by default)</td><td><code>--off</code></td></tr>
             <tr><td><a href="#cmd-project"><code>mcc project set PROFILE</code></a></td><td>Make PROFILE the one <code>mcc run</code> starts in this project; also <code>unset</code> and <code>list</code></td><td><code>--path</code>, <code>--allow</code>, <code>list --json</code></td></tr>
@@ -336,6 +339,19 @@ lab        —         <span class="d">—                      —</span>      
         <p>If a step before the last fails, the new launcher and alias are removed again. The profile's directory stays where it is (<code>~/.mcc/profiles/&lt;old&gt;</code>): Claude Code ties a profile's macOS Keychain login to its directory path, and cloned settings refer to it, so moving it would log the profile out. The default profile can't be renamed; its command is always <code>claude</code>.</p>
         <div class="code"><pre><span class="p">$ </span>mcc rename work job             <span class="cm"># start it with `job` from now on</span></pre></div>
 
+        <h3 id="cmd-default"><code>mcc default</code> <a class="anchor" href="#cmd-default" aria-label="Link to mcc default">#</a></h3>
+        <p class="synopsis">mcc default [PROFILE]</p>
+        <p>Makes another profile the default without moving any data. <code>default</code> or <code>claude</code> goes back to <code>~/.claude</code>. Without PROFILE it prints the current default (<code>default</code> for <code>~/.claude</code>) on stdout. mcc then:</p>
+        <ol>
+          <li>Adds a <code>claude</code> function to your rc file, in a managed block between <code># &gt;&gt;&gt; mcc:default &gt;&gt;&gt;</code> and <code># &lt;&lt;&lt; mcc:default &lt;&lt;&lt;</code>, that runs the profile's launcher (going back removes the block)</li>
+          <li>Records the choice as <code>default_profile</code> in <code>~/.mcc/config.toml</code></li>
+        </ol>
+        <p>Plain <code>claude</code> then starts the profile in new interactive shells (open a new terminal, or run <code>exec $SHELL</code>), except where <code>CLAUDE_CONFIG_DIR</code> is already set (<code>mcc env</code>, direnv, <code>mcc exec</code>, a Claude Code session). <code>mcc run</code>, <code>mcc env</code> and the <code>mcc</code> status view start it outside projects, and a project default still wins inside its project. <code>mcc list</code>, <code>mcc usage</code> and <code>mcc</code> mark it with ★, and <code>--json</code> adds <code>is_global_default</code> (<code>is_default</code> still marks <code>~/.claude</code>).</p>
+        <p>Every profile keeps its directory, login and Keychain item. <code>~/.claude</code> stays the setup <code>mcc sync</code> and <code>mcc add --clone</code> copy from, and <code>default</code> or <code>claude</code> still names it in every command. <code>command claude</code>, IDEs and scripts still start <code>~/.claude</code>. A name that is no profile is a usage error (exit 2) and nothing changes. The profile that is already the default changes nothing. <code>mcc rename</code> moves the default to the new name, <code>mcc delete</code> of the default goes back to <code>~/.claude</code>, and <code>mcc doctor</code> checks it.</p>
+        <div class="code"><pre><span class="p">$ </span>mcc default work                <span class="cm"># plain `claude` and `mcc run` start `work`</span>
+<span class="p">$ </span>mcc default                     <span class="cm"># prints `work`</span>
+<span class="p">$ </span>mcc default default             <span class="cm"># back to ~/.claude</span></pre></div>
+
         <h3 id="cmd-share"><code>mcc share</code> <a class="anchor" href="#cmd-share" aria-label="Link to mcc share">#</a></h3>
         <p class="synopsis">mcc share ALIAS [--group NAME] [--allow-cross-org] [--off]   <span style="color:var(--muted)">or: ALIAS --mcc-share [claude args…]</span></p>
         <p>Turns session sharing on for a profile: its <code>projects/</code> directory, where Claude Code keeps the sessions <code>--resume</code> lists, becomes a link to the store of its group (<code>~/.mcc/shared/groups/NAME/projects</code> with <code>--group NAME</code>, else <code>~/.mcc/shared/projects</code>, the <code>default</code> group), shared by the group's sharing profiles. Joining a group with profiles of another organization is refused unless <code>--allow-cross-org</code> is passed. Starting the profile with <code>--mcc-share</code> as the first argument does the same before Claude Code starts; the flag itself is not passed on, and if sharing can't be turned on, Claude Code is not started. <code>--off</code> gives the profile its own copy of the shared sessions again. The first time sharing is turned on for a profile, mcc prints the terms-of-service note on stderr; later runs print a one-line reminder. See <a href="#session-sharing">Session sharing</a>.</p>
@@ -401,6 +417,7 @@ lab        —         <span class="d">—                      —</span>      
         <p>Checks every profile, the default included (or only PROFILE; <code>default</code> or <code>claude</code> for <code>~/.claude</code>), and prints a fix for each problem. It doesn't change your setup: no <code>~/.mcc/config.toml</code> write (not even the first-run setup), no lock, and no file written except its line in <code>~/.mcc/logs/mcc.log</code>, and that only when the log folder already exists.</p>
         <ul>
           <li>Setup: mcc is initialized (<code>mcc init</code>), <code>claude</code> is found, <code>~/.local/bin</code> is on <code>PATH</code> (<code>source</code> the rc file, or <code>mcc init --force</code>).</li>
+          <li>The default profile chosen with <code>mcc default</code> is a profile (else a problem: <code>mcc default default</code>), and the <code>claude</code> function in your rc file matches it (else a warning: <code>mcc default ALIAS</code>). Only checked once a default was chosen or the block is there.</li>
           <li>No rc file sets <code>CLAUDE_CONFIG_DIR</code> for every shell (<code>export</code>, a bare assignment, fish's <code>set -gx</code>; comments, aliases and mcc's own blocks are ignored): such a line makes plain <code>claude</code> stop starting the default profile. The fix names the line to remove. <code>CLAUDE_CONFIG_DIR</code> set in the current shell is a warning (<code>unset CLAUDE_CONFIG_DIR</code>; fish: <code>set -e CLAUDE_CONFIG_DIR</code>).</li>
           <li>Per profile: its directory exists with mode 0700 (<code>mcc delete</code>, <code>chmod 700</code>); its launcher is there, mcc's, executable, starts its directory, sets the plugins root exactly when it shares plugins, and is current (<code>mcc refresh-launchers ALIAS</code>); its alias block is in its rc file (the block to paste).</li>
           <li><code>claude auth status</code>, run through the launcher, reports the profile's directory as <code>configDirectory</code> (Claude Code 2.1.268 or later; skipped before) and a login (<code>mcc exec ALIAS -- claude auth login</code>). Token expiry is a warning, checked only with <code>[usage] live = true</code> and <code>MCC_NO_USAGE</code> unset.</li>

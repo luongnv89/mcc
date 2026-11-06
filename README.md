@@ -183,6 +183,7 @@ The full documentation, one collapsed section per topic. `mcc help COMMAND` prin
 - **`list`.** One row per profile, in a table that fits 120 columns: account (label or organization; emails are hidden unless you ask for them), 5-hour and weekly usage (with a usage bar), last used, and a `SYNC` column saying how the profile compares with the default (`✓`, `3 behind`, `2 local edits`, `1 conflict`). Profiles that share sessions are marked `(shared)`, and a hint names `mcc refresh-launchers` while a launcher is out of date. A second table lists your projects and the profile (and account) `mcc run` starts in each. `--long` adds the command, skills, agents, commands, plugins, MCP servers, hooks, size and last sync; `--json` has everything.
 - **`usage`.** Every profile's 5-hour and weekly limits in one compact table: a usage bar with the percent used, time until reset and the reset time. Near-limit accounts stand out with `!` / `!!` markers and colour. Account emails are hidden unless you ask for them. `--json` for scripts.
 - **`rename`.** Gives a profile a new name, and with it a new command. The new name is checked like an alias in `add`. The profile's directory, login and setup stay as they are.
+- **`default`.** `mcc default work` makes `work` the default profile: plain `claude` starts it in new shells, and `mcc run` and `mcc env` start it outside projects (a project default still wins). Nothing moves: `~/.claude` keeps its login and stays the setup `sync` copies from, and `mcc default default` goes back (see [Choosing the default profile](#choosing-the-default-profile-mcc-default)).
 - **`sync`.** A one-way copy of setup from the default profile into a profile, with `--dry-run`, `--prune`, `--only`, and `--all`. It keeps edits made in the profile and reports a path changed on both sides as a conflict (`--force` overwrites it), once the profile has a sync record (a profile cloned by mcc 0.4.0 or later has one; any other profile gets it from its first sync). Everything it replaces is backed up first, and `mcc diff` shows what differs.
 - **Auto sync.** On by default: when a profile starts, mcc does the safe part of `mcc sync` for it and then for the other profiles the default changed for, so they don't fall behind. Edits in a profile and conflicts are kept; anything that needs a decision is left to `mcc sync`. `mcc config set sync.auto false` turns it off, or `profiles.ALIAS.auto_sync false` for one profile.
 - **Opt-in session sharing.** Off by default. `mcc share work` (or starting a profile with `work --mcc-share`) lets that profile's `--resume` see the sessions of the other sharing profiles in its group (`--group NAME`, else the `default` group). Joining a group whose profiles are in another organization is refused unless you pass `--allow-cross-org`. Credentials and account files are never shared.
@@ -262,6 +263,7 @@ mcc list                    # see all profiles
 mcc usage                   # how much of each account's limits is used
 mcc sync work               # later: pull new skills/plugins/settings from the default
 mcc rename work job         # rename the profile: its command becomes `job`
+mcc default job             # plain `claude` (new shells) and `mcc run` now start `job`
 mcc project set job         # in a repository: `mcc run` starts `job` there
 mcc run                     # start Claude Code with this project's profile
 mcc delete job              # remove it completely
@@ -285,6 +287,7 @@ mcc delete job              # remove it completely
 | `mcc sync [ALIAS]` | Copy the default's setup into a profile (default → profile only), keeping edits made in the profile | `--all`, `--dry-run`, `--prune`, `--force`, `--only ITEMS`, `-y` |
 | `mcc diff ALIAS` | Show how a profile differs from the default's setup, path by path, as `sync` classifies it | `--only ITEMS` |
 | `mcc rename ALIAS NEW` (`mv`) | Rename a profile and its command; directory and login are kept | |
+| `mcc default [PROFILE]` | Show the default profile, or make PROFILE the one plain `claude` (in new shells) and `mcc run` (outside projects) start; `default` or `claude` goes back to `~/.claude`. No data moves (see [Choosing the default profile](#choosing-the-default-profile-mcc-default)) | |
 | `mcc share ALIAS` | Share the profile's sessions with the other sharing profiles of its group (off by default; see [Sharing sessions](#sharing-sessions-between-profiles)) | `--off`, `--group NAME`, `--allow-cross-org` |
 | `mcc link ALIAS [ITEMS]` | Link read-mostly items (`skills`, `agents`, `commands`, `output-styles`, `claude-md`) to the default's copy instead of copying them; edits write through to the default (off by default; see [Linking read-mostly items](#linking-read-mostly-items-mcc-link)). `plugins` shares the default's plugins (see [Sharing plugins](#sharing-plugins-mcc-link-alias-plugins)) | `--off` |
 | `mcc project set PROFILE` | Make PROFILE the one `mcc run` starts in this project (see [Per-project profiles](#per-project-profiles-mcc-project-and-mcc-run)); also `unset` and `list` | `--path DIR`, `--allow PROFILE`, `list --json`, `list --json-v2` |
@@ -333,6 +336,9 @@ mcc sync --all --prune --yes          # make every profile mirror the default ex
 mcc sync work --force                 # also overwrite paths edited in both (conflicts)
 mcc diff work                         # what differs from the default, with line diffs
 mcc rename lab sandbox                # new command `sandbox`, same directory and login
+mcc default work                      # plain `claude` starts `work` in new shells; `mcc run` too
+mcc default                           # print the default profile (`work`, or `default` for ~/.claude)
+mcc default default                   # back to ~/.claude
 mcc share work                        # share work's sessions with the other sharing profiles
 work --mcc-share --resume             # the same from the launcher, then pick any shared session
 mcc share work --off                  # stop sharing; work keeps a copy of the sessions
@@ -396,6 +402,7 @@ mcc completions fish > ~/.config/fish/completions/mcc.fish
 | mcc profiles | `~/.mcc/profiles/<alias>/` (named after the alias the profile was created with; `mcc rename` keeps the directory), used as `CLAUDE_CONFIG_DIR` |
 | Launcher | `~/.local/bin/<alias>` (works in any shell as soon as it's written; sets `CLAUDE_CONFIG_DIR` and starts `claude`, and handles `--mcc-share`) |
 | Shell alias | a managed block in your rc file, between `# >>> mcc:<alias> >>>` and `# <<< mcc:<alias> <<<`, that runs the launcher |
+| Default profile choice | `default_profile` in `~/.mcc/config.toml` and a `claude` function in your rc file, between `# >>> mcc:default >>>` and `# <<< mcc:default <<<`, written by `mcc default <alias>` and removed by `mcc default default` |
 | Shared sessions | `~/.mcc/shared/projects` (the `default` group) and `~/.mcc/shared/groups/<name>/projects` (`--group <name>`), only for profiles that opted in with `mcc share` (their `projects/` links there) |
 | Project defaults | `[projects."<dir>"]` tables in `~/.mcc/config.toml`, written by `mcc project set` |
 | Statusline state | `~/.mcc/state/<profile>/usage.json` (rate limits cached by `mcc statusline`, or saved by `mcc usage --all`) and `statusline.json` (the `statusLine` it replaced, only after `mcc statusline install`) |
@@ -697,7 +704,7 @@ mcc run                  # starts Claude Code as `work`
 mcc run -- --resume      # arguments after `--` go to claude
 ```
 
-A project is a directory. `mcc project set` uses the top of the git repository you are in (or the current directory outside one; `--path DIR` picks another). It covers everything below it, and when projects are nested, the deepest one containing the current directory applies. Outside every project, `mcc run` treats the default profile (`~/.claude`) as the default.
+A project is a directory. `mcc project set` uses the top of the git repository you are in (or the current directory outside one; `--path DIR` picks another). It covers everything below it, and when projects are nested, the deepest one containing the current directory applies. Outside every project, `mcc run` starts the profile chosen with [`mcc default`](#choosing-the-default-profile-mcc-default), else the default profile (`~/.claude`).
 
 `mcc run` starts the project's default. **It never switches to another account on its own.** When the project's profile is at its 5-hour or weekly limit (100% used), it shows when the limit resets and asks what to do. Waiting is preselected: it starts nothing and exits. Starting the profile anyway comes next. Other profiles are offered only when the project allows them, by name and without their usage:
 
@@ -741,12 +748,41 @@ allow = ["lab"]   # optional: other profiles `mcc run` may offer at the limit
 
 </details>
 
+#### Choosing the default profile: `mcc default`
+
+<details>
+<summary>mcc default ALIAS, what follows it, and its limits</summary>
+
+The default profile is `~/.claude`, started with plain `claude`. To make another profile the one you get by default, without moving anything:
+
+```sh
+mcc default work         # plain `claude` (in new shells) and `mcc run` now start `work`
+mcc default              # prints `work`, and what it means
+mcc default default      # back to ~/.claude (`mcc default claude` too)
+```
+
+What changes:
+
+- **Plain `claude`** starts `work` in new interactive shells. mcc adds a `claude` function to your rc file, in a managed block between `# >>> mcc:default >>>` and `# <<< mcc:default <<<`, that runs `work`'s launcher. Open a new terminal (or run `exec $SHELL`) to pick it up. In a shell where `CLAUDE_CONFIG_DIR` is already set (`eval "$(mcc env)"`, direnv, `mcc exec`, a Claude Code session) the function starts claude as that profile, as before.
+- **`mcc run`, `mcc env` and the `mcc` status view** start `work` outside projects. A project default (`mcc project set`) still wins inside its project, and `mcc run --dry-run` says which one applies and why.
+- **`mcc list`, `mcc usage` and `mcc`** mark the default profile with ★. In `--json`, `is_global_default` is `true` for it. `is_default` still marks `~/.claude` itself.
+
+What doesn't change:
+
+- **No data moves.** Every profile keeps its directory, login and Keychain item. `~/.claude` stays the setup `mcc sync`, auto sync and `mcc add --clone` copy from, and `default` or `claude` still names `~/.claude` in every command (`mcc run --profile default`, `mcc env default`, `mcc project set default`).
+- **`command claude`** skips the function and starts `~/.claude`.
+- **IDEs, scripts and cron jobs** that run `claude` don't read your rc file, so they still start `~/.claude`. Use `mcc exec work -- …` or `mcc env work` there.
+
+Choosing the profile that is already the default changes nothing (if the rc block was removed by hand, it is put back), and a name that is no profile exits 2 without writing anything. `mcc rename` moves the default to the new name, and `mcc delete` of the default profile goes back to `~/.claude`. `mcc doctor` reports a default that names no profile, or an rc block that doesn't match it. The choice is `default_profile` in `~/.mcc/config.toml`. Set it with `mcc default`, not by hand, so the rc block follows.
+
+</details>
+
 #### Using a project's profile everywhere: `mcc env` and `mcc exec`
 
 <details>
 <summary>eval "$(mcc env)", direnv, mcc exec --all</summary>
 
-`mcc run` only covers Claude Code started through it. `mcc env` prints the shell line that points `CLAUDE_CONFIG_DIR` at the profile `mcc run` would start here (the project's default, else the default profile), so plain `claude`, IDE extensions and scripts use it too:
+`mcc run` only covers Claude Code started through it. `mcc env` prints the shell line that points `CLAUDE_CONFIG_DIR` at the profile `mcc run` would start here (the project's default, else the one chosen with `mcc default`, else the default profile), so plain `claude`, IDE extensions and scripts use it too:
 
 ```sh
 eval "$(mcc env)"        # this shell now uses the project's profile
@@ -980,6 +1016,7 @@ Before mcc is set up (no `~/.mcc/config.toml` with its `[env]`), bare `mcc` prin
 |---|---|
 | mcc is set up, `claude` is found | `mcc init`; install Claude Code or set `MCC_CLAUDE_BIN` |
 | `~/.local/bin` is on PATH | `source ~/.zshrc` when the rc file already adds it, else `mcc init --force` (or the line to add) |
+| The default profile chosen with `mcc default` is a profile, and the `claude` function in your rc file matches it (only checked once a default was chosen or the block is there) | `mcc default default` when it names no profile; `mcc default ALIAS` to put the function right |
 | No rc file sets `CLAUDE_CONFIG_DIR` for every shell (`export`, a bare assignment, fish's `set -gx`); comments, aliases and mcc's own blocks are ignored. Such a line makes plain `claude` stop starting the default profile | remove line N from the rc file |
 | `CLAUDE_CONFIG_DIR` set in the current shell (a warning: expected inside `mcc exec` or after `eval "$(mcc env)"`) | `unset CLAUDE_CONFIG_DIR` (fish: `set -e CLAUDE_CONFIG_DIR`) |
 | The profile's directory exists, with mode 0700 | `mcc delete ALIAS`; `chmod 700 DIR` |

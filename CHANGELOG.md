@@ -4,6 +4,10 @@ All notable changes to mcc are recorded here. The format follows [Keep a Changel
 
 ## [Unreleased]
 
+### Added
+
+- `mcc default PROFILE` makes another profile the default without moving any data. Plain `claude` starts it in new interactive shells: mcc adds a `claude` function to your rc file (a `# >>> mcc:default >>>` block) that runs the profile's launcher where `CLAUDE_CONFIG_DIR` isn't already set. Outside projects, `mcc run`, `mcc env` and the `mcc` status view start it too, and a project default still wins inside its project. `mcc default` prints the current default, and `mcc default default` (or `claude`) goes back to `~/.claude`, removing the block. `mcc list`, `mcc usage` and `mcc` mark the default with ★, and `--json`/`--json-v2` add `is_global_default` to each profile (`is_default` still marks `~/.claude`). The choice is `default_profile` in `~/.mcc/config.toml`. A name that is no profile exits 2 and writes nothing, and choosing the profile that is already the default changes nothing. `mcc rename` moves the default to the new name, `mcc delete` of the default goes back to `~/.claude`, and `mcc doctor` reports a default that names no profile or an rc block that doesn't match it. Limits: `~/.claude` stays the setup `mcc sync` and `mcc add --clone` copy from, and `default`/`claude` still name it in every command. `command claude`, IDEs and scripts still start `~/.claude`. ([#104](https://github.com/luongnv89/mcc/issues/104))
+
 ## [0.6.1] - 2026-11-03
 
 This release makes no change to the `mcc` binary apart from its version number. The README and changelog now point to [mcc-herdr-plugin](https://github.com/luongnv89/mcc-herdr-plugin), a separate [Herdr](https://herdr.dev) plugin that reads `mcc usage --json-v2` to show every account's 5-hour and weekly usage in a pane under Herdr's agent list.
