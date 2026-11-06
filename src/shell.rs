@@ -17,6 +17,19 @@ pub const WRAPPER_MARKER: &str = "# managed-by: mcc";
 /// their id, so this name is reserved and can never be an alias.
 pub const PATH_BLOCK: &str = "path";
 
+/// Block id of the `claude` function that starts the global default profile
+/// (`mcc default <alias>`). `default` can never be an alias, so it can't
+/// clash with a profile's block.
+pub const DEFAULT_BLOCK: &str = "default";
+
+/// Set to `default` where the default profile (~/.claude) was chosen
+/// explicitly (`mcc env` for it, `mcc run`/`mcc exec` as it). An unset
+/// `CLAUDE_CONFIG_DIR` already means ~/.claude, so without this the `claude`
+/// function couldn't tell that choice from "nothing chosen" and would start
+/// the global default instead. Setting `CLAUDE_CONFIG_DIR` to ~/.claude is no
+/// way out: Claude Code keys its Keychain login on the variable.
+pub const PROFILE_ENV: &str = "MCC_PROFILE";
+
 fn begin(id: &str) -> String {
     format!("# >>> mcc:{id} >>>")
 }
@@ -297,6 +310,49 @@ pub fn alias_block(
     format!(
         "# Claude Code profile \"{alias}\" — managed by mcc (remove with: mcc delete {alias})\n{line}"
     )
+}
+
+/// The rc block body that makes plain `claude` start profile `alias`, the
+/// global default (`mcc default <alias>`): a `claude` function that runs the
+/// profile's launcher, or without one sets `CLAUDE_CONFIG_DIR` itself.
+///
+/// Only where both `CLAUDE_CONFIG_DIR` and [`PROFILE_ENV`] are unset or
+/// empty: a shell already pointed at a profile (`mcc env`, direnv,
+/// `mcc run`, `mcc exec`, a launcher), the default profile included, keeps
+/// running claude as that profile. `command claude` skips the function and
+/// starts the default profile (~/.claude). The launcher is a `/bin/sh`
+/// script that finds `claude` on PATH, where the function doesn't exist, so
+/// it never calls itself. zsh and bash use `function claude { … }`: the
+/// `claude() { … }` form fails to parse when `claude` is also an alias.
+pub fn default_block(
+    paths: &Paths,
+    shell: Shell,
+    alias: &str,
+    profile_dir: &Path,
+    launcher: Option<&Path>,
+) -> String {
+    let head = format!(
+        "# Plain `claude` starts profile \"{alias}\" — managed by mcc (reset with: mcc default default).\n\
+         # `command claude` starts the default profile (~/.claude)."
+    );
+    let dir = paths.shell_expr(profile_dir);
+    let body = match (launcher, shell) {
+        (Some(w), Shell::Fish) => format!(
+            "function claude\n  if test -z \"$CLAUDE_CONFIG_DIR\"; and test -z \"$MCC_PROFILE\"\n    \"{}\" $argv\n  else\n    command claude $argv\n  end\nend",
+            paths.shell_expr(w)
+        ),
+        (None, Shell::Fish) => format!(
+            "function claude\n  if test -z \"$CLAUDE_CONFIG_DIR\"; and test -z \"$MCC_PROFILE\"\n    env CLAUDE_CONFIG_DIR=\"{dir}\" claude $argv\n  else\n    command claude $argv\n  end\nend"
+        ),
+        (Some(w), Shell::Zsh | Shell::Bash) => format!(
+            "function claude {{\n  if [ -z \"${{CLAUDE_CONFIG_DIR:-}}\" ] && [ -z \"${{MCC_PROFILE:-}}\" ]; then \"{}\" \"$@\"; else command claude \"$@\"; fi\n}}",
+            paths.shell_expr(w)
+        ),
+        (None, Shell::Zsh | Shell::Bash) => format!(
+            "function claude {{\n  if [ -z \"${{CLAUDE_CONFIG_DIR:-}}\" ] && [ -z \"${{MCC_PROFILE:-}}\" ]; then CLAUDE_CONFIG_DIR=\"{dir}\" command claude \"$@\"; else command claude \"$@\"; fi\n}}"
+        ),
+    };
+    format!("{head}\n{body}")
 }
 
 /// rc block that puts `~/.local/bin` on PATH.
@@ -602,6 +658,46 @@ mod tests {
             "[ \"${CLAUDE_CODE_PLUGIN_CACHE_DIR:-}\" = \"$HOME/.claude/plugins\" ] && unset CLAUDE_CODE_PLUGIN_CACHE_DIR\n"
         ), "{w}");
         assert!(!w.contains("export CLAUDE_CODE_PLUGIN_CACHE_DIR"));
+    }
+
+    #[test]
+    fn default_block_runs_the_launcher_only_without_a_config_dir() {
+        let paths = Paths::new("/h".into());
+        let dir = paths.profile_dir("work");
+        let wrapper = paths.wrapper("work");
+        let zsh = default_block(&paths, Shell::Zsh, "work", &dir, Some(&wrapper));
+        assert!(zsh.contains("mcc default default"), "{zsh}");
+        assert!(zsh.contains(&format!("${{{PROFILE_ENV}:-}}")), "{zsh}");
+        assert!(
+            zsh.ends_with(
+                "function claude {\n  if [ -z \"${CLAUDE_CONFIG_DIR:-}\" ] && [ -z \"${MCC_PROFILE:-}\" ]; then \"$HOME/.local/bin/work\" \"$@\"; else command claude \"$@\"; fi\n}"
+            ),
+            "{zsh}"
+        );
+        assert_eq!(
+            default_block(&paths, Shell::Bash, "work", &dir, Some(&wrapper)),
+            zsh
+        );
+        let fish = default_block(&paths, Shell::Fish, "work", &dir, Some(&wrapper));
+        assert!(
+            fish.ends_with(
+                "function claude\n  if test -z \"$CLAUDE_CONFIG_DIR\"; and test -z \"$MCC_PROFILE\"\n    \"$HOME/.local/bin/work\" $argv\n  else\n    command claude $argv\n  end\nend"
+            ),
+            "{fish}"
+        );
+        // Without a launcher it sets CLAUDE_CONFIG_DIR and runs the real claude.
+        let zsh = default_block(&paths, Shell::Zsh, "work", &dir, None);
+        assert!(
+            zsh.contains(
+                "then CLAUDE_CONFIG_DIR=\"$HOME/.mcc/profiles/work\" command claude \"$@\"; else"
+            ),
+            "{zsh}"
+        );
+        let fish = default_block(&paths, Shell::Fish, "work", &dir, None);
+        assert!(
+            fish.contains("    env CLAUDE_CONFIG_DIR=\"$HOME/.mcc/profiles/work\" claude $argv\n"),
+            "{fish}"
+        );
     }
 
     #[test]

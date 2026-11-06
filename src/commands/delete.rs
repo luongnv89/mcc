@@ -175,6 +175,17 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &DeleteArgs) -> Result<()> {
             removed.push(paths.display(rc));
         }
     }
+    // The default profile: plain `claude` must not run its launcher any
+    // more. The registry is saved below.
+    let was_default = cfg.clear_global_default(alias);
+    if was_default {
+        let mut undo = crate::txn::Transaction::new();
+        let changes = super::default::sync_blocks(paths, cfg, &mut undo)?;
+        undo.commit();
+        for rc in changes.removed {
+            removed.push(format!("`claude` function in {}", paths.display(&rc)));
+        }
+    }
     if removed.is_empty() {
         step.skip("no alias block found");
     } else {
@@ -204,7 +215,7 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &DeleteArgs) -> Result<()> {
     let registered = cfg.profiles.remove(alias).is_some();
     let projects = cfg.remove_project_defaults(alias);
     let allowing = cfg.remove_from_allow_lists(alias);
-    if registered || !projects.is_empty() || !allowing.is_empty() {
+    if registered || was_default || !projects.is_empty() || !allowing.is_empty() {
         cfg.save(&paths.config_file)?;
         let dirs = |dirs: &[String]| {
             dirs.iter()
@@ -225,6 +236,12 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &DeleteArgs) -> Result<()> {
                 dirs(&allowing)
             ));
         }
+        if was_default {
+            notes.push(
+                "it was the default profile: plain `claude` and `mcc run` start ~/.claude again"
+                    .to_string(),
+            );
+        }
         step.ok(&notes.join("; "));
     } else {
         step.skip("not registered");
@@ -244,6 +261,11 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &DeleteArgs) -> Result<()> {
     if !removed.is_empty() {
         ui::hint(&format!(
             "open a new terminal (or `unalias {alias}`) so the old alias disappears"
+        ));
+    }
+    if was_default {
+        ui::info(&format!(
+            "\"{alias}\" was the default profile — the default is ~/.claude again (choose another with `mcc default <profile>`)"
         ));
     }
     Ok(())

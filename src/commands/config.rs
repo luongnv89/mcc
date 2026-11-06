@@ -151,6 +151,11 @@ fn settable(key: &str, parts: &[String]) -> Result<Key> {
                 "the detected environment is updated with `mcc init --force`",
             ));
         }
+        ["default_profile"] => {
+            return Err(managed(
+                "the default profile is set with `mcc default <profile>`, which also updates the shell's `claude` function (see `mcc help default`)",
+            ));
+        }
         ["usage", "live_disclosed_at"] => {
             return Err(managed("mcc records it when it shows the live-usage note"));
         }

@@ -62,6 +62,7 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &RenameArgs) -> Result<()> {
     ));
     let mut steps = ui::Steps::new(5);
     let mut undo: Transaction<Undo> = Transaction::new();
+    let mut block_undo = Transaction::new();
 
     // rc files that hold the old alias block: the one recorded for the
     // profile, plus the current shell's (in case it changed since `add`).
@@ -132,10 +133,22 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &RenameArgs) -> Result<()> {
         let projects = cfg.projects.clone();
         let repointed = cfg.rename_project_defaults(old, new);
         let allowing = cfg.rename_in_allow_lists(old, new);
-        if let Err(e) = cfg.save(&paths.config_file) {
+        // The default's `claude` function runs the launcher by name: point
+        // it at the new one before the old one goes.
+        let was_default = cfg.rename_global_default(old, new);
+        let saved = if was_default {
+            super::default::sync_blocks(paths, cfg, &mut block_undo).map(|_| ())
+        } else {
+            Ok(())
+        }
+        .and_then(|()| cfg.save(&paths.config_file));
+        if let Err(e) = saved {
             cfg.profiles.remove(new);
             cfg.profiles.insert(old.to_string(), profile.clone());
             cfg.projects = projects;
+            if was_default {
+                cfg.default_profile = Some(old.to_string());
+            }
             return Err(e);
         }
         let mut note = paths.display(&paths.config_file);
@@ -153,14 +166,21 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &RenameArgs) -> Result<()> {
                 if allowing == 1 { "s" } else { "" },
             ));
         }
+        if was_default {
+            note.push_str(&format!(
+                "; the default profile is now `{new}` (plain `claude` follows it)"
+            ));
+        }
         step.ok(&note);
         Ok(wrapper)
     })();
 
     if let Err(e) = result {
+        super::default::rollback_blocks(paths, &mut block_undo);
         rollback(paths, &mut undo);
         return Err(e);
     }
+    block_undo.commit();
     undo.commit();
 
     // The new command works from here on; leftovers of the old one are

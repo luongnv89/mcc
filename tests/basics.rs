@@ -47,6 +47,7 @@ fn every_subcommand_has_help() {
         "renew",
         "rename",
         "mv",
+        "default",
         "share",
         "refresh-launchers",
         "project",

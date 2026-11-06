@@ -71,9 +71,9 @@ fn key(dir: &Path) -> String {
     dir.to_string_lossy().into_owned()
 }
 
-/// A profile as projects store it (`claude` is `default`), or a usage
-/// error when there is no such profile.
-fn profile_name<'a>(cfg: &Config, name: &'a str) -> Result<&'a str> {
+/// A profile as projects (and `mcc default`) store it (`claude` is
+/// `default`), or a usage error when there is no such profile.
+pub(crate) fn profile_name<'a>(cfg: &Config, name: &'a str) -> Result<&'a str> {
     match name {
         "default" | "claude" => Ok("default"),
         name if cfg.profiles.contains_key(name) => Ok(name),

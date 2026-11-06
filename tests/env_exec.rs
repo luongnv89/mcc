@@ -47,15 +47,24 @@ fn env_prints_the_projects_profile_or_a_named_one() {
     let env = |cwd: &str, args: &[&str]| {
         stdout_of(sb.mcc().current_dir(sb.path(cwd)).arg("env").args(args))
     };
-    let work = format!("export CLAUDE_CONFIG_DIR='{}'\n", dir(&sb, "work"));
+    let work = format!(
+        "export CLAUDE_CONFIG_DIR='{}'\nunset MCC_PROFILE\n",
+        dir(&sb, "work")
+    );
     assert_eq!(env("code/app/src", &[]), work);
-    // Outside every project: the default profile, which runs with it unset.
-    assert_eq!(env("code", &[]), "unset CLAUDE_CONFIG_DIR\n");
+    // Outside every project: the default profile, which runs with it unset
+    // and says so with MCC_PROFILE (the `claude` function of `mcc default`
+    // reads it).
+    let claude = "unset CLAUDE_CONFIG_DIR\nexport MCC_PROFILE=default\n";
+    assert_eq!(env("code", &[]), claude);
     assert_eq!(
         env("code", &["lab"]),
-        format!("export CLAUDE_CONFIG_DIR='{}'\n", dir(&sb, "lab"))
+        format!(
+            "export CLAUDE_CONFIG_DIR='{}'\nunset MCC_PROFILE\n",
+            dir(&sb, "lab")
+        )
     );
-    assert_eq!(env("code/app", &["claude"]), "unset CLAUDE_CONFIG_DIR\n");
+    assert_eq!(env("code/app", &["claude"]), claude);
     sb.mcc()
         .args(["env", "nope"])
         .assert()
@@ -66,7 +75,10 @@ fn env_prints_the_projects_profile_or_a_named_one() {
 #[test]
 fn env_prints_the_fish_form_for_fish() {
     let sb = sandbox();
-    let fish = format!("set -gx CLAUDE_CONFIG_DIR '{}'\n", dir(&sb, "work"));
+    let fish = format!(
+        "set -gx CLAUDE_CONFIG_DIR '{}'\nset -e MCC_PROFILE\n",
+        dir(&sb, "work")
+    );
     let app = sb.path("code/app");
     assert_eq!(
         stdout_of(
@@ -83,7 +95,7 @@ fn env_prints_the_fish_form_for_fish() {
     );
     assert_eq!(
         stdout_of(sb.mcc().args(["env", "default", "--shell", "fish"])),
-        "set -e CLAUDE_CONFIG_DIR\n"
+        "set -e CLAUDE_CONFIG_DIR\nset -gx MCC_PROFILE default\n"
     );
     // direnv evaluates .envrc with bash, whatever the login shell is.
     assert!(
@@ -258,14 +270,14 @@ fn env_exec_and_run_give_a_sharing_profile_the_defaults_plugins() {
     assert_eq!(
         stdout_of(sb.mcc().args(["env", "shared"])),
         format!(
-            "export CLAUDE_CONFIG_DIR='{}'\nexport CLAUDE_CODE_PLUGIN_CACHE_DIR='{root}'\n",
+            "export CLAUDE_CONFIG_DIR='{}'\nunset MCC_PROFILE\nexport CLAUDE_CODE_PLUGIN_CACHE_DIR='{root}'\n",
             dir(&sb, "shared")
         )
     );
     assert_eq!(
         stdout_of(sb.mcc().args(["env", "shared", "--shell", "fish"])),
         format!(
-            "set -gx CLAUDE_CONFIG_DIR '{}'\nset -gx CLAUDE_CODE_PLUGIN_CACHE_DIR '{root}'\n",
+            "set -gx CLAUDE_CONFIG_DIR '{}'\nset -e MCC_PROFILE\nset -gx CLAUDE_CODE_PLUGIN_CACHE_DIR '{root}'\n",
             dir(&sb, "shared")
         )
     );
@@ -277,7 +289,7 @@ fn env_exec_and_run_give_a_sharing_profile_the_defaults_plugins() {
                 .args(["env", "own"])
         ),
         format!(
-            "export CLAUDE_CONFIG_DIR='{}'\nunset CLAUDE_CODE_PLUGIN_CACHE_DIR\n",
+            "export CLAUDE_CONFIG_DIR='{}'\nunset MCC_PROFILE\nunset CLAUDE_CODE_PLUGIN_CACHE_DIR\n",
             dir(&sb, "own")
         )
     );
@@ -288,7 +300,7 @@ fn env_exec_and_run_give_a_sharing_profile_the_defaults_plugins() {
                 .env("CLAUDE_CODE_PLUGIN_CACHE_DIR", "/opt/seed")
                 .args(["env", "default"])
         ),
-        "unset CLAUDE_CONFIG_DIR\n"
+        "unset CLAUDE_CONFIG_DIR\nexport MCC_PROFILE=default\n"
     );
 
     let exec = |alias: &str, inherited: Option<&str>| {

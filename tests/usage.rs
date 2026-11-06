@@ -253,7 +253,7 @@ fn usage_json_has_the_same_information() {
         .keys()
         .map(String::as_str)
         .collect();
-    // Schema 1 only gains fields (#100 added the last four).
+    // Schema 1 only gains fields (#100 added four, #104 the last one).
     assert_eq!(
         keys,
         [
@@ -265,7 +265,8 @@ fn usage_json_has_the_same_information() {
             "last_activity",
             "login_expires_at",
             "login_expires_source",
-            "login_warning"
+            "login_warning",
+            "is_global_default"
         ]
     );
     let d = by_name(&arr, "default");

@@ -2,6 +2,7 @@ pub mod add;
 pub mod banner;
 pub mod completions;
 pub mod config;
+pub mod default;
 pub mod delete;
 pub mod diff;
 pub mod doctor;

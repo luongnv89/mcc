@@ -68,7 +68,8 @@ pub fn run(paths: &Paths, cfg: &Config, args: &ListArgs) -> Result<()> {
     Ok(())
 }
 
-/// Every profile, the default first, with its project defaults, its sync
+/// Every profile, the default first, which one is the global default (★),
+/// with its project defaults, its sync
 /// status and, with `usage` set, its usage: `Some(true)` looks it up live,
 /// `Some(false)` reads the statusline cache. `full` as for
 /// [`metrics::default_profile`]: without it counts and sizes stay 0.
@@ -83,7 +84,9 @@ pub(super) fn profiles(
         let blocks = crate::shell::Blocks::for_profile(cfg, Some(p));
         metrics::mcc_profile(name, p, paths, blocks, full)
     }));
+    let global = cfg.global_default();
     for m in &mut all {
+        m.is_global_default = m.name == global;
         m.project_defaults = cfg
             .projects
             .iter()
@@ -376,7 +379,7 @@ fn table_lines(all: &[ProfileMetrics], bar: usize, now: DateTime<Utc>) -> Vec<St
             // In the profile's color (stdout to a terminal only); the
             // widths below measure without the escapes.
             let name = ui::paint(&m.name, m.color.as_deref());
-            let name = if m.is_default {
+            let name = if m.is_global_default {
                 format!("{name} ★")
             } else {
                 name
@@ -508,8 +511,11 @@ fn card(
     paths: &Paths,
 ) -> Result<()> {
     let name = ui::paint(&m.name, m.color.as_deref());
+    let star = if m.is_global_default { " ★" } else { "" };
     let title = if m.is_default {
-        format!("{name} ★ (~/.claude)")
+        format!("{name}{star} (~/.claude)")
+    } else if m.is_global_default {
+        format!("{name}{star} (default profile)")
     } else {
         name
     };

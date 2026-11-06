@@ -68,6 +68,7 @@ Examples:
   mcc sync --all                 Bring every profile up to date with the default
   mcc diff work                  Show how `work` differs from the default
   mcc rename work job            Rename profile `work` (and its command) to `job`
+  mcc default work               Make `work` the default: plain `claude` and `mcc run` start it
   mcc share work                 Share `work`'s sessions with your other sharing profiles
   mcc project set work           Start `work` in this project (git repo) with `mcc run`
   mcc run                        Start Claude Code with this project's profile
@@ -252,6 +253,12 @@ pub enum Command {
     )]
     Rename(RenameArgs),
 
+    /// Show or choose the default profile: the one plain `claude` and `mcc run` start
+    #[command(
+        after_help = "Examples:\n  mcc default                    Show the default profile\n  mcc default work               Make `work` the default profile\n  mcc default default            Go back to ~/.claude (`claude` also names it)\n\nNothing moves: ~/.claude keeps its login and setup, and stays the profile\n`mcc sync` and `mcc add --clone` copy from. mcc records the choice as\n`default_profile` in ~/.mcc/config.toml and adds a `claude` function to your\nshell's rc file (a `# >>> mcc:default >>>` block) that starts the chosen\nprofile's launcher. So:\n\n  plain `claude`     starts it in new interactive shells (open a new terminal,\n                     or run `exec $SHELL`), except in a shell already pointed\n                     at a profile (`mcc env` or direnv, ~/.claude included;\n                     `mcc exec`, a Claude Code session)\n  `mcc run`, `mcc env`\n                     start it outside projects; a project default\n                     (`mcc project set`) still wins inside its project\n  `mcc list`, `mcc usage`, `mcc`\n                     mark it with ★\n\n`command claude`, IDEs and scripts still start ~/.claude. `mcc rename` and\n`mcc delete` keep the choice up to date (deleting the default profile goes\nback to ~/.claude), and `mcc doctor` checks it. Choosing the profile that is\nalready the default changes nothing."
+    )]
+    Default(DefaultArgs),
+
     /// Share a profile's sessions with your other sharing profiles (off by default)
     #[command(after_help = concat!(
         "Examples:\n",
@@ -385,12 +392,15 @@ pub enum Command {
         "  eval \"$(mcc env)\"             Use this project's profile in the current shell\n",
         "  mcc env work                  export CLAUDE_CONFIG_DIR='/Users/me/.mcc/profiles/work'\n",
         "  mcc env work --shell fish     set -gx CLAUDE_CONFIG_DIR '/Users/me/.mcc/profiles/work'\n",
-        "  mcc env default               unset CLAUDE_CONFIG_DIR (the default profile, ~/.claude)\n",
+        "  mcc env default               unset CLAUDE_CONFIG_DIR; export MCC_PROFILE=default (~/.claude)\n",
         "  mcc env | source              The same as eval, in fish\n",
         "\n",
         "Without PROFILE it prints the profile `mcc run` would start here: the\n",
-        "project's default (`mcc project set`), else the default profile. Usage\n",
-        "isn't checked. The shell is --shell, else bash inside a direnv .envrc\n",
+        "project's default (`mcc project set`), else the global default\n",
+        "(`mcc default`), else the default profile. A second line sets\n",
+        "MCC_PROFILE=default for the default profile (~/.claude) and clears it for\n",
+        "any other, so the `claude` function of `mcc default` keeps that shell on\n",
+        "~/.claude. Usage isn't checked. The shell is --shell, else bash inside a direnv .envrc\n",
         "(direnv evaluates it with bash), else $SHELL; zsh and bash get the same\n",
         "POSIX line. With direnv, put this in the project's .envrc:\n",
         "\n",
@@ -673,6 +683,12 @@ pub struct RenameArgs {
 
     /// New name, which becomes the profile's command
     pub new_alias: String,
+}
+
+#[derive(Debug, Args)]
+pub struct DefaultArgs {
+    /// Profile to make the default (`default` or `claude` for ~/.claude); omit to show the current one
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Args)]

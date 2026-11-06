@@ -92,6 +92,9 @@ struct Entry {
     login_expires_source: Option<DeadlineSource>,
     /// The login runs out within `[usage] login_warn_days` (or has).
     login_warning: bool,
+    /// The global default (`mcc default`): the profile plain `claude` and
+    /// `mcc run` start outside any project. Added in #104.
+    is_global_default: bool,
     #[serde(skip)]
     config_dir: PathBuf,
 }
@@ -115,6 +118,7 @@ impl Entry {
             login_expires_at: None,
             login_expires_source: None,
             login_warning: false,
+            is_global_default: false,
             config_dir: dir.to_path_buf(),
         }
     }
@@ -150,6 +154,11 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
             None => return Err(super::unknown_profile(name)),
         },
     };
+
+    let global = cfg.global_default();
+    for e in &mut entries {
+        e.is_global_default = e.name == global;
+    }
 
     let show_email = (cfg.show_email() || args.show_email) && !args.hide_email;
     if !show_email {
@@ -304,7 +313,7 @@ fn render(entries: &[Entry], layout: Layout, show_email: bool, now: DateTime<Utc
     let rows: Vec<Vec<String>> = entries
         .iter()
         .map(|e| {
-            let mut cells = vec![if e.is_default {
+            let mut cells = vec![if e.is_global_default {
                 format!("{} ★", e.name)
             } else {
                 e.name.clone()
@@ -440,6 +449,7 @@ mod tests {
             login_expires_at: None,
             login_expires_source: None,
             login_warning: false,
+            is_global_default: name == "default",
             config_dir: PathBuf::new(),
         }
     }
