@@ -222,6 +222,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Sync(args) => commands::sync::run(&paths, &mut cfg, &args),
         Command::Diff(args) => commands::diff::run(&paths, &cfg, &args),
         Command::Rename(args) => commands::rename::run(&paths, &mut cfg, &args),
+        Command::Default(args) => commands::default::run(&paths, &mut cfg, &args),
         Command::Share(args) => commands::share::run(&paths, &mut cfg, &args),
         Command::Link(args) => commands::link::run(&paths, &mut cfg, &args),
         Command::Project(args) => commands::project::run(&paths, &mut cfg, &args),
@@ -270,6 +271,8 @@ fn writes_config(command: &Command) -> bool {
         | Command::Share(_)
         | Command::Link(_) => true,
         Command::Project(args) => !matches!(args.action, cli::ProjectAction::List { .. }),
+        // Without a profile it only shows the default.
+        Command::Default(args) => args.profile.is_some(),
         // install/uninstall edit settings.json files and mcc's state, one
         // run at a time; the bare shim is routed before the lock is taken.
         Command::Statusline(args) => args.action.is_some(),

@@ -68,6 +68,7 @@ Examples:
   mcc sync --all                 Bring every profile up to date with the default
   mcc diff work                  Show how `work` differs from the default
   mcc rename work job            Rename profile `work` (and its command) to `job`
+  mcc default work               Make `work` the default: plain `claude` and `mcc run` start it
   mcc share work                 Share `work`'s sessions with your other sharing profiles
   mcc project set work           Start `work` in this project (git repo) with `mcc run`
   mcc run                        Start Claude Code with this project's profile
@@ -251,6 +252,12 @@ pub enum Command {
         after_help = "Examples:\n  mcc rename work job\n\nThe new name is checked like `mcc add` checks an alias: it must not be an\nexisting profile, command, alias, function or shell builtin. The profile's\ndirectory, login and setup stay as they are; only the command changes."
     )]
     Rename(RenameArgs),
+
+    /// Show or choose the default profile: the one plain `claude` and `mcc run` start
+    #[command(
+        after_help = "Examples:\n  mcc default                    Show the default profile\n  mcc default work               Make `work` the default profile\n  mcc default default            Go back to ~/.claude (`claude` also names it)\n\nNothing moves: ~/.claude keeps its login and setup, and stays the profile\n`mcc sync` and `mcc add --clone` copy from. mcc records the choice as\n`default_profile` in ~/.mcc/config.toml and adds a `claude` function to your\nshell's rc file (a `# >>> mcc:default >>>` block) that starts the chosen\nprofile's launcher. So:\n\n  plain `claude`     starts it in new interactive shells (open a new terminal,\n                     or run `exec $SHELL`), except where CLAUDE_CONFIG_DIR is\n                     already set (`mcc env`, direnv, a Claude Code session)\n  `mcc run`, `mcc env`  start it outside projects; a project default\n                     (`mcc project set`) still wins inside its project\n  `mcc list`, `mcc`  mark it with ★\n\n`command claude`, IDEs and scripts still start ~/.claude. `mcc rename` and\n`mcc delete` keep the choice up to date (deleting the default profile goes\nback to ~/.claude), and `mcc doctor` checks it. Choosing the profile that is\nalready the default changes nothing."
+    )]
+    Default(DefaultArgs),
 
     /// Share a profile's sessions with your other sharing profiles (off by default)
     #[command(after_help = concat!(
@@ -673,6 +680,12 @@ pub struct RenameArgs {
 
     /// New name, which becomes the profile's command
     pub new_alias: String,
+}
+
+#[derive(Debug, Args)]
+pub struct DefaultArgs {
+    /// Profile to make the default (`default` or `claude` for ~/.claude); omit to show the current one
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Args)]
