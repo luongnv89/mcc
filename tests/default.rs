@@ -97,13 +97,14 @@ fn set_show_and_reset_the_default_profile() {
     assert_eq!(shown_default(&sb), "work\n");
     let cfg = sb.read(".mcc/config.toml");
     assert!(cfg.contains("default_profile = \"work\"\n"), "{cfg}");
-    // The shell's `claude` runs work's launcher, only without CLAUDE_CONFIG_DIR.
+    // The shell's `claude` runs work's launcher, only without CLAUDE_CONFIG_DIR
+    // and without MCC_PROFILE (~/.claude chosen explicitly).
     let rc = sb.read(".zshrc");
     assert!(rc.starts_with(&rc_before), "{rc}");
     assert_eq!(rc.matches(BEGIN).count(), 1, "{rc}");
     assert!(
         rc.contains(
-            "function claude {\n  if [ -z \"${CLAUDE_CONFIG_DIR:-}\" ]; then \"$HOME/.local/bin/work\" \"$@\"; else command claude \"$@\"; fi\n}\n# <<< mcc:default <<<\n"
+            "function claude {\n  if [ -z \"${CLAUDE_CONFIG_DIR:-}\" ] && [ -z \"${MCC_PROFILE:-}\" ]; then \"$HOME/.local/bin/work\" \"$@\"; else command claude \"$@\"; fi\n}\n# <<< mcc:default <<<\n"
         ),
         "{rc}"
     );
@@ -480,4 +481,62 @@ fn the_shell_function_starts_the_default_only_without_a_config_dir() {
     );
     let lab = sb.path(".mcc/profiles/lab").display().to_string();
     assert_eq!(config_dir("claude auth status", Some(&lab)), lab);
+}
+
+/// With a global default set, a project whose default is ~/.claude
+/// (`mcc project set default`) keeps plain `claude` on ~/.claude once
+/// `eval "$(mcc env)"` (or direnv) has run there: the project default beats
+/// the global default, as it does for `mcc run`.
+#[test]
+fn the_shell_function_keeps_a_project_default_of_claude() {
+    let sb = sandbox();
+    sb.mcc().args(["default", "work"]).assert().success();
+    let (claude_app, lab_app) = (sb.path("code/claude"), sb.path("code/lab"));
+    for (dir, profile) in [(&claude_app, "default"), (&lab_app, "lab")] {
+        std::fs::create_dir_all(dir).unwrap();
+        sb.mcc()
+            .args(["project", "set", profile, "--path"])
+            .arg(dir)
+            .assert()
+            .success();
+    }
+    let rc = sb.read(".zshrc");
+    sb.write("block.sh", &rc[rc.find(BEGIN).unwrap()..]);
+    // `eval "$(mcc env)"` in `dir`, then plain `claude` in the same shell.
+    let config_dir = |dir: &Path| -> String {
+        let env = stdout_of(sb.mcc().args(["env", "--shell", "bash"]).current_dir(dir));
+        let out = sb
+            .command("/bin/bash")
+            .arg("-c")
+            .arg(format!(". \"$HOME/block.sh\"\n{env}\nclaude auth status"))
+            .env("FAKE_CONFIG_DIRECTORY", "1")
+            .env("MCC_NO_USAGE", "1")
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        json(&out.stdout)["configDirectory"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let path = |rel: &str| sb.path(rel).display().to_string();
+    assert_eq!(config_dir(&claude_app), path(".claude"));
+    assert_eq!(config_dir(&lab_app), path(".mcc/profiles/lab"));
+    // No project default: the global default.
+    assert_eq!(config_dir(sb.home()), path(".mcc/profiles/work"));
+
+    // `mcc exec`/`mcc run` as ~/.claude say so too, for a shell they start.
+    let marker = |profile: &str| {
+        stdout_of(sb.mcc().args([
+            "exec",
+            profile,
+            "--",
+            "/bin/sh",
+            "-c",
+            "printf %s \"${MCC_PROFILE-unset}\"",
+        ]))
+    };
+    assert_eq!(marker("default"), "default");
+    assert_eq!(marker("lab"), "unset");
 }

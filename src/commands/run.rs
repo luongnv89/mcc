@@ -310,7 +310,9 @@ pub(crate) fn note_if_not_the_projects(cfg: &Config, chosen: &str) {
 }
 
 /// Give `cmd` the profile's environment: its `CLAUDE_CONFIG_DIR` exactly as
-/// registered (unset for the default profile), mcc's view of HOME (so
+/// registered (unset for the default profile, which gets `MCC_PROFILE=default`
+/// instead so a shell inside still knows ~/.claude was chosen; see
+/// [`crate::shell::PROFILE_ENV`]), mcc's view of HOME (so
 /// MCC_HOME sandboxes stay consistent), and `CLAUDE_CODE_PLUGIN_CACHE_DIR`
 /// set to the default's plugins when the profile shares them. For a profile
 /// with its own plugins the variable is cleared when it holds the default's
@@ -318,8 +320,12 @@ pub(crate) fn note_if_not_the_projects(cfg: &Config, chosen: &str) {
 pub(crate) fn profile_env(cmd: &mut std::process::Command, paths: &Paths, p: &Profile) {
     cmd.env("HOME", &paths.home);
     match &p.config_dir {
-        Some(dir) => cmd.env("CLAUDE_CONFIG_DIR", dir),
-        None => cmd.env_remove("CLAUDE_CONFIG_DIR"),
+        Some(dir) => cmd
+            .env("CLAUDE_CONFIG_DIR", dir)
+            .env_remove(crate::shell::PROFILE_ENV),
+        None => cmd
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .env(crate::shell::PROFILE_ENV, "default"),
     };
     if p.shares_plugins {
         cmd.env(crate::plugins::ENV, crate::plugins::shared_root(paths));

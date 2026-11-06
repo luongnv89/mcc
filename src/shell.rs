@@ -22,6 +22,14 @@ pub const PATH_BLOCK: &str = "path";
 /// clash with a profile's block.
 pub const DEFAULT_BLOCK: &str = "default";
 
+/// Set to `default` where the default profile (~/.claude) was chosen
+/// explicitly (`mcc env` for it, `mcc run`/`mcc exec` as it). An unset
+/// `CLAUDE_CONFIG_DIR` already means ~/.claude, so without this the `claude`
+/// function couldn't tell that choice from "nothing chosen" and would start
+/// the global default instead. Setting `CLAUDE_CONFIG_DIR` to ~/.claude is no
+/// way out: Claude Code keys its Keychain login on the variable.
+pub const PROFILE_ENV: &str = "MCC_PROFILE";
+
 fn begin(id: &str) -> String {
     format!("# >>> mcc:{id} >>>")
 }
@@ -308,8 +316,9 @@ pub fn alias_block(
 /// global default (`mcc default <alias>`): a `claude` function that runs the
 /// profile's launcher, or without one sets `CLAUDE_CONFIG_DIR` itself.
 ///
-/// Only where `CLAUDE_CONFIG_DIR` is unset or empty: a shell already pointed
-/// at a profile (`mcc env`, direnv, `mcc exec`, a Claude Code session) keeps
+/// Only where both `CLAUDE_CONFIG_DIR` and [`PROFILE_ENV`] are unset or
+/// empty: a shell already pointed at a profile (`mcc env`, direnv,
+/// `mcc run`, `mcc exec`, a launcher), the default profile included, keeps
 /// running claude as that profile. `command claude` skips the function and
 /// starts the default profile (~/.claude). The launcher is a `/bin/sh`
 /// script that finds `claude` on PATH, where the function doesn't exist, so
@@ -329,18 +338,18 @@ pub fn default_block(
     let dir = paths.shell_expr(profile_dir);
     let body = match (launcher, shell) {
         (Some(w), Shell::Fish) => format!(
-            "function claude\n  if test -z \"$CLAUDE_CONFIG_DIR\"\n    \"{}\" $argv\n  else\n    command claude $argv\n  end\nend",
+            "function claude\n  if test -z \"$CLAUDE_CONFIG_DIR\"; and test -z \"$MCC_PROFILE\"\n    \"{}\" $argv\n  else\n    command claude $argv\n  end\nend",
             paths.shell_expr(w)
         ),
         (None, Shell::Fish) => format!(
-            "function claude\n  if test -z \"$CLAUDE_CONFIG_DIR\"\n    env CLAUDE_CONFIG_DIR=\"{dir}\" claude $argv\n  else\n    command claude $argv\n  end\nend"
+            "function claude\n  if test -z \"$CLAUDE_CONFIG_DIR\"; and test -z \"$MCC_PROFILE\"\n    env CLAUDE_CONFIG_DIR=\"{dir}\" claude $argv\n  else\n    command claude $argv\n  end\nend"
         ),
         (Some(w), Shell::Zsh | Shell::Bash) => format!(
-            "function claude {{\n  if [ -z \"${{CLAUDE_CONFIG_DIR:-}}\" ]; then \"{}\" \"$@\"; else command claude \"$@\"; fi\n}}",
+            "function claude {{\n  if [ -z \"${{CLAUDE_CONFIG_DIR:-}}\" ] && [ -z \"${{MCC_PROFILE:-}}\" ]; then \"{}\" \"$@\"; else command claude \"$@\"; fi\n}}",
             paths.shell_expr(w)
         ),
         (None, Shell::Zsh | Shell::Bash) => format!(
-            "function claude {{\n  if [ -z \"${{CLAUDE_CONFIG_DIR:-}}\" ]; then CLAUDE_CONFIG_DIR=\"{dir}\" command claude \"$@\"; else command claude \"$@\"; fi\n}}"
+            "function claude {{\n  if [ -z \"${{CLAUDE_CONFIG_DIR:-}}\" ] && [ -z \"${{MCC_PROFILE:-}}\" ]; then CLAUDE_CONFIG_DIR=\"{dir}\" command claude \"$@\"; else command claude \"$@\"; fi\n}}"
         ),
     };
     format!("{head}\n{body}")
@@ -658,9 +667,10 @@ mod tests {
         let wrapper = paths.wrapper("work");
         let zsh = default_block(&paths, Shell::Zsh, "work", &dir, Some(&wrapper));
         assert!(zsh.contains("mcc default default"), "{zsh}");
+        assert!(zsh.contains(&format!("${{{PROFILE_ENV}:-}}")), "{zsh}");
         assert!(
             zsh.ends_with(
-                "function claude {\n  if [ -z \"${CLAUDE_CONFIG_DIR:-}\" ]; then \"$HOME/.local/bin/work\" \"$@\"; else command claude \"$@\"; fi\n}"
+                "function claude {\n  if [ -z \"${CLAUDE_CONFIG_DIR:-}\" ] && [ -z \"${MCC_PROFILE:-}\" ]; then \"$HOME/.local/bin/work\" \"$@\"; else command claude \"$@\"; fi\n}"
             ),
             "{zsh}"
         );
@@ -671,7 +681,7 @@ mod tests {
         let fish = default_block(&paths, Shell::Fish, "work", &dir, Some(&wrapper));
         assert!(
             fish.ends_with(
-                "function claude\n  if test -z \"$CLAUDE_CONFIG_DIR\"\n    \"$HOME/.local/bin/work\" $argv\n  else\n    command claude $argv\n  end\nend"
+                "function claude\n  if test -z \"$CLAUDE_CONFIG_DIR\"; and test -z \"$MCC_PROFILE\"\n    \"$HOME/.local/bin/work\" $argv\n  else\n    command claude $argv\n  end\nend"
             ),
             "{fish}"
         );
