@@ -127,9 +127,24 @@ fn json_and_json_v2_conflict() {
 }
 
 #[test]
+fn list_json_only_gains_is_global_default_at_the_end() {
+    // #104: `is_global_default` appended to each schema-1 object; `is_default`
+    // stays where it was and keeps meaning ~/.claude.
+    let sb = sandbox();
+    let bare = out(&sb, &["list", "--json"]);
+    for p in bare.as_array().unwrap() {
+        let keys: Vec<&str> = p.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys[..3], ["name", "command", "is_default"], "{p}");
+        assert_eq!(keys.last(), Some(&"is_global_default"), "{p}");
+        assert_eq!(p["is_global_default"], p["name"] == "default", "{p}");
+    }
+}
+
+#[test]
 fn usage_json_only_gains_the_login_fields() {
     // #100: four fields appended to each schema-1 object, the old ones
     // unchanged and in place; the v2 envelope carries the same objects.
+    // #104 appends `is_global_default` after them.
     let sb = sandbox();
     let bare = out(&sb, &["usage", "--json"]);
     for p in bare.as_array().unwrap() {
@@ -145,7 +160,8 @@ fn usage_json_only_gains_the_login_fields() {
                 "last_activity",
                 "login_expires_at",
                 "login_expires_source",
-                "login_warning"
+                "login_warning",
+                "is_global_default"
             ],
             "{p}"
         );
