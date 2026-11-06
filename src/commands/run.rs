@@ -1,7 +1,8 @@
 //! `mcc run` — start Claude Code in the current project with its profile.
 //!
-//! The project's default profile (`mcc project set`) starts, or the default
-//! profile (~/.claude) outside any project. mcc never switches accounts on
+//! The project's default profile (`mcc project set`) starts; outside any
+//! project, the global default (`mcc default`), else the default profile
+//! (~/.claude). mcc never switches accounts on
 //! its own: when that profile is known to be at its 5-hour or weekly limit,
 //! `mcc run` asks what to do, and waiting (starting nothing) is the default.
 //! The next choice starts the profile anyway; other profiles are offered
@@ -102,8 +103,9 @@ pub fn run(paths: &Paths, cfg: &Config, args: &RunArgs) -> Result<()> {
         return launch(paths, cfg, p, args);
     }
 
-    let (default, project) = project_default(paths, cfg, &all)?;
-    let why = why(paths, project);
+    let (default, origin) = project_default(paths, cfg, &all)?;
+    let why = why(paths, origin);
+    let project = origin.project();
 
     let default_usage = fetch(paths, cfg, &[default]).remove(0);
     if !pick::at_limit(&default_usage) {
@@ -223,34 +225,75 @@ pub(crate) fn find<'a>(all: &'a [Profile], name: &str) -> Result<&'a Profile> {
         .ok_or_else(|| super::unknown_profile(name))
 }
 
-/// The profile that applies in the current directory: the default of the
-/// deepest project containing it, else the default profile (~/.claude).
-/// Also returns that project, if any.
+/// Why a profile applies in a directory ([`applies_in`]).
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Origin<'c> {
+    /// The deepest project containing it (`mcc project set`): its directory
+    /// and entry.
+    Project(&'c str, &'c crate::config::Project),
+    /// No project: the global default (`mcc default <alias>`).
+    Global,
+    /// Neither: the default profile (~/.claude).
+    Builtin,
+}
+
+impl<'c> Origin<'c> {
+    /// The project, when the profile is its default.
+    pub(crate) fn project(self) -> Option<(&'c str, &'c crate::config::Project)> {
+        match self {
+            Origin::Project(dir, p) => Some((dir, p)),
+            Origin::Global | Origin::Builtin => None,
+        }
+    }
+}
+
+/// The name of the profile that applies in `dir`, and why: the default of
+/// the deepest project containing it, else the global default (`mcc
+/// default`), else `default` (~/.claude). The name is not checked against
+/// the registry. `mcc run`, `mcc env` and the bare `mcc` status view all
+/// resolve it here, so they always agree.
+pub(crate) fn applies_in<'c>(cfg: &'c Config, dir: &Path) -> (&'c str, Origin<'c>) {
+    if let Some((d, p)) = super::project::lookup(cfg, dir) {
+        return (p.profile.as_str(), Origin::Project(d, p));
+    }
+    match cfg.default_profile.as_deref() {
+        Some(name) => (name, Origin::Global),
+        None => ("default", Origin::Builtin),
+    }
+}
+
+/// The profile that applies in the current directory ([`applies_in`]), and
+/// why. An error when that names no profile (a hand-edited config).
 pub(crate) fn project_default<'a, 'c>(
     paths: &Paths,
     cfg: &'c Config,
     all: &'a [Profile],
-) -> Result<(&'a Profile, Option<(&'c str, &'c crate::config::Project)>)> {
+) -> Result<(&'a Profile, Origin<'c>)> {
     let cwd = super::project::current_dir()?;
-    let project = super::project::lookup(cfg, &cwd);
-    let default_name = project.map_or("default", |(_, p)| p.profile.as_str());
-    let Some(default) = all.iter().find(|p| p.name == default_name) else {
-        let (dir, _) = project.expect("the default profile always exists");
-        return Err(CliError::input(format!(
-            "the project default of {} is \"{default_name}\", which is not a profile",
+    let (name, origin) = applies_in(cfg, &cwd);
+    if let Some(p) = all.iter().find(|p| p.name == name) {
+        return Ok((p, origin));
+    }
+    Err(match origin {
+        Origin::Project(dir, _) => CliError::input(format!(
+            "the project default of {} is \"{name}\", which is not a profile",
             paths.display(Path::new(dir))
         ))
-        .hint("set another with `mcc project set <profile>`, or remove it with `mcc project unset`")
-        .into());
-    };
-    Ok((default, project))
+        .hint("set another with `mcc project set <profile>`, or remove it with `mcc project unset`"),
+        Origin::Global | Origin::Builtin => CliError::input(format!(
+            "the global default is \"{name}\", which is not a profile"
+        ))
+        .hint("set another with `mcc default <profile>`, or go back to ~/.claude with `mcc default default`"),
+    }
+    .into())
 }
 
-/// Why the project's profile applies: `the default for ~/code/app`.
-pub(crate) fn why(paths: &Paths, project: Option<(&str, &crate::config::Project)>) -> String {
-    match project {
-        Some((dir, _)) => format!("the default for {}", paths.display(Path::new(dir))),
-        None => "no project default here".to_string(),
+/// Why the profile applies: `the default for ~/code/app`.
+pub(crate) fn why(paths: &Paths, origin: Origin) -> String {
+    match origin {
+        Origin::Project(dir, _) => format!("the default for {}", paths.display(Path::new(dir))),
+        Origin::Global => "the global default (`mcc default`)".to_string(),
+        Origin::Builtin => "no project default here".to_string(),
     }
 }
 
@@ -314,6 +357,37 @@ fn launch(paths: &Paths, cfg: &Config, p: &Profile, args: &RunArgs) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A project default beats the global default, which beats ~/.claude.
+    #[test]
+    fn applies_in_prefers_the_project_then_the_global_default() {
+        let mut cfg: Config = toml::from_str(
+            "[profiles.work]\ndir = \"/d/work\"\nmode = \"clone\"\ncreated_at = \"t\"\n\
+             [profiles.lab]\ndir = \"/d/lab\"\nmode = \"clone\"\ncreated_at = \"t\"\n\
+             [projects.\"/src/app\"]\nprofile = \"lab\"\n",
+        )
+        .unwrap();
+        let (app, out) = (Path::new("/src/app/x"), Path::new("/elsewhere"));
+        assert!(matches!(
+            applies_in(&cfg, out),
+            ("default", Origin::Builtin)
+        ));
+        assert!(matches!(
+            applies_in(&cfg, app),
+            ("lab", Origin::Project("/src/app", _))
+        ));
+
+        cfg.default_profile = Some("work".into());
+        assert!(matches!(applies_in(&cfg, out), ("work", Origin::Global)));
+        assert!(matches!(
+            applies_in(&cfg, app),
+            ("lab", Origin::Project(..))
+        ));
+        assert_eq!(
+            why(&Paths::new("/h".into()), applies_in(&cfg, out).1),
+            "the global default (`mcc default`)"
+        );
+    }
 
     #[test]
     fn prompt_waits_by_default_then_offers_only_allowed_profiles_by_name() {

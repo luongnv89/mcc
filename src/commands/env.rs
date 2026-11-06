@@ -2,8 +2,8 @@
 //! profile, for `eval "$(mcc env)"` (e.g. in a direnv `.envrc`).
 //!
 //! Without a profile it is the one `mcc run` would start here: the project's
-//! default, else the default profile (~/.claude), whose code unsets the
-//! variable. Usage is never checked, and nothing is written or locked.
+//! default, else the global default (`mcc default`), else the default
+//! profile (~/.claude), whose code unsets the variable. Usage is never checked, and nothing is written or locked.
 //!
 //! A profile sharing the default's plugins also gets
 //! `CLAUDE_CODE_PLUGIN_CACHE_DIR`; for any other profile, mcc's own value of
@@ -33,8 +33,8 @@ pub fn run(paths: &Paths, cfg: &Config, args: &EnvArgs) -> Result<()> {
             p
         }
         None => {
-            let (p, project) = run::project_default(paths, cfg, &all)?;
-            ui::detail(&format!("`{}` — {}", p.name, run::why(paths, project)));
+            let (p, origin) = run::project_default(paths, cfg, &all)?;
+            ui::detail(&format!("`{}` — {}", p.name, run::why(paths, origin)));
             p
         }
     };

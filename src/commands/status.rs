@@ -77,12 +77,18 @@ struct Here {
 
 /// "Here: `work` (Acme) — the default for ~/code/app", or "Here: `default`
 /// — no project default here": the profile `mcc run` (and `mcc env`) use in
-/// the current directory, and why.
+/// the current directory, and why (the same [`super::run::applies_in`]).
 fn here(paths: &Paths, cfg: &Config) -> Here {
     let cwd = super::project::current_dir().ok();
-    let project = cwd.as_deref().and_then(|d| super::project::lookup(cfg, d));
-    let name = project.map_or("default", |(_, p)| p.profile.as_str());
-    let why = super::run::why(paths, project);
+    let (name, origin) = match cwd.as_deref() {
+        Some(d) => super::run::applies_in(cfg, d),
+        // No current directory: no project applies.
+        None => match cfg.default_profile.as_deref() {
+            Some(name) => (name, super::run::Origin::Global),
+            None => ("default", super::run::Origin::Builtin),
+        },
+    };
+    let why = super::run::why(paths, origin);
     let known = name == "default" || cfg.profiles.contains_key(name);
     // A profile name hand-written in the config file could hold control
     // characters: never print those.
@@ -94,12 +100,17 @@ fn here(paths: &Paths, cfg: &Config) -> Here {
     };
     let mut line = format!("Here: {shown} — {why}");
     let mut warning = None;
-    if !known && let Some((dir, _)) = project {
+    if !known {
         line.push_str(" (no such profile)");
-        warning = Some(format!(
-            "the project default of {} is \"{shown_name}\", which is not a profile — set another with `mcc project set <profile>`, or remove it with `mcc project unset`",
-            paths.display(Path::new(dir))
-        ));
+        warning = Some(match origin.project() {
+            Some((dir, _)) => format!(
+                "the project default of {} is \"{shown_name}\", which is not a profile — set another with `mcc project set <profile>`, or remove it with `mcc project unset`",
+                paths.display(Path::new(dir))
+            ),
+            None => format!(
+                "the global default is \"{shown_name}\", which is not a profile — set another with `mcc default <profile>`, or go back to ~/.claude with `mcc default default`"
+            ),
+        });
     }
     Here { line, warning }
 }

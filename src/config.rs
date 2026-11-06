@@ -19,6 +19,12 @@ use crate::paths::Paths;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
+    /// The profile plain `claude` and `mcc run` start outside any project
+    /// (`mcc default <alias>`); unset means the default profile (~/.claude).
+    /// Declared first so it is written before the tables. Left out of the
+    /// file while unset. Read it with [`Config::global_default`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_profile: Option<String>,
     #[serde(default)]
     pub env: Option<EnvInfo>,
     #[serde(default)]
@@ -496,6 +502,33 @@ impl Config {
         crate::fsutil::write_atomic(path, text.as_bytes())
     }
 
+    /// The profile that applies outside any project: the one `mcc default`
+    /// chose, else `default` (~/.claude). Not checked against the registry:
+    /// a hand-edited name may be no profile at all.
+    pub fn global_default(&self) -> &str {
+        self.default_profile.as_deref().unwrap_or("default")
+    }
+
+    /// Point the global default at `new` when it is `old` (`mcc rename`).
+    /// Returns whether it changed.
+    pub fn rename_global_default(&mut self, old: &str, new: &str) -> bool {
+        if self.default_profile.as_deref() != Some(old) {
+            return false;
+        }
+        self.default_profile = Some(new.to_string());
+        true
+    }
+
+    /// Clear the global default when it is `alias` (`mcc delete`): plain
+    /// `claude` starts ~/.claude again. Returns whether it changed.
+    pub fn clear_global_default(&mut self, alias: &str) -> bool {
+        if self.default_profile.as_deref() != Some(alias) {
+            return false;
+        }
+        self.default_profile = None;
+        true
+    }
+
     /// Point the project defaults naming `old` at `new` (`mcc rename`).
     /// Returns how many changed.
     pub fn rename_project_defaults(&mut self, old: &str, new: &str) -> usize {
@@ -763,6 +796,51 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("share_sessions = true"), "{text}");
         assert!(Config::load(&path).unwrap().profiles["work"].share_sessions);
+    }
+
+    /// The global default: written before the tables of a file that has
+    /// them, read back, and gone again (byte for byte) once cleared.
+    #[test]
+    fn global_default_round_trip_and_absent_when_unset() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let legacy = "# mcc configuration — managed by `mcc`; safe to edit by hand.\n\n\
+            [sync]\nexclude = []\nextra = []\n\n\
+            [usage]\n\n\
+            [profiles.work]\ndir = \"/h/.mcc/profiles/work\"\nmode = \"clone\"\n\
+            created_at = \"2026-10-10T00:00:00+02:00\"\n";
+        std::fs::write(&path, legacy).unwrap();
+        let mut cfg = Config::load(&path).unwrap();
+        assert_eq!(cfg.default_profile, None);
+        assert_eq!(cfg.global_default(), "default");
+        cfg.save(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), legacy);
+
+        cfg.default_profile = Some("work".into());
+        cfg.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let at = text.find("default_profile = \"work\"").expect(&text);
+        assert!(at < text.find("[sync]").unwrap(), "{text}");
+        let mut back = Config::load(&path).unwrap();
+        assert_eq!(back.global_default(), "work");
+
+        assert!(!back.rename_global_default("lab", "x"));
+        assert!(back.rename_global_default("work", "job"));
+        assert_eq!(back.global_default(), "job");
+        assert!(!back.clear_global_default("work"));
+        assert!(back.clear_global_default("job"));
+        assert_eq!(back.default_profile, None);
+        back.save(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), legacy);
+
+        // A fresh file: no key at all while unset.
+        let fresh = dir.path().join("fresh.toml");
+        Config::default().save(&fresh).unwrap();
+        assert!(
+            !std::fs::read_to_string(&fresh)
+                .unwrap()
+                .contains("default_profile")
+        );
     }
 
     #[test]
