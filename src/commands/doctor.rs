@@ -117,6 +117,7 @@ pub fn run(paths: &Paths, cfg: &Config, args: &DoctorArgs) -> Result<()> {
     check_setup(&mut d);
     check_path(&mut d);
     check_rc_files(&mut d);
+    check_default_profile(&mut d);
     check_environment(&mut d);
     if default {
         d.profile = Some(statusline::DEFAULT_PROFILE.into());
@@ -356,6 +357,77 @@ fn check_rc_files(d: &mut Doctor) {
             Level::Ok,
             format!("no rc file sets {CONFIG_DIR_VAR} globally"),
         );
+    }
+}
+
+/// The global default (`mcc default`): a profile that exists, and the
+/// shell's `claude` function in step with it. Only reported once a default
+/// was chosen or a block is there: with neither, ~/.claude is the default
+/// as it always was.
+fn check_default_profile(d: &mut Doctor) {
+    let stale = super::default::stale_blocks(d.paths, d.cfg);
+    let Some(name) = d.cfg.default_profile.clone() else {
+        if !stale.is_empty() {
+            let shown: Vec<String> = stale.iter().map(|rc| d.show(rc)).collect();
+            d.push_cmd(
+                "default_profile",
+                Level::Warn,
+                format!(
+                    "{} still define{} a `claude` function for a default profile, but the default is ~/.claude",
+                    shown.join(", "),
+                    if shown.len() == 1 { "s" } else { "" }
+                ),
+                "mcc default default".into(),
+            );
+        }
+        return;
+    };
+    let shown = if super::has_control(&name) {
+        "?".to_string()
+    } else {
+        name.clone()
+    };
+    if !d.cfg.profiles.contains_key(&name) {
+        d.push_cmd(
+            "default_profile",
+            Level::Problem,
+            format!(
+                "the default profile is \"{shown}\" (default_profile in {}), which is not a profile: `mcc run` fails outside projects",
+                d.show(&d.paths.config_file)
+            ),
+            "mcc default default".into(),
+        );
+        return;
+    }
+    let rc = d.cfg.env.as_ref().and_then(|e| e.rc_file.clone());
+    match rc {
+        _ if !stale.is_empty() => {
+            let files: Vec<String> = stale.iter().map(|rc| d.show(rc)).collect();
+            d.push_cmd(
+                "default_profile",
+                Level::Warn,
+                format!(
+                    "the default profile is `{shown}`, but the `claude` function in {} doesn't match it: plain `claude` may not start it",
+                    files.join(", ")
+                ),
+                format!("mcc default {shown}"),
+            );
+        }
+        None => d.push(
+            "default_profile",
+            Level::Warn,
+            format!(
+                "the default profile is `{shown}`, but no rc file is managed (shell not supported): only `mcc run` starts it, plain `claude` starts ~/.claude"
+            ),
+        ),
+        Some(rc) => d.push(
+            "default_profile",
+            Level::Ok,
+            format!(
+                "the default profile is `{shown}`: {} makes plain `claude` start it",
+                d.show(&rc)
+            ),
+        ),
     }
 }
 
