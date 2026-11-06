@@ -4,6 +4,10 @@ All notable changes to mcc are recorded here. The format follows [Keep a Changel
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-06
+
+The new `mcc default PROFILE` makes another profile the default without moving any data: plain `claude` now starts it in new interactive shells, and outside projects `mcc run` and `mcc env` start it and the `mcc` status view shows it, while a project default still wins inside its project. `mcc list`, `mcc usage` and the status view mark the default with ★, and `mcc default default` goes back to `~/.claude`. `~/.claude` stays the setup `mcc sync` and `mcc add --clone` copy from, and `command claude`, IDEs and scripts still start it.
+
 ### Added
 
 - `mcc default PROFILE` makes another profile the default without moving any data. Plain `claude` starts it in new interactive shells: mcc adds a `claude` function to your rc file (a `# >>> mcc:default >>>` block) that runs the profile's launcher where `CLAUDE_CONFIG_DIR` isn't already set and `MCC_PROFILE` is empty. `mcc env` (and `mcc run`/`mcc exec`) for `~/.claude` now sets `MCC_PROFILE=default`, and clears it for any other profile, so a project whose default is `~/.claude` keeps plain `claude` there. Outside projects, `mcc run`, `mcc env` and the `mcc` status view start it too, and a project default still wins inside its project. `mcc default` prints the current default, and `mcc default default` (or `claude`) goes back to `~/.claude`, removing the block. `mcc list`, `mcc usage` and `mcc` mark the default with ★, and `--json`/`--json-v2` add `is_global_default` to each profile (`is_default` still marks `~/.claude`). The choice is `default_profile` in `~/.mcc/config.toml`. A name that is no profile exits 2 and writes nothing, and choosing the profile that is already the default changes nothing. `mcc rename` moves the default to the new name, `mcc delete` of the default goes back to `~/.claude`, and `mcc doctor` reports a default that names no profile or an rc block that doesn't match it. Limits: `~/.claude` stays the setup `mcc sync` and `mcc add --clone` copy from, and `default`/`claude` still name it in every command. `command claude`, IDEs and scripts still start `~/.claude`. ([#104](https://github.com/luongnv89/mcc/issues/104))
@@ -148,7 +152,8 @@ The first version of mcc.
 - Access tokens are kept in memory only, sent only to the usage endpoint for their own profile, and never printed, logged or written to disk. Expired tokens are never sent. ([#15](https://github.com/luongnv89/mcc/pull/15))
 - GitHub private vulnerability reporting is enabled, and `contact@luongnv.com` is listed as the security contact. ([#21](https://github.com/luongnv89/mcc/pull/21))
 
-[Unreleased]: https://github.com/luongnv89/mcc/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/luongnv89/mcc/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/luongnv89/mcc/releases/tag/v0.7.0
 [0.6.1]: https://github.com/luongnv89/mcc/releases/tag/v0.6.1
 [0.6.0]: https://github.com/luongnv89/mcc/releases/tag/v0.6.0
 [0.5.0]: https://github.com/luongnv89/mcc/releases/tag/v0.5.0
