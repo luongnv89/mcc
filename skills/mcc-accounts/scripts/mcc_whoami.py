@@ -39,7 +39,7 @@ CREDENTIAL_ENV = (
     "CLAUDE_CODE_USE_VERTEX",
     "ANTHROPIC_BASE_URL",
 )
-MIN_VERSION = (0, 4, 0)  # first release with --json-v2, exec and project defaults
+MIN_VERSION = (0, 7, 0)  # same floor as SKILL.md: `mcc default` needs 0.7.0, `mcc login` 0.6.0
 
 
 def fail(code, what, fix):
@@ -110,7 +110,7 @@ def main():
              "reinstall mcc, then re-run.")
     ver = tuple(int(x) for x in m.groups())
     if ver < MIN_VERSION:
-        fail(1, f"mcc {'.'.join(map(str, ver))} is too old for this skill (needs 0.4.0+).",
+        fail(1, f"mcc {'.'.join(map(str, ver))} is too old for this skill (needs {'.'.join(map(str, MIN_VERSION))}+).",
              "upgrade it: brew upgrade mcc (or re-run the install script).")
 
     if not os.path.isfile(os.path.join(home, ".mcc", "config.toml")):
