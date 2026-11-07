@@ -316,6 +316,56 @@ fn skip(profile: &str, why: &str, hint: &str) {
     ui::hint(hint);
 }
 
+/// Skips `profile` (and says so) while a recent failure holds it back.
+fn cooling_down(paths: &Paths, profile: &str, now: DateTime<Utc>, manual: &str) -> bool {
+    let Some(at) = retry_at(read_failed_at(paths, profile), now) else {
+        return false;
+    };
+    skip(
+        profile,
+        &format!(
+            "refreshing `{profile}` failed less than {} minutes ago; mcc tries again after {}",
+            FAILURE_COOLDOWN.num_minutes(),
+            usage::local_time(at)
+        ),
+        manual,
+    );
+    true
+}
+
+/// Take `profile`'s refresh lock for a request, or skip it (and say so):
+/// while another run holds the lock, when the lock can't be taken, or when
+/// a failure is recorded by the time it is held. A run that held the lock
+/// until now may have just recorded one, and its request must not be sent
+/// twice.
+fn lock_to_refresh(paths: &Paths, profile: &str, manual: &str) -> Option<RefreshLock> {
+    let lock = match try_lock(paths, profile) {
+        Ok(Some(lock)) => lock,
+        Ok(None) => {
+            skip(
+                profile,
+                &format!("a refresh of `{profile}` is already running"),
+                manual,
+            );
+            return None;
+        }
+        Err(e) => {
+            crate::log::write("WARN", &format!("refresh {profile}: {e:#}"));
+            skip(
+                profile,
+                &format!("can't take the refresh lock of `{profile}`"),
+                manual,
+            );
+            return None;
+        }
+    };
+    // Again under the lock: the check before it may predate the failure.
+    if cooling_down(paths, profile, Utc::now(), manual) {
+        return None;
+    }
+    Some(lock)
+}
+
 /// `mcc usage --all` (#106): for each target whose live lookup in `found`
 /// is [`Reason::TokenExpired`], let Claude Code refresh the token with one
 /// request in a project mapped to that profile or a new empty folder
@@ -398,23 +448,7 @@ fn refresh_one(
         );
         return false;
     }
-    // Skips (and says so) while a recent failure holds the profile back.
-    let cooling_down = |now: DateTime<Utc>| {
-        let Some(at) = retry_at(read_failed_at(paths, name), now) else {
-            return false;
-        };
-        skip(
-            name,
-            &format!(
-                "refreshing `{name}` failed less than {} minutes ago; mcc tries again after {}",
-                FAILURE_COOLDOWN.num_minutes(),
-                usage::local_time(at)
-            ),
-            &manual,
-        );
-        true
-    };
-    if cooling_down(now) {
+    if cooling_down(paths, name, now, &manual) {
         return false;
     }
     let Some(timeout) = request_timeout(start.elapsed()) else {
@@ -437,31 +471,9 @@ fn refresh_one(
         );
         return false;
     };
-    let lock = match try_lock(paths, name) {
-        Ok(Some(lock)) => lock,
-        Ok(None) => {
-            skip(
-                name,
-                &format!("a refresh of `{name}` is already running"),
-                &manual,
-            );
-            return false;
-        }
-        Err(e) => {
-            crate::log::write("WARN", &format!("refresh {name}: {e:#}"));
-            skip(
-                name,
-                &format!("can't take the refresh lock of `{name}`"),
-                &manual,
-            );
-            return false;
-        }
-    };
-    // Again under the lock: a run that held it until now may have just
-    // recorded a failure, and its request must not be sent twice.
-    if cooling_down(Utc::now()) {
+    let Some(lock) = lock_to_refresh(paths, name, &manual) else {
         return false;
-    }
+    };
     // Only a folder made here is ever removed.
     let (dir, owned) = match &place {
         Place::Project(dir) => (dir.clone(), false),
@@ -679,6 +691,31 @@ mod tests {
                 .is_file()
         );
         assert_eq!(read_failed_at(&paths, "lab"), None);
+    }
+
+    #[test]
+    fn a_failure_recorded_while_the_lock_was_held_stops_the_request() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::new(tmp.path().to_path_buf());
+        let manual = manual_hint("work");
+        // Nothing recorded, lock free: the request may go.
+        let lock = lock_to_refresh(&paths, "work", &manual);
+        assert!(lock.is_some());
+        drop(lock);
+        // The check before the lock passed (nothing was recorded then).
+        assert!(!cooling_down(&paths, "work", Utc::now(), &manual));
+        // Meanwhile another run holds the lock, fails, records it, and
+        // lets go.
+        let other = try_lock(&paths, "work").unwrap().unwrap();
+        assert!(lock_to_refresh(&paths, "work", &manual).is_none());
+        record_failure(&paths, "work", Utc::now());
+        drop(other);
+        // Now the lock is free, but the failure under it stops the request,
+        // and the lock is not kept.
+        assert!(lock_to_refresh(&paths, "work", &manual).is_none());
+        assert!(try_lock(&paths, "work").unwrap().is_some());
+        // Another profile is not held back.
+        assert!(lock_to_refresh(&paths, "lab", &manual).is_some());
     }
 
     #[test]
