@@ -22,8 +22,9 @@
 //! refreshes a token itself (it never sends a refresh token, nor calls the
 //! OAuth token endpoint): an expired one is reported, not sent. Only `mcc
 //! usage --all` then asks Claude Code to refresh it, with one tiny `claude
-//! -p` request run as that profile in a folder where `mcc run` starts it,
-//! and looks it up again (#106, [`crate::refresh::refresh_expired`]).
+//! -p` request run as that profile in a project mapped to it, else in a new
+//! empty folder, and looks it up again (#106,
+//! [`crate::refresh::refresh_expired`]).
 //!
 //! Login expiry ([`login_times`], #100) is the one narrow exception to "the
 //! default reads no token" (#34): plain `mcc usage` reads each profile's
