@@ -2,7 +2,8 @@
 """Tests for scripts/mcc_whoami.py: it must check set-up the way mcc does
 (src/main.rs `set_up()`: config.toml loads and has its `[env]` table) and
 never run `mcc list` when mcc is not set up, because `mcc list` would set mcc
-up (first-run setup writes `[env]` and creates ~/.mcc/logs).
+up (first-run setup writes `[env]` and creates ~/.mcc/logs). With tomllib it
+must decide without running `mcc doctor`, which starts `claude` per profile.
 
 Run from the repo root:
     python3 -m unittest skills/mcc-accounts/evals/test_mcc_whoami.py -v
@@ -28,6 +29,19 @@ import unittest
 SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                       "scripts", "mcc_whoami.py")
 NOT_SET_UP = "mcc is not set up yet"
+HAS_TOMLLIB = sys.version_info >= (3, 11)
+
+# A complete, valid [env]: every required field of src/env_detect.rs EnvInfo.
+ENV_OK = (
+    '[env]\n'
+    'os = "macos"\n'
+    'os_version = "15.0"\n'
+    'arch = "aarch64"\n'
+    'terminal = "Apple_Terminal"\n'
+    'shell_path = "/bin/zsh"\n'
+    'local_bin_on_path = true\n'
+    'detected_at = "2026-01-01T00:00:00Z"\n'
+)
 
 # Runs the script with tomllib hidden, as on Python < 3.11.
 NO_TOMLLIB = ("import sys, runpy; sys.modules['tomllib'] = None; "
@@ -163,15 +177,41 @@ class FakeMccTest(unittest.TestCase):
         self.assertEqual(snapshot(self.home), before)
         return result
 
-    # --- tomllib (Python 3.11+): the file is checked before mcc is asked ---
+    # --- tomllib (Python 3.11+): the file alone decides; no mcc subcommand runs ---
+    # The fake logs every command but `--version`, so an empty log means
+    # nothing but `mcc --version` ran.
 
     def test_config_without_env_exits_1_and_changes_nothing(self):
-        if sys.version_info < (3, 11):
+        if not HAS_TOMLLIB:
             self.skipTest("needs tomllib")
         self.write_config("[profiles]\n")
         # doctor is scripted to say "set up": only the [env] check can stop it.
         self.assert_not_set_up(snapshot(self.home), doctor="ok")
-        self.assertNotIn("doctor", self.commands_run())
+        self.assertEqual(self.commands_run(), [])
+
+    def test_incomplete_env_exits_1_without_doctor(self):
+        if not HAS_TOMLLIB:
+            self.skipTest("needs tomllib")
+        configs = {
+            "empty [env]": ("[env]\n", "os, os_version, arch, terminal, shell_path, "
+                                       "local_bin_on_path, detected_at"),
+            "partial [env]": ('[env]\nos = "x"\narch = "y"\n',
+                              "os_version, terminal, shell_path, local_bin_on_path, detected_at"),
+            "wrong-typed field": (ENV_OK.replace("local_bin_on_path = true",
+                                                 'local_bin_on_path = "yes"'),
+                                  "local_bin_on_path"),
+            "string field not a string": (ENV_OK.replace('arch = "aarch64"', "arch = 64"), "arch"),
+        }
+        for label, (text, bad) in configs.items():
+            with self.subTest(config=label):
+                if os.path.exists(self.calls):
+                    os.remove(self.calls)
+                self.write_config(text)
+                # doctor is scripted to say "set up": only the field check can stop it.
+                result = self.assert_not_set_up(snapshot(self.home), doctor="ok")
+                self.assertIn(f"[env] table is incomplete (missing/invalid: {bad})", result.stderr)
+                self.assertIn("mcc init --force", result.stderr)
+                self.assertEqual(self.commands_run(), [])
 
     def test_missing_config_exits_1(self):
         for no_tomllib in (False, True):
@@ -181,28 +221,31 @@ class FakeMccTest(unittest.TestCase):
                 self.assertEqual(self.commands_run(), [])
 
     def test_unparseable_config_exits_1(self):
-        if sys.version_info < (3, 11):
+        if not HAS_TOMLLIB:
             self.skipTest("needs tomllib")
         self.write_config("[env\nos = \n")
         result = self.assert_not_set_up(snapshot(self.home), doctor="ok")
         self.assertIn("mcc init --force", result.stderr)
+        self.assertEqual(self.commands_run(), [])
 
     def test_env_not_a_table_exits_1(self):
-        if sys.version_info < (3, 11):
+        if not HAS_TOMLLIB:
             self.skipTest("needs tomllib")
         self.write_config("env = 1\n")
         self.assert_not_set_up(snapshot(self.home), doctor="ok")
+        self.assertEqual(self.commands_run(), [])
 
     def test_unreadable_config_exits_1(self):
-        if sys.version_info < (3, 11):
+        if not HAS_TOMLLIB:
             self.skipTest("needs tomllib")
         if os.geteuid() == 0:
             self.skipTest("root reads any file")
-        self.write_config("[env]\nos = \"x\"\n")
+        self.write_config(ENV_OK)
         os.chmod(self.config, 0)
         self.assert_not_set_up(snapshot(self.home), doctor="ok")
+        self.assertEqual(self.commands_run(), [])
 
-    # --- mcc doctor: the verdict on every Python, and the only one without tomllib ---
+    # --- no tomllib (Python < 3.11): mcc doctor alone decides ---
 
     def test_doctor_init_problem_exits_1(self):
         self.write_config("[profiles]\n")
@@ -210,23 +253,15 @@ class FakeMccTest(unittest.TestCase):
         self.assertIn("doctor", self.commands_run())
 
     def test_doctor_without_json_exits_1(self):
-        # tomllib accepts this file, but mcc cannot load it (EnvInfo has
-        # required fields): mcc's own verdict decides.
+        # mcc cannot load this file (EnvInfo has required fields): doctor
+        # prints no JSON and its stderr names the error.
         self.write_config("[env]\nos = \"x\"\n")
-        for no_tomllib in (False, True):
-            with self.subTest(no_tomllib=no_tomllib):
-                result = self.assert_not_set_up(snapshot(self.home), doctor="broken", no_tomllib=no_tomllib)
-                self.assertIn("not valid mcc config", result.stderr)
+        result = self.assert_not_set_up(snapshot(self.home), doctor="broken", no_tomllib=True)
+        self.assertIn("not valid mcc config", result.stderr)
 
     def test_doctor_without_init_check_exits_1(self):
-        self.write_config("[env]\nos = \"x\"\n")
-        for no_tomllib in (False, True):
-            with self.subTest(no_tomllib=no_tomllib):
-                self.assert_not_set_up(snapshot(self.home), doctor="noinit", no_tomllib=no_tomllib)
-
-    def test_doctor_init_problem_wins_over_tomllib(self):
-        self.write_config("[env]\nos = \"x\"\n")
-        self.assert_not_set_up(snapshot(self.home), doctor="problem")
+        self.write_config(ENV_OK)
+        self.assert_not_set_up(snapshot(self.home), doctor="noinit", no_tomllib=True)
 
     # --- positive control: set up, so the script goes on to `mcc list` ---
 
@@ -235,11 +270,25 @@ class FakeMccTest(unittest.TestCase):
             with self.subTest(no_tomllib=no_tomllib):
                 if os.path.exists(self.calls):
                     os.remove(self.calls)
-                self.write_config("[env]\nos = \"x\"\n")
+                self.write_config(ENV_OK)
                 result = self.run_whoami(doctor="ok", no_tomllib=no_tomllib)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("list", self.commands_run())
                 self.assertEqual(json.loads(result.stdout)["here"]["profile"], "default")
+                if no_tomllib or not HAS_TOMLLIB:
+                    self.assertIn("doctor", self.commands_run())
+                else:
+                    self.assertNotIn("doctor", self.commands_run())
+
+    def test_complete_env_with_tomllib_never_runs_doctor(self):
+        if not HAS_TOMLLIB:
+            self.skipTest("needs tomllib")
+        self.write_config(ENV_OK)
+        # doctor is scripted to fail: a run that asks it cannot reach `mcc list`.
+        result = self.run_whoami(doctor="broken")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("doctor", self.commands_run())
+        self.assertIn("list", self.commands_run())
 
 
 @unittest.skipIf(shutil.which("mcc") is None, "mcc is not on PATH")
@@ -252,6 +301,7 @@ class RealMccTest(unittest.TestCase):
             "no [env]": "[profiles]\n",
             "empty [env]": "[env]\n",
             "partial [env]": "[env]\nos = \"x\"\n",
+            "wrong-typed [env]": ENV_OK.replace("local_bin_on_path = true", 'local_bin_on_path = "yes"'),
         }
         for label, text in configs.items():
             for no_tomllib in (False, True):
