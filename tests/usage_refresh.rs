@@ -197,7 +197,7 @@ fn an_expired_token_is_refreshed_in_the_project_of_its_account() {
 }
 
 #[test]
-fn the_default_outside_projects_is_refreshed_in_a_new_empty_folder() {
+fn accounts_no_project_maps_to_are_refreshed_in_new_empty_folders() {
     let sb = sandbox();
     sb.seed_login(
         ".claude",
@@ -205,7 +205,9 @@ fn the_default_outside_projects_is_refreshed_in_a_new_empty_folder() {
         now_ms() - HOUR_MS,
         now_ms() + 20 * DAY_MS,
     );
-    // `work` is mapped nowhere and is not the global default: not refreshed.
+    // Neither `default` nor `work` is mapped to a project, and `work` is
+    // not the global default: each is refreshed in a new empty folder,
+    // started by name the way `mcc run --profile` starts it.
     let stub = stub();
     let mut cmd = sb.mcc();
     for v in ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] {
@@ -217,47 +219,44 @@ fn the_default_outside_projects_is_refreshed_in_a_new_empty_folder() {
         .args(["usage", "--all"]));
     assert_eq!(o.code, 0, "{}", o.stderr);
     let runs = requests(&sb);
-    assert_eq!(runs.len(), 1, "{}", o.stderr);
-    // A new empty folder outside the sandbox home, removed afterwards.
-    let cwd = Path::new(&runs[0]);
+    assert_eq!(runs.len(), 2, "{}", o.stderr);
+    // New empty folders outside the sandbox home, removed afterwards.
     let home = std::fs::canonicalize(sb.home()).unwrap();
-    assert!(!cwd.starts_with(&home), "{}", cwd.display());
-    assert!(!cwd.starts_with(sb.home()), "{}", cwd.display());
+    for run in &runs {
+        let cwd = Path::new(run);
+        assert!(!cwd.starts_with(&home), "{}", cwd.display());
+        assert!(!cwd.starts_with(sb.home()), "{}", cwd.display());
+        assert!(!cwd.exists(), "{} left behind", cwd.display());
+    }
+    assert_ne!(runs[0], runs[1], "each request gets its own folder");
     assert_eq!(sb.read("p-ls"), "");
-    assert!(!cwd.exists(), "{} left behind", cwd.display());
     // No credential variable reached Claude Code.
     let seen = std::fs::read_to_string(sb.path("claude-env.log")).unwrap_or_default();
     assert!(seen.is_empty(), "{seen}");
 
-    assert!(
-        o.stderr.contains("refreshing the token of `default`"),
-        "{}",
-        o.stderr
-    );
-    assert!(row(&o.stdout, "default").contains("33%"), "{}", o.stdout);
-    // `work` is named, with how to refresh it by hand.
-    assert!(
-        o.stderr
-            .contains("no project starts `work` (`mcc project set`)"),
-        "{}",
-        o.stderr
-    );
-    assert!(
-        o.stderr.contains("`mcc run --profile work`"),
-        "{}",
-        o.stderr
-    );
-    assert!(
-        row(&o.stdout, "work").contains("token expired"),
-        "{}",
-        o.stdout
-    );
+    for name in ["default", "work"] {
+        assert!(
+            o.stderr
+                .contains(&format!("refreshing the token of `{name}`")),
+            "{}",
+            o.stderr
+        );
+        assert!(
+            o.stderr.contains(&format!("refreshed `{name}`")),
+            "{}",
+            o.stderr
+        );
+        // The fresh login was written to this profile's own folder, so
+        // its row shows the usage the refreshed token reads.
+        assert!(row(&o.stdout, name).contains("33%"), "{}", o.stdout);
+    }
+    assert!(!o.stderr.contains("no project starts"), "{}", o.stderr);
     assert_no_token(&sb, &[&o]);
     assert_no_refresh_only_hint(&o);
 }
 
 #[test]
-fn a_folder_where_mcc_run_starts_another_profile_is_not_used() {
+fn a_new_folder_inside_a_project_is_not_used() {
     let sb = sandbox();
     sb.seed_login(
         ".claude",
@@ -266,7 +265,7 @@ fn a_folder_where_mcc_run_starts_another_profile_is_not_used() {
         now_ms() + 20 * DAY_MS,
     );
     // The temp folder sits inside a project of `lab`: a new folder there
-    // would start `lab`, not `default`.
+    // is not outside every project, so nothing is refreshed in it.
     let tmp = real_dir(&sb, "tmpdir");
     project_set(&sb, "lab", &tmp);
     let stub = stub();
@@ -278,16 +277,20 @@ fn a_folder_where_mcc_run_starts_another_profile_is_not_used() {
         .args(["usage", "--all"]));
     assert_eq!(o.code, 0, "{}", o.stderr);
     assert!(requests(&sb).is_empty(), "a request was made");
-    assert!(
-        o.stderr.contains("`mcc run` does not start `default` in"),
-        "{}",
-        o.stderr
-    );
-    assert!(
-        o.stderr.contains("`mcc run --profile default`"),
-        "{}",
-        o.stderr
-    );
+    for name in ["default", "work"] {
+        assert!(
+            o.stderr.contains(&format!(
+                "is inside a project, so mcc did not refresh `{name}` there"
+            )),
+            "{}",
+            o.stderr
+        );
+        assert!(
+            o.stderr.contains(&format!("`mcc run --profile {name}`")),
+            "{}",
+            o.stderr
+        );
+    }
     // The folder mcc made is gone again.
     assert_eq!(std::fs::read_dir(&tmp).unwrap().count(), 0);
 }

@@ -41,7 +41,7 @@ pub(crate) use run_tos_note;
 /// verbatim.
 macro_rules! usage_all_note {
     () => {
-        "⚠ --all looks usage up live for every account, the default included: mcc reads each profile's Claude Code login (its OAuth access token, from .credentials.json or the macOS Keychain) and sends it to Anthropic's undocumented, rate-limited usage endpoint (https://api.anthropic.com/api/oauth/usage). Anthropic says third-party tools may not collect or intermediate Claude.ai credentials (https://code.claude.com/docs/en/legal-and-compliance), so use this at your own discretion, only with accounts you own, and never to get around usage limits. For an account whose token has expired, it also starts one tiny Claude Code session as that profile (`claude -p ok`, in a folder where `mcc run` starts it), so Claude Code refreshes the token itself; that uses a little quota. Without --all, `mcc usage` reads the `mcc statusline` cache (unless `[usage] live = true`)."
+        "⚠ --all looks usage up live for every account, the default included: mcc reads each profile's Claude Code login (its OAuth access token, from .credentials.json or the macOS Keychain) and sends it to Anthropic's undocumented, rate-limited usage endpoint (https://api.anthropic.com/api/oauth/usage). Anthropic says third-party tools may not collect or intermediate Claude.ai credentials (https://code.claude.com/docs/en/legal-and-compliance), so use this at your own discretion, only with accounts you own, and never to get around usage limits. For an account whose token has expired, it also starts one tiny Claude Code session as that profile (`claude -p ok`, in a project mapped to it, else in a new empty folder), so Claude Code refreshes the token itself; that uses a little quota. Without --all, `mcc usage` reads the `mcc statusline` cache (unless `[usage] live = true`)."
     };
 }
 pub(crate) use usage_all_note;
@@ -185,9 +185,9 @@ pub enum Command {
         "`mcc run` show it afterwards with its age, until a window resets or newer\n",
         "numbers are cached; an account it can't read keeps what was cached. For\n",
         "an account whose token has expired, it lets Claude Code refresh it with\n",
-        "one tiny `claude -p` session as that profile, in a folder where `mcc run`\n",
-        "starts it (said on stderr first), then looks it up again. Each time it\n",
-        "looks usage up, it prints this note on stderr:\n",
+        "one tiny `claude -p` session as that profile, in a project mapped to it,\n",
+        "else in a new empty folder (said on stderr first), then looks it up\n",
+        "again. Each time it looks usage up, it prints this note on stderr:\n",
         "\n",
         usage_all_note!()
     ))]

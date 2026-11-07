@@ -9,12 +9,13 @@
 //! ([`try_lock`]), so two mcc commands never refresh the same profile at
 //! once; the lock is only tried, never waited for.
 //!
-//! `mcc usage --all` runs the request in a folder where `mcc run` would
-//! start that very profile: a project mapped to it (`mcc project set`), or,
-//! for the profile that applies outside every project (the global default,
-//! else ~/.claude), a new empty folder. Claude Code then reads that project
-//! as it would for any session there (its git status, its CLAUDE.md), but
-//! only the user's own settings, no tools, no MCP servers and no hooks. A
+//! `mcc usage --all` runs the request in the first project mapped to the
+//! profile (`mcc project set`), where `mcc run` starts that very profile, or,
+//! for a profile no project maps to, in a new empty folder outside every
+//! project, started as that profile the way `mcc run --profile` does. In a
+//! project, Claude Code reads it as it would for any session there (its git
+//! status, its CLAUDE.md), but only the user's own settings, no tools, no
+//! MCP servers and no hooks. A
 //! failed refresh is not tried again for [`FAILURE_COOLDOWN`], and one run
 //! spends at most [`RUN_BUDGET`] on refreshes.
 
@@ -254,15 +255,14 @@ fn record_failure(paths: &Paths, profile: &str, now: DateTime<Utc>) {
 pub(crate) enum Place {
     /// A project mapped to it (`mcc project set`), as stored (canonical).
     Project(PathBuf),
-    /// A new empty folder: the profile applies outside every project.
+    /// A new empty folder outside every project: no project maps to the
+    /// profile, so it is started there by name (`mcc run --profile`).
     Scratch,
 }
 
-/// Where `profile` can be refreshed: the first existing project folder
-/// mapped to it (in the config's order), else a new empty folder when it is
-/// what `mcc run` starts outside every project (the global default, else
-/// `default`); `None` when neither.
-pub(crate) fn place(cfg: &Config, profile: &str) -> Option<Place> {
+/// Where `profile` is refreshed: the first existing project folder mapped
+/// to it (in the config's order), else a new empty folder.
+pub(crate) fn place(cfg: &Config, profile: &str) -> Place {
     let project = cfg
         .projects
         .iter()
@@ -270,8 +270,8 @@ pub(crate) fn place(cfg: &Config, profile: &str) -> Option<Place> {
         .map(|(dir, _)| Path::new(dir))
         .find(|dir| dir.is_dir());
     match project {
-        Some(dir) => Some(Place::Project(dir.to_path_buf())),
-        None => (cfg.global_default() == profile).then_some(Place::Scratch),
+        Some(dir) => Place::Project(dir.to_path_buf()),
+        None => Place::Scratch,
     }
 }
 
@@ -280,6 +280,13 @@ pub(crate) fn place(cfg: &Config, profile: &str) -> Option<Place> {
 fn starts_there(cfg: &Config, dir: &Path, profile: &str) -> bool {
     let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
     run::applies_in(cfg, &dir).0 == profile
+}
+
+/// Whether `dir` lies outside every project (`mcc project set`), checked
+/// with symlinks resolved: a new empty folder must not land in one.
+fn outside_projects(cfg: &Config, dir: &Path) -> bool {
+    let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    crate::commands::project::lookup(cfg, &dir).is_none()
 }
 
 /// Whether a request worked: the live lookup no longer finds the token
@@ -311,7 +318,8 @@ fn skip(profile: &str, why: &str, hint: &str) {
 
 /// `mcc usage --all` (#106): for each target whose live lookup in `found`
 /// is [`Reason::TokenExpired`], let Claude Code refresh the token with one
-/// request in a folder where `mcc run` starts that profile ([`place`]),
+/// request in a project mapped to that profile or a new empty folder
+/// ([`place`]),
 /// then look it up live again and put that in `found`. One at a time, each
 /// announced on stderr before it starts; a profile that can't or shouldn't
 /// be refreshed is skipped with a warning naming it and how to refresh it
@@ -413,16 +421,7 @@ fn refresh_one(
         );
         return false;
     };
-    let Some(place) = place(cfg, name) else {
-        skip(
-            name,
-            &format!(
-                "no project starts `{name}` (`mcc project set`), so mcc has no folder to refresh its token in"
-            ),
-            &manual,
-        );
-        return false;
-    };
+    let place = place(cfg, name);
     let Some(bin) = bin else {
         skip(
             name,
@@ -452,8 +451,8 @@ fn refresh_one(
         }
     };
     // Only a folder made here is ever removed.
-    let (dir, owned) = match place {
-        Place::Project(dir) => (dir, false),
+    let (dir, owned) = match &place {
+        Place::Project(dir) => (dir.clone(), false),
         Place::Scratch => match scratch_dir() {
             Ok(dir) => (dir, true),
             Err(e) => {
@@ -472,16 +471,24 @@ fn refresh_one(
             let _ = std::fs::remove_dir_all(dir);
         }
     };
-    if !starts_there(cfg, &dir, name) {
+    let fits = match place {
+        Place::Project(_) => starts_there(cfg, &dir, name),
+        Place::Scratch => outside_projects(cfg, &dir),
+    };
+    if !fits {
         remove(&dir);
-        skip(
-            name,
-            &format!(
+        let why = if owned {
+            format!(
+                "the new empty folder {} is inside a project, so mcc did not refresh `{name}` there",
+                paths.display(&dir)
+            )
+        } else {
+            format!(
                 "`mcc run` does not start `{name}` in {}, so mcc did not refresh it there",
                 paths.display(&dir)
-            ),
-            &manual,
-        );
+            )
+        };
+        skip(name, &why, &manual);
         return false;
     }
 
@@ -681,7 +688,7 @@ mod tests {
     }
 
     #[test]
-    fn the_folder_is_a_project_of_the_profile_or_the_default_outside_projects() {
+    fn the_folder_is_a_project_of_the_profile_or_a_new_empty_one() {
         let tmp = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(tmp.path()).unwrap();
         let (a, b, gone) = (root.join("a"), root.join("b"), root.join("gone"));
@@ -696,19 +703,22 @@ mod tests {
             gone.display()
         ))
         .unwrap();
-        assert_eq!(place(&cfg, "work"), Some(Place::Project(a.clone())));
+        assert_eq!(place(&cfg, "work"), Place::Project(a.clone()));
         // A folder that no longer exists is passed over.
-        assert_eq!(place(&cfg, "lab"), Some(Place::Project(b.clone())));
-        // Mapped nowhere: only the profile that applies outside projects.
-        assert_eq!(place(&cfg, "default"), Some(Place::Scratch));
-        assert_eq!(place(&cfg, "side"), None);
+        assert_eq!(place(&cfg, "lab"), Place::Project(b.clone()));
+        // Mapped nowhere: a new empty folder, whatever the default is.
+        assert_eq!(place(&cfg, "default"), Place::Scratch);
+        assert_eq!(place(&cfg, "side"), Place::Scratch);
         cfg.default_profile = Some("side".into());
-        assert_eq!(place(&cfg, "side"), Some(Place::Scratch));
-        assert_eq!(place(&cfg, "default"), None);
+        assert_eq!(place(&cfg, "side"), Place::Scratch);
+        assert_eq!(place(&cfg, "default"), Place::Scratch);
         // `mcc run` starts the profile there, and nowhere else.
         assert!(starts_there(&cfg, &a, "work"));
         assert!(!starts_there(&cfg, &a, "lab"));
         assert!(starts_there(&cfg, &root, "side"));
+        // An empty folder must lie outside every project.
+        assert!(outside_projects(&cfg, &root));
+        assert!(!outside_projects(&cfg, &a.join("x")));
     }
 
     #[test]
