@@ -868,22 +868,24 @@ fn usage_all_saves_what_it_finds_for_the_next_plain_usage() {
     let keychain = || sb.exists("security.log").then(|| sb.read("security.log"));
     let keychain_before = keychain();
     let out = stdout_of(sb.mcc().env("MCC_USAGE_URL", &stub.url).arg("usage"));
+    // The weekly resets are 1 and 3 days away, whose dates can differ in
+    // width ("Sun Nov 8", "Tue Nov 10"), so the gap before UPDATED varies.
     assert_match(r"(?m)^PROFILE .* RESETS IN\s+UPDATED$", &out);
     assert_match(
         &format!(
-            r"(?m)^default ★  just now     unknown     ████░░░░░░ 42%  2h 14m {LOCAL_TIME}  ██░░░░░░░░ 18%  3d 4h {LOCAL_TIME}  just now$"
+            r"(?m)^default ★  just now     unknown     ████░░░░░░ 42%  2h 14m {LOCAL_TIME}  ██░░░░░░░░ 18%  3d 4h {LOCAL_TIME}\s{{2,}}just now$"
         ),
         &out,
     );
     assert_match(
         &format!(
-            r"(?m)^work       unknown      unknown     █░░░░░░░░░ 7%   2h 14m {LOCAL_TIME}  ██████░░░░ 64%  3d 4h {LOCAL_TIME}  just now$"
+            r"(?m)^work       unknown      unknown     █░░░░░░░░░ 7%   2h 14m {LOCAL_TIME}  ██████░░░░ 64%  3d 4h {LOCAL_TIME}\s{{2,}}just now$"
         ),
         &out,
     );
     assert_match(
         &format!(
-            r"(?m)^lab        unknown      unknown     —\s+█░░░░░░░░░ 12%  1d 0h {LOCAL_TIME}  10m ago$"
+            r"(?m)^lab        unknown      unknown     —\s+█░░░░░░░░░ 12%  1d 0h {LOCAL_TIME}\s{{2,}}10m ago$"
         ),
         &out,
     );
