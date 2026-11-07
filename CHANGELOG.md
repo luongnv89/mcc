@@ -4,6 +4,10 @@ All notable changes to mcc are recorded here. The format follows [Keep a Changel
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-07
+
+`mcc usage --all` now refreshes expired account tokens through Claude Code: when it finds an account's access token expired, it runs one tiny, one-turn Claude Code session as that profile, in a project mapped to it with `mcc project set` or, for a profile no project maps to, in a new empty folder, then looks the account up again and shows and caches the fresh usage. Each session is announced on stderr before it starts, naming the account and the folder, and uses a little of that account's quota; mcc never sends a refresh token itself. An account that can't be refreshed is named on stderr with `mcc run --profile PROFILE` to refresh it by hand, and the command still exits 0. Plain `mcc usage`, `[usage] live = true` and `--json` output are unchanged.
+
 ### Added
 
 - `mcc usage --all` refreshes expired account tokens through Claude Code: when its live lookup finds an account's access token expired, it runs one tiny, isolated one-turn `claude -p` session as that profile (the request `mcc login --refresh-only` makes) in the first existing project mapped to it with `mcc project set` (where `mcc run` starts it), or, for a profile no project maps to, in a new empty folder started as that profile (`mcc run --profile`), then looks that account up again and shows and caches the fresh usage. Each session is announced on stderr before it starts, naming the account and the folder (with `-q` too), and uses a little of that account's quota; mcc never sends a refresh token itself. No session starts for a logged-out account, a login past its deadline (`mcc login PROFILE`), a token the API rejected while still valid, a profile another mcc command is refreshing (`~/.mcc/state/<profile>/refresh.lock`, which `mcc login --refresh-only` now holds too), or one whose refresh failed in the last 30 minutes (`refresh-failed-at`); one run spends at most 3 minutes on refreshes. An account that can't be refreshed is named on stderr with `mcc run --profile PROFILE` to refresh it by hand, and the command still exits 0; Ctrl+C during a session stops the others, prints the table and exits 130. Plain `mcc usage`, `[usage] live = true` and `--json` output are unchanged. ([#106](https://github.com/luongnv89/mcc/issues/106))
@@ -156,7 +160,8 @@ The first version of mcc.
 - Access tokens are kept in memory only, sent only to the usage endpoint for their own profile, and never printed, logged or written to disk. Expired tokens are never sent. ([#15](https://github.com/luongnv89/mcc/pull/15))
 - GitHub private vulnerability reporting is enabled, and `contact@luongnv.com` is listed as the security contact. ([#21](https://github.com/luongnv89/mcc/pull/21))
 
-[Unreleased]: https://github.com/luongnv89/mcc/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/luongnv89/mcc/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/luongnv89/mcc/releases/tag/v0.8.0
 [0.7.0]: https://github.com/luongnv89/mcc/releases/tag/v0.7.0
 [0.6.1]: https://github.com/luongnv89/mcc/releases/tag/v0.6.1
 [0.6.0]: https://github.com/luongnv89/mcc/releases/tag/v0.6.0

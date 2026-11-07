@@ -38,7 +38,7 @@
 <main id="main">
   <div class="page-head">
     <div class="wrap">
-      <span class="eyebrow">Documentation · v0.7.0</span>
+      <span class="eyebrow">Documentation · v0.8.0</span>
       <h1>Using mcc</h1>
       <p class="lede">Install mcc, add profiles, keep them in sync and check their limits. Every command and option, with examples.</p>
     </div>
@@ -116,7 +116,7 @@
         <div class="code"><pre><span class="p">$ </span>git clone https://github.com/luongnv89/mcc &amp;&amp; cd mcc &amp;&amp; ./install.sh</pre></div>
         <p class="label">Directly with Cargo</p>
         <div class="code"><pre><span class="p">$ </span>cargo install --git https://github.com/luongnv89/mcc --locked</pre></div>
-        <p>The one-liner downloads the prebuilt binary for your platform (macOS or Linux, x86_64 or arm64) from the latest GitHub release, checks its SHA-256 checksum, and installs it into <code>~/.local/bin</code> (override with <code>MCC_INSTALL_DIR</code>); you don't need Rust. If <code>~/.local/bin</code> is not on your <code>PATH</code> (it isn't by default on macOS), the script tells you; add it with <code>export PATH="$HOME/.local/bin:$PATH"</code> in your shell profile. A checksum mismatch stops the install. <code>MCC_VERSION=v0.7.0</code> picks a release. When a release has no binary for your platform (releases up to v0.3.0 have none), or with <code>MCC_FROM_SOURCE=1</code>, or when run from a clone, the script builds with <code>cargo</code> and installs into <code>~/.cargo/bin</code> (override with <code>CARGO_INSTALL_ROOT</code>). Check it worked:</p>
+        <p>The one-liner downloads the prebuilt binary for your platform (macOS or Linux, x86_64 or arm64) from the latest GitHub release, checks its SHA-256 checksum, and installs it into <code>~/.local/bin</code> (override with <code>MCC_INSTALL_DIR</code>); you don't need Rust. If <code>~/.local/bin</code> is not on your <code>PATH</code> (it isn't by default on macOS), the script tells you; add it with <code>export PATH="$HOME/.local/bin:$PATH"</code> in your shell profile. A checksum mismatch stops the install. <code>MCC_VERSION=v0.8.0</code> picks a release. When a release has no binary for your platform (releases up to v0.3.0 have none), or with <code>MCC_FROM_SOURCE=1</code>, or when run from a clone, the script builds with <code>cargo</code> and installs into <code>~/.cargo/bin</code> (override with <code>CARGO_INSTALL_ROOT</code>). Check it worked:</p>
         <div class="code"><pre><span class="p">$ </span>mcc --version</pre></div>
       </section>
 
@@ -160,7 +160,7 @@
             <tr><td><a href="#cmd-init"><code>mcc init</code></a></td><td>Detect OS, terminal, shell, rc file and the <code>claude</code> binary</td><td><code>--force</code>, <code>--shell</code></td></tr>
             <tr><td><a href="#cmd-add"><code>mcc add [ALIAS]</code></a></td><td>Create the default profile, or a new profile with its own command</td><td><code>--clone</code>, <code>--fresh</code>, <code>--link ITEMS</code>, <code>--copy-plugins</code>, <code>--no-login</code>, <code>--email</code>, <code>--sso</code>, <code>--label</code>, <code>--color</code>, <code>-y</code></td></tr>
             <tr><td><a href="#cmd-list"><code>mcc list</code></a> (<code>ls</code>)</td><td>Show every profile with metrics and usage</td><td><code>--json</code>, <code>--json-v2</code>, <code>-l</code>, <code>--no-usage</code></td></tr>
-            <tr><td><a href="#cmd-usage"><code>mcc usage [PROFILE]</code></a></td><td>Show 5-hour and weekly usage in a table; <code>--all</code> looks every account up live for one run, with a risk notice</td><td><code>--all</code>, <code>--json</code>, <code>--json-v2</code>, <code>--show-email</code>, <code>--hide-email</code></td></tr>
+            <tr><td><a href="#cmd-usage"><code>mcc usage [PROFILE]</code></a></td><td>Show 5-hour and weekly usage in a table; <code>--all</code> looks every account up live for one run, with a risk notice, and lets Claude Code refresh an expired token first in a one-turn session</td><td><code>--all</code>, <code>--json</code>, <code>--json-v2</code>, <code>--show-email</code>, <code>--hide-email</code></td></tr>
             <tr><td><a href="#cmd-login"><code>mcc login PROFILE</code></a> (<code>renew</code>)</td><td>Renew a profile's sign-in in place before its login runs out, and check that it worked</td><td><code>--refresh-only</code></td></tr>
             <tr><td><a href="#cmd-sync"><code>mcc sync [ALIAS]</code></a></td><td>Copy the default's setup into a profile</td><td><code>--all</code>, <code>--dry-run</code>, <code>--prune</code>, <code>--force</code>, <code>--only</code>, <code>-y</code></td></tr>
             <tr><td><a href="#cmd-diff"><code>mcc diff ALIAS</code></a></td><td>Show how a profile differs from the default's setup</td><td><code>--only</code></td></tr>
@@ -669,7 +669,8 @@ work       just now     unknown     <span class="y">█████████<
             <tr><td>Shared sessions</td><td><code>~/.mcc/shared/projects</code> (the <code>default</code> group) and <code>~/.mcc/shared/groups/&lt;name&gt;/projects</code>, only for profiles that opted in with <code>mcc share</code></td></tr>
             <tr><td>Project defaults</td><td><code>[projects."&lt;dir&gt;"]</code> tables in <code>~/.mcc/config.toml</code>, written by <code>mcc project set</code></td></tr>
             <tr><td>rc file backups</td><td><code>~/.mcc/backups/</code></td></tr>
-            <tr><td>Statusline state</td><td><code>~/.mcc/state/&lt;profile&gt;/usage.json</code> (from <code>mcc statusline</code> or <code>mcc usage --all</code>) and <code>statusline.json</code> (only after <code>mcc statusline install</code>); <code>refresh.lock</code> and <code>refresh-failed-at</code> next to them (a token refresh by <code>mcc usage --all</code> or <code>mcc login --refresh-only</code>); settings backups in <code>~/.mcc/backups/</code></td></tr>
+            <tr><td>Statusline state</td><td><code>~/.mcc/state/&lt;profile&gt;/usage.json</code> (from <code>mcc statusline</code> or <code>mcc usage --all</code>) and <code>statusline.json</code> (only after <code>mcc statusline install</code>); settings backups in <code>~/.mcc/backups/</code></td></tr>
+            <tr><td>Token refresh state</td><td><code>~/.mcc/state/&lt;profile&gt;/refresh.lock</code> (held while <code>mcc usage --all</code> or <code>mcc login --refresh-only</code> has Claude Code refresh the profile's token) and <code>refresh-failed-at</code> (when <code>mcc usage --all</code> last failed to, so it waits 30 minutes before trying again)</td></tr>
             <tr><td>Sync backups</td><td><code>&lt;profile&gt;/.mcc-backup/&lt;timestamp&gt;/</code>, also holding the profile's own copy of what <code>mcc link</code> replaces (plugins included); <code>&lt;timestamp&gt;-auto/</code> for <a href="#auto-sync">auto sync</a>, which keeps its 10 latest</td></tr>
             <tr><td>Sync record</td><td><code>&lt;profile&gt;/.mcc-sync.json</code>: a hash of each path and MCP server mcc last wrote, for <a href="#three-way">three-way sync</a></td></tr>
             <tr><td>Settings overlay</td><td><code>[profiles.&lt;alias&gt;.settings]</code> in <code>~/.mcc/config.toml</code> and <code>&lt;profile&gt;/settings.mcc.json</code>; see <a href="#settings-overlays">Per-profile settings overlays</a></td></tr>

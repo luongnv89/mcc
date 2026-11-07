@@ -52,7 +52,15 @@
           <h2>Unreleased</h2>
           <span class="pill pill-muted">main</span>
         </div>
-        <p>Follow <a href="https://github.com/luongnv89/mcc/commits/main">commits on <code>main</code></a> for work in progress.</p>
+        <p style="margin:0">Nothing yet beyond 0.8.0. Follow <a href="https://github.com/luongnv89/mcc/commits/main">commits on <code>main</code></a> for work in progress.</p>
+      </article>
+
+      <article class="release" id="v0.8.0">
+        <div class="release-head">
+          <h2>0.8.0</h2>
+          <span class="pill pill-muted">2026-11-07</span>
+        </div>
+        <p><code>mcc usage --all</code> now refreshes expired account tokens through Claude Code: when it finds an account's access token expired, it runs one tiny, one-turn Claude Code session as that profile, in a project mapped to it with <code>mcc project set</code> or, for a profile no project maps to, in a new empty folder, then looks the account up again and shows and caches the fresh usage. Each session is announced on stderr before it starts, naming the account and the folder, and uses a little of that account's quota; mcc never sends a refresh token itself. An account that can't be refreshed is named on stderr with <code>mcc run --profile PROFILE</code> to refresh it by hand, and the command still exits 0. Plain <code>mcc usage</code>, <code>[usage] live = true</code> and <code>--json</code> output are unchanged. <a href="https://github.com/luongnv89/mcc/releases/tag/v0.8.0">Release v0.8.0</a>.</p>
 
         <h3>Added</h3>
         <ul>
