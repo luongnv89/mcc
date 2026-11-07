@@ -18,12 +18,10 @@
 //! organization than before is a failure too, as is a session-sharing profile
 //! that ends up sharing across organizations.
 
-use std::os::unix::fs::DirBuilderExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{Command, ExitStatus};
 use std::sync::atomic::Ordering;
-use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -32,45 +30,11 @@ use crate::cli::LoginArgs;
 use crate::config::{Account, Config, OrgMatch};
 use crate::error::{CliError, EXIT_INTERRUPTED};
 use crate::paths::Paths;
+use crate::refresh::{self, Outcome, REFRESH_TIMEOUT, child_env, exit_code};
 use crate::usage::{self, AccessExpiry, LoginDeadline};
 use crate::{claude, metrics, ui};
 
 use super::run::{self, Profile};
-
-/// Variables that would make Claude Code use another credential than the
-/// profile's own login (or another provider), removed from every child.
-pub const STRIPPED_ENV: &[&str] = &[
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-    "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
-    "CLAUDE_CODE_USE_BEDROCK",
-    "CLAUDE_CODE_USE_VERTEX",
-    "ANTHROPIC_BASE_URL",
-];
-
-/// `--refresh-only`: the request Claude Code makes, as small and as isolated
-/// as it gets: one turn on the smallest model, no tools, no MCP servers, no
-/// hooks, only the user's own settings, and no saved session.
-pub const REFRESH_ARGS: &[&str] = &[
-    "-p",
-    "ok",
-    "--model",
-    "haiku",
-    "--max-turns",
-    "1",
-    "--tools",
-    "",
-    "--no-session-persistence",
-    "--strict-mcp-config",
-    "--setting-sources",
-    "user",
-    "--settings",
-    r#"{"disableAllHooks":true}"#,
-];
-
-/// How long `--refresh-only` waits for Claude Code before stopping it.
-const REFRESH_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The profile being renewed.
 struct Target<'a> {
@@ -207,33 +171,36 @@ fn refresh_only(
         .into());
     }
 
-    let dir = scratch_dir()?;
-    let mut cmd = Command::new(bin);
-    cmd.args(REFRESH_ARGS)
-        .current_dir(&dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    child_env(&mut cmd, paths, t.profile);
+    // Another mcc command refreshing this profile right now (`mcc usage
+    // --all`, #106): don't make a second request.
+    let Some(lock) = refresh::try_lock(paths, name)? else {
+        return Err(
+            CliError::runtime(format!("a refresh of `{name}` is already running"))
+                .hint(format!(
+                    "wait for it to finish, or run `mcc login {name}` to renew the login"
+                ))
+                .into(),
+        );
+    };
+    let dir = refresh::scratch_dir()?;
     crate::log::write("INFO", &format!("login {name}: refresh-only request"));
     ui::info(&format!(
         "asking Claude Code to refresh `{name}`'s access token (one tiny request)"
     ));
-    claude::CHILD_RUNNING.store(true, Ordering::SeqCst);
-    let outcome = cmd
-        .spawn()
-        .and_then(|child| wait_with_timeout(child, REFRESH_TIMEOUT));
-    claude::CHILD_RUNNING.store(false, Ordering::SeqCst);
+    let outcome = refresh::spawn(bin, paths, t.profile, &dir, REFRESH_TIMEOUT, &lock);
     let _ = std::fs::remove_dir_all(&dir);
-    check_interrupted(outcome.as_ref().ok().and_then(Option::as_ref))?;
-    let status = outcome.with_context(|| format!("running {}", bin.display()))?;
-    let Some(status) = status else {
-        return Err(CliError::runtime(format!(
-            "Claude Code did not finish within {} seconds; mcc stopped it",
-            REFRESH_TIMEOUT.as_secs()
-        ))
-        .hint(format!("run `mcc login {name}` to renew the login"))
-        .into());
+    drop(lock);
+    let status = match outcome.with_context(|| format!("running {}", bin.display()))? {
+        Outcome::Interrupted => return Err(interrupted_error()),
+        Outcome::TimedOut => {
+            return Err(CliError::runtime(format!(
+                "Claude Code did not finish within {} seconds; mcc stopped it",
+                REFRESH_TIMEOUT.as_secs()
+            ))
+            .hint(format!("run `mcc login {name}` to renew the login"))
+            .into());
+        }
+        Outcome::Exited(status) => status,
     };
     if !status.success() {
         return Err(CliError::runtime(format!(
@@ -254,71 +221,26 @@ fn refresh_only(
     )
 }
 
-/// The profile's environment ([`run::profile_env`]), without any variable
-/// that would make Claude Code use another credential.
-fn child_env(cmd: &mut Command, paths: &Paths, p: &Profile) {
-    run::profile_env(cmd, paths, p);
-    for var in STRIPPED_ENV {
-        cmd.env_remove(var);
-    }
-}
-
 /// Ctrl+C reached the child (whether it died of it or handled it): stop
 /// before evaluating anything.
 fn check_interrupted(status: Option<&ExitStatus>) -> Result<()> {
     let interrupted = claude::INTERRUPTED.swap(false, Ordering::SeqCst)
         || status.is_some_and(|s| s.signal() == Some(libc::SIGINT));
     if interrupted {
-        crate::log::write("WARN", "login: interrupted");
-        return Err(CliError {
-            code: EXIT_INTERRUPTED,
-            message: "interrupted".into(),
-            hint: None,
-        }
-        .into());
+        return Err(interrupted_error());
     }
     Ok(())
 }
 
-/// Wait for `child` at most `timeout`; `None` when it had to be stopped.
-fn wait_with_timeout(
-    mut child: std::process::Child,
-    timeout: Duration,
-) -> std::io::Result<Option<ExitStatus>> {
-    let start = Instant::now();
-    loop {
-        if let Some(status) = child.try_wait()? {
-            return Ok(Some(status));
-        }
-        if start.elapsed() >= timeout {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Ok(None);
-        }
-        std::thread::sleep(Duration::from_millis(50));
+/// Ctrl+C reached the child: exit 130, logged.
+fn interrupted_error() -> anyhow::Error {
+    crate::log::write("WARN", "login: interrupted");
+    CliError {
+        code: EXIT_INTERRUPTED,
+        message: "interrupted".into(),
+        hint: None,
     }
-}
-
-/// A new, empty, private directory for `claude -p` to run in, so it sees no
-/// project of the user's.
-fn scratch_dir() -> Result<PathBuf> {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
-    let dir = std::env::temp_dir().join(format!("mcc-login-{}-{nanos}", std::process::id()));
-    std::fs::DirBuilder::new()
-        .mode(0o700)
-        .create(&dir)
-        .with_context(|| format!("creating {}", dir.display()))?;
-    Ok(dir)
-}
-
-/// A finished child's exit code; a signal counts as 128 + its number.
-fn exit_code(status: ExitStatus) -> i32 {
-    status
-        .code()
-        .or_else(|| status.signal().map(|s| 128 + s))
-        .unwrap_or(1)
+    .into()
 }
 
 /// An account as messages name it: "a@x.com (Acme)".
@@ -641,36 +563,5 @@ mod tests {
             EXIT_INTERRUPTED
         );
         assert!(check_interrupted(Some(&ExitStatus::from_raw(0))).is_ok());
-    }
-
-    #[test]
-    fn a_child_that_hangs_is_stopped() {
-        let child = Command::new("/bin/sleep").arg("5").spawn().unwrap();
-        let start = Instant::now();
-        let out = wait_with_timeout(child, Duration::from_millis(200)).unwrap();
-        assert!(out.is_none());
-        assert!(start.elapsed() < Duration::from_secs(3));
-        let child = Command::new("/usr/bin/true").spawn().unwrap();
-        assert!(
-            wait_with_timeout(child, Duration::from_secs(5))
-                .unwrap()
-                .is_some_and(|s| s.success())
-        );
-    }
-
-    #[test]
-    fn the_refresh_request_is_isolated() {
-        for flag in [
-            "--no-session-persistence",
-            "--strict-mcp-config",
-            "--tools",
-            "--max-turns",
-        ] {
-            assert!(REFRESH_ARGS.contains(&flag), "{flag}");
-        }
-        assert!(!REFRESH_ARGS.contains(&"--bare"));
-        let dir = scratch_dir().unwrap();
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
-        std::fs::remove_dir(&dir).unwrap();
     }
 }
