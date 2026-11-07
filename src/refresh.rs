@@ -398,7 +398,11 @@ fn refresh_one(
         );
         return false;
     }
-    if let Some(at) = retry_at(read_failed_at(paths, name), now) {
+    // Skips (and says so) while a recent failure holds the profile back.
+    let cooling_down = |now: DateTime<Utc>| {
+        let Some(at) = retry_at(read_failed_at(paths, name), now) else {
+            return false;
+        };
         skip(
             name,
             &format!(
@@ -408,6 +412,9 @@ fn refresh_one(
             ),
             &manual,
         );
+        true
+    };
+    if cooling_down(now) {
         return false;
     }
     let Some(timeout) = request_timeout(start.elapsed()) else {
@@ -450,6 +457,11 @@ fn refresh_one(
             return false;
         }
     };
+    // Again under the lock: a run that held it until now may have just
+    // recorded a failure, and its request must not be sent twice.
+    if cooling_down(Utc::now()) {
+        return false;
+    }
     // Only a folder made here is ever removed.
     let (dir, owned) = match &place {
         Place::Project(dir) => (dir.clone(), false),
@@ -535,13 +547,18 @@ fn refresh_one(
         usage::read_login_times(&t.config_dir, t.is_default, AccessExpiry::Read).access_expires_at;
     let ok = refreshed(before, after, &lookup);
     *found = lookup;
-    drop(lock);
+    // The cooldown is updated before the lock is released, so the next
+    // holder's re-read above sees it.
     if ok {
         let _ = std::fs::remove_file(failed_at_path(paths, name));
+    } else {
+        record_failure(paths, name, Utc::now());
+    }
+    drop(lock);
+    if ok {
         crate::log::write("INFO", &format!("refresh {name}: refreshed"));
         ui::success(&format!("refreshed `{name}`"));
     } else {
-        record_failure(paths, name, Utc::now());
         crate::log::write("WARN", &format!("refresh {name}: failed"));
         ui::warn(&failure);
         ui::hint(&manual);
