@@ -4,6 +4,10 @@ All notable changes to mcc are recorded here. The format follows [Keep a Changel
 
 ## [Unreleased]
 
+### Added
+
+- `mcc usage --all` refreshes expired account tokens through Claude Code: when its live lookup finds an account's access token expired, it runs one tiny, isolated one-turn `claude -p` session as that profile (the request `mcc login --refresh-only` makes) in a folder where `mcc run` starts it, the first existing project mapped to it with `mcc project set`, or a new empty folder for the profile that applies outside every project, then looks that account up again and shows and caches the fresh usage. Each session is announced on stderr before it starts, naming the account and the folder (with `-q` too), and uses a little of that account's quota; mcc never sends a refresh token itself. No session starts for a logged-out account, a login past its deadline (`mcc login PROFILE`), a token the API rejected while still valid, a profile another mcc command is refreshing (`~/.mcc/state/<profile>/refresh.lock`, which `mcc login --refresh-only` now holds too), or one whose refresh failed in the last 30 minutes (`refresh-failed-at`); one run spends at most 3 minutes on refreshes. An account that can't be refreshed is named on stderr with `mcc run --profile PROFILE` to refresh it by hand, and the command still exits 0; Ctrl+C during a session stops the others, prints the table and exits 130. Plain `mcc usage`, `[usage] live = true` and `--json` output are unchanged. ([#106](https://github.com/luongnv89/mcc/issues/106))
+
 ## [0.7.0] - 2026-11-06
 
 The new `mcc default PROFILE` makes another profile the default without moving any data: plain `claude` now starts it in new interactive shells, and outside projects `mcc run` and `mcc env` start it and the `mcc` status view shows it, while a project default still wins inside its project. `mcc list`, `mcc usage` and the status view mark the default with ★, and `mcc default default` goes back to `~/.claude`. `~/.claude` stays the setup `mcc sync` and `mcc add --clone` copy from, and `command claude`, IDEs and scripts still start it.
