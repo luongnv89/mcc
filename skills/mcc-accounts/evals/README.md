@@ -38,3 +38,13 @@ Every eval that applies the skill carries four understanding assertions, graded 
 | Next decision is clear | The output names the approval or choice needed, or says "No approval needed", and names any step the user must run |
 
 Agent grading checks only what is observable. Human understanding is confirmed only by the reviewer's answers in the eval viewer; when no human review took place, report understanding as unconfirmed.
+
+## Script tests
+
+`test_mcc_whoami.py` checks that `scripts/mcc_whoami.py` uses mcc's own set-up test (config.toml loads and has its `[env]` table) and exits 1 without running `mcc list` or changing any file when mcc is not set up. It uses a fake `mcc` and a temporary `HOME`; the cases that run the installed mcc are skipped when it is not on `PATH`. CI does not run it. From the repo root:
+
+```sh
+python3 -m unittest skills/mcc-accounts/evals/test_mcc_whoami.py -v
+```
+
+On Python < 3.11 (no `tomllib`) the cases that read the file directly are skipped; the `mcc doctor` path still runs.
