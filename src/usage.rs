@@ -19,7 +19,11 @@
 //! `Debug` and no `Display`; it is never logged, written to disk, or put into
 //! a user-facing string, and HTTP errors are reduced to [`Reason`] codes so no
 //! raw error text (which could echo headers) is ever surfaced. mcc never
-//! refreshes tokens: an expired one is reported, not sent.
+//! refreshes a token itself (it never sends a refresh token, nor calls the
+//! OAuth token endpoint): an expired one is reported, not sent. Only `mcc
+//! usage --all` then asks Claude Code to refresh it, with one tiny `claude
+//! -p` request run as that profile in a folder where `mcc run` starts it,
+//! and looks it up again (#106, [`crate::refresh::refresh_expired`]).
 //!
 //! Login expiry ([`login_times`], #100) is the one narrow exception to "the
 //! default reads no token" (#34): plain `mcc usage` reads each profile's
@@ -27,12 +31,13 @@
 //! refreshTokenExpiresAt` (when the login needs a new sign-in). It is parsed
 //! into a struct that has no other field, so no token (nor the access token's
 //! `expiresAt`) is ever bound, and nothing is sent anywhere. `mcc login
-//! --refresh-only` additionally reads `expiresAt`, the access token's own
+//! --refresh-only`, and `mcc usage --all` for an account whose token it
+//! finds expired, additionally read `expiresAt`, the access token's own
 //! expiry. The macOS Keychain is consulted for them only where the token
 //! lookup may already read it (`[usage] live = true`, `mcc usage --all`) or
 //! when the user asks for it (`mcc login`); `MCC_NO_USAGE` turns the read
 //! off. mcc still never sends or refreshes a token itself: `mcc login
-//! --refresh-only` asks Claude Code to do it.
+//! --refresh-only` and `mcc usage --all` ask Claude Code to do it.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -436,8 +441,9 @@ pub struct LoginTimes {
 }
 
 /// Whether a read also binds the access token's `expiresAt`. `mcc usage`
-/// reads the login deadline alone ([`AccessExpiry::Skip`]); only `mcc login
-/// --refresh-only` needs the access token's expiry too.
+/// reads the login deadline alone ([`AccessExpiry::Skip`]); only a refresh
+/// (`mcc login --refresh-only`, or `mcc usage --all` for an expired token,
+/// #106) needs the access token's expiry too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccessExpiry {
     Skip,
@@ -459,8 +465,8 @@ struct OauthDeadline {
     refresh_token_expires_at: Option<f64>,
 }
 
-/// The login deadline and the access token's expiry: `mcc login
-/// --refresh-only` only.
+/// The login deadline and the access token's expiry: a refresh only (`mcc
+/// login --refresh-only`, `mcc usage --all` for an expired token).
 #[derive(Deserialize)]
 struct OauthTimes {
     #[serde(rename = "refreshTokenExpiresAt")]
@@ -581,9 +587,10 @@ pub fn login_times(config_dir: &Path, is_default: bool, allow_keychain: bool) ->
     )
 }
 
-/// [`login_times`] for an explicit request (`mcc login`): the credentials
-/// file and the Keychain, whatever `MCC_NO_USAGE` says; the access token's
-/// expiry too only with [`AccessExpiry::Read`] (`--refresh-only`).
+/// [`login_times`] for an explicit request (`mcc login`, or the refresh `mcc
+/// usage --all` makes): the credentials file and the Keychain, whatever
+/// `MCC_NO_USAGE` says; the access token's expiry too only with
+/// [`AccessExpiry::Read`].
 pub fn read_login_times(config_dir: &Path, is_default: bool, access: AccessExpiry) -> LoginTimes {
     find_times(config_dir, is_default, true, access, keychain_secret)
 }
