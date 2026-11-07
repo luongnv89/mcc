@@ -58,7 +58,7 @@ Prints the profile `mcc run` would start on stdout, and the reason on stderr. At
 
 ## Resolve the session account by hand (no python3)
 
-1. Check that `~/.mcc/config.toml` exists (`$MCC_HOME/.mcc/config.toml` when `MCC_HOME` is set). If it does not, mcc is not set up: hand off `mcc init` and stop, because `mcc list` would set mcc up.
+1. Check that mcc is set up: `~/.mcc/config.toml` (`$MCC_HOME/.mcc/config.toml` when `MCC_HOME` is set) must exist, load, and have its `[env]` table. Run `mcc doctor --json-v2`, which is read-only and never sets mcc up. Its exit code says nothing about setup (exit 1 means any `problem`), so read the `init` check whose `profile` is `null`. If that check is not `ok`, mcc is not set up: hand off `mcc init` and stop. If doctor prints no JSON, config.toml does not load (stderr names the error): hand off fixing it by hand, or moving it away and running `mcc init --force`, and stop. Either way, never run `mcc list` here: it would set mcc up.
 2. Run `echo "${CLAUDE_CONFIG_DIR:-unset}"`.
 3. If it prints `unset`, the session account is `default`. Skip to step 7.
 4. Run `mcc list --json-v2 --no-usage --hide-email`.
