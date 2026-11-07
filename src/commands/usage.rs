@@ -1,5 +1,10 @@
 //! `mcc usage` — each profile's 5-hour and weekly usage in detail (text or JSON),
 //! with when it was last used and when its login runs out (#100).
+//!
+//! `mcc usage --all` also lets Claude Code refresh each account whose live
+//! lookup finds its token expired, then looks it up again (#106; see
+//! [`crate::refresh::refresh_expired`]). Its notices go to stderr, so
+//! `--json` stays as it was.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -11,6 +16,7 @@ use serde::Serialize;
 
 use crate::cli::UsageArgs;
 use crate::config::Config;
+use crate::error::{CliError, EXIT_INTERRUPTED};
 use crate::metrics;
 use crate::paths::Paths;
 use crate::ui;
@@ -171,6 +177,9 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
     // no access-token expiry, no network); the Keychain only where the live lookup may read it anyway.
     let now = Utc::now();
     let window_days = cfg.usage.login_warn_days();
+    // Ctrl+C while Claude Code refreshed a token: the table is still shown,
+    // then mcc exits 130.
+    let mut interrupted = false;
     let allow_keychain = (cfg.usage.live || args.all) && !usage::disabled_by_env();
     for e in &mut entries {
         let times = usage::login_times(&e.config_dir, e.is_default, allow_keychain);
@@ -195,8 +204,12 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
                 is_default: e.is_default,
             })
             .collect();
-        let found = usage::lookup(paths, &targets, live);
+        let mut found = usage::lookup(paths, &targets, live);
         if args.all {
+            // Only --all refreshes, and only expired tokens (#106); the
+            // lookups that follow replace those in `found`, so they are
+            // what is shown and saved.
+            interrupted = crate::refresh::refresh_expired(paths, cfg, &targets, &mut found);
             // So that `mcc usage` without --all shows these numbers next time.
             usage::save_to_cache(paths, &targets, &found);
         }
@@ -242,6 +255,14 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
                 "mcc read login expiry from each profile's .credentials.json only; `mcc usage --all` also checks the macOS Keychain, where Claude Code may keep a newer login",
             );
         }
+    }
+    if interrupted {
+        return Err(CliError {
+            code: EXIT_INTERRUPTED,
+            message: "interrupted".into(),
+            hint: None,
+        }
+        .into());
     }
     Ok(())
 }

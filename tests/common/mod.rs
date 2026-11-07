@@ -26,7 +26,10 @@ const FAKE_CLAUDE: &str = r#"#!/bin/sh
 # with $FAKE_LOGIN_INTERRUPT, sends Ctrl+C (SIGINT) to its parent. `-p ok` (the
 # --refresh-only request) records its arguments in $HOME/p-args and its
 # directory in $HOME/p-cwd, exits 1 when $FAKE_REFRESH_MODE=fail, and writes
-# $FAKE_REFRESH_CREDS as the credentials when set. Both record the names
+# $FAKE_REFRESH_CREDS as the credentials when set. It also appends its
+# directory to $HOME/p-runs (one line per request), lists what that directory
+# holds in $HOME/p-ls, and with $FAKE_REFRESH_INTERRUPT sends Ctrl+C (SIGINT)
+# to its parent. Both record the names
 # (never values) of credential variables they see in $HOME/claude-env.log.
 dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 state="$HOME/.claude.json"
@@ -58,7 +61,10 @@ case "$1 $2" in
   "-p ok")
     printf '%s\n' "$@" > "$HOME/p-args"
     pwd > "$HOME/p-cwd"
+    pwd >> "$HOME/p-runs"
+    ls -A > "$HOME/p-ls"
     envlog p
+    if [ -n "$FAKE_REFRESH_INTERRUPT" ]; then kill -INT "$PPID"; sleep 1; fi
     [ "$FAKE_REFRESH_MODE" = fail ] && exit 1
     [ -n "$FAKE_REFRESH_CREDS" ] && printf '%s' "$FAKE_REFRESH_CREDS" > "$dir/.credentials.json"
     echo "fake claude $*" ;;

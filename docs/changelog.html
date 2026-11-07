@@ -52,7 +52,12 @@
           <h2>Unreleased</h2>
           <span class="pill pill-muted">main</span>
         </div>
-        <p style="margin:0">Nothing yet beyond 0.7.0. Follow <a href="https://github.com/luongnv89/mcc/commits/main">commits on <code>main</code></a> for work in progress.</p>
+        <p>Follow <a href="https://github.com/luongnv89/mcc/commits/main">commits on <code>main</code></a> for work in progress.</p>
+
+        <h3>Added</h3>
+        <ul>
+          <li><code>mcc usage --all</code> refreshes expired account tokens through Claude Code: when its live lookup finds an account's access token expired, it runs one tiny, isolated one-turn <code>claude -p</code> session as that profile (the request <code>mcc login --refresh-only</code> makes) in the first existing project mapped to it with <code>mcc project set</code> (where <code>mcc run</code> starts it), or, for a profile no project maps to, in a new empty folder started as that profile (<code>mcc run --profile</code>), then looks that account up again and shows and caches the fresh usage. Each session is announced on stderr before it starts, naming the account and the folder (with <code>-q</code> too), and uses a little of that account's quota; mcc never sends a refresh token itself. No session starts for a logged-out account, a login past its deadline (<code>mcc login PROFILE</code>), a token the API rejected while still valid, a profile another mcc command is refreshing (<code>~/.mcc/state/&lt;profile&gt;/refresh.lock</code>, which <code>mcc login --refresh-only</code> now holds too), or one whose refresh failed in the last 30 minutes (<code>refresh-failed-at</code>); one run spends at most 3 minutes on refreshes. An account that can't be refreshed is named on stderr with <code>mcc run --profile PROFILE</code> to refresh it by hand, and the command still exits 0; Ctrl+C during a session stops the others, prints the table and exits 130. Plain <code>mcc usage</code>, <code>[usage] live = true</code> and <code>--json</code> output are unchanged. <span class="ref"><a href="https://github.com/luongnv89/mcc/issues/106">#106</a></span></li>
+        </ul>
       </article>
 
       <article class="release" id="v0.7.0">

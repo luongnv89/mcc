@@ -788,7 +788,7 @@ fn live_lookup_reads_the_keychain_without_user() {
 // ---- `mcc usage --all`: every account looked up live, on demand (#94) ------
 
 /// The risk notice `mcc usage --all` prints each time, verbatim (issue #94).
-const ALL_NOTE: &str = "⚠ --all looks usage up live for every account, the default included: mcc reads each profile's Claude Code login (its OAuth access token, from .credentials.json or the macOS Keychain) and sends it to Anthropic's undocumented, rate-limited usage endpoint (https://api.anthropic.com/api/oauth/usage). Anthropic says third-party tools may not collect or intermediate Claude.ai credentials (https://code.claude.com/docs/en/legal-and-compliance), so use this at your own discretion, only with accounts you own, and never to get around usage limits. Without --all, `mcc usage` reads the `mcc statusline` cache (unless `[usage] live = true`).";
+const ALL_NOTE: &str = "⚠ --all looks usage up live for every account, the default included: mcc reads each profile's Claude Code login (its OAuth access token, from .credentials.json or the macOS Keychain) and sends it to Anthropic's undocumented, rate-limited usage endpoint (https://api.anthropic.com/api/oauth/usage). Anthropic says third-party tools may not collect or intermediate Claude.ai credentials (https://code.claude.com/docs/en/legal-and-compliance), so use this at your own discretion, only with accounts you own, and never to get around usage limits. For an account whose token has expired, it also starts one tiny Claude Code session as that profile (`claude -p ok`, in a project mapped to it, else in a new empty folder), so Claude Code refreshes the token itself; that uses a little quota. Without --all, `mcc usage` reads the `mcc statusline` cache (unless `[usage] live = true`).";
 
 /// True when `stderr` carries the `--all` notice as a line of its own.
 fn has_all_note(stderr: &str) -> bool {
@@ -868,22 +868,24 @@ fn usage_all_saves_what_it_finds_for_the_next_plain_usage() {
     let keychain = || sb.exists("security.log").then(|| sb.read("security.log"));
     let keychain_before = keychain();
     let out = stdout_of(sb.mcc().env("MCC_USAGE_URL", &stub.url).arg("usage"));
+    // The weekly resets are 1 and 3 days away, whose dates can differ in
+    // width ("Sun Nov 8", "Tue Nov 10"), so the gap before UPDATED varies.
     assert_match(r"(?m)^PROFILE .* RESETS IN\s+UPDATED$", &out);
     assert_match(
         &format!(
-            r"(?m)^default ★  just now     unknown     ████░░░░░░ 42%  2h 14m {LOCAL_TIME}  ██░░░░░░░░ 18%  3d 4h {LOCAL_TIME}  just now$"
+            r"(?m)^default ★  just now     unknown     ████░░░░░░ 42%  2h 14m {LOCAL_TIME}  ██░░░░░░░░ 18%  3d 4h {LOCAL_TIME}\s{{2,}}just now$"
         ),
         &out,
     );
     assert_match(
         &format!(
-            r"(?m)^work       unknown      unknown     █░░░░░░░░░ 7%   2h 14m {LOCAL_TIME}  ██████░░░░ 64%  3d 4h {LOCAL_TIME}  just now$"
+            r"(?m)^work       unknown      unknown     █░░░░░░░░░ 7%   2h 14m {LOCAL_TIME}  ██████░░░░ 64%  3d 4h {LOCAL_TIME}\s{{2,}}just now$"
         ),
         &out,
     );
     assert_match(
         &format!(
-            r"(?m)^lab        unknown      unknown     —\s+█░░░░░░░░░ 12%  1d 0h {LOCAL_TIME}  10m ago$"
+            r"(?m)^lab        unknown      unknown     —\s+█░░░░░░░░░ 12%  1d 0h {LOCAL_TIME}\s{{2,}}10m ago$"
         ),
         &out,
     );

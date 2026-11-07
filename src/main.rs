@@ -12,6 +12,7 @@ mod metrics;
 mod paths;
 mod pick;
 mod plugins;
+mod refresh;
 mod shell;
 mod txn;
 mod ui;

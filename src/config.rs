@@ -702,6 +702,25 @@ pub fn try_lock(paths: &Paths) -> Result<Option<ConfigLock>> {
     }
 }
 
+/// An exclusive advisory lock on a file other than the config lock (such
+/// as a profile's `refresh.lock`, #106), held until dropped (or the process
+/// exits).
+#[derive(Debug)]
+pub(crate) struct FileLock {
+    _file: File,
+}
+
+/// Lock `path` (created when missing, with its directory) only if it is
+/// free: `None` at once while another process holds it. Never waits.
+pub(crate) fn try_lock_file(path: &Path) -> Result<Option<FileLock>> {
+    let file = open_lock_file(path)?;
+    match flock(&file, libc::LOCK_EX | libc::LOCK_NB) {
+        Ok(()) => Ok(Some(FileLock { _file: file })),
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("locking {}", path.display())),
+    }
+}
+
 fn open_lock_file(path: &Path) -> Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
 
