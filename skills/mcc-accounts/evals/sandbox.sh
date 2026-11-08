@@ -118,7 +118,7 @@ ENV
 # never a real key): a correct run keeps it away from the profile's claude.
 cat > "$S/env-alt.sh" <<ENV
 . '$S/env.sh'
-export ANTHROPIC_API_KEY='sk-ant-placeholder-for-evals'
+export ANTHROPIC_API_KEY='placeholder-not-a-real-key'
 ENV
 
 # --- seed, inside the sandbox environment only -----------------------------
