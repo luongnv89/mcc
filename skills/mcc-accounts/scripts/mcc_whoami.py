@@ -5,6 +5,13 @@ profile mcc would start in a directory. Read-only: runs `mcc --version`,
 MCC_NO_USAGE=1, so it never looks usage up (no token is read, even with
 `[usage] live = true`) and never prints an email.
 
+Before `mcc list`, which would set mcc up, it checks set-up the way mcc does:
+~/.mcc/config.toml exists, loads, and has a complete `[env]` table. On Python
+3.11+ it reads the file itself and runs nothing for this check. On Python
+< 3.11 (no tomllib) it asks `mcc doctor --json-v2` instead, which is read-only
+even on first use but also runs `claude --version` and `claude auth status`
+once per profile (read-only). Not set up means exit 1.
+
 Usage:
     python3 mcc_whoami.py [--dir DIR]
 
@@ -28,6 +35,11 @@ import re
 import subprocess
 import sys
 
+try:
+    import tomllib
+except ImportError:  # Python < 3.11: mcc doctor alone decides
+    tomllib = None
+
 # The variables mcc itself strips before it runs `claude` for a profile
 # (src/refresh.rs STRIPPED_ENV); `mcc exec` and `mcc env` keep them.
 CREDENTIAL_ENV = (
@@ -38,6 +50,19 @@ CREDENTIAL_ENV = (
     "CLAUDE_CODE_USE_BEDROCK",
     "CLAUDE_CODE_USE_VERTEX",
     "ANTHROPIC_BASE_URL",
+)
+# The fields mcc cannot load `[env]` without: the non-Option fields of
+# src/env_detect.rs EnvInfo (none has a serde default), with their TOML types.
+# Optional fields are not checked: a wrong-typed one is a corrupt file that
+# `mcc list` rejects (exit 3) without running setup.
+ENV_REQUIRED = (
+    ("os", str),
+    ("os_version", str),
+    ("arch", str),
+    ("terminal", str),
+    ("shell_path", str),
+    ("local_bin_on_path", bool),
+    ("detected_at", str),
 )
 MIN_VERSION = (0, 7, 0)  # same floor as SKILL.md: `mcc default` needs 0.7.0, `mcc login` 0.6.0
 
@@ -61,6 +86,55 @@ def run_mcc(args, cwd=None, timeout=180):
     except subprocess.TimeoutExpired:
         fail(1, f"`mcc {' '.join(args)}` did not finish within {timeout}s.",
              "run it by hand to see where it stalls (add -v), or run `mcc doctor`.")
+
+
+def setup_problem(home):
+    """Why mcc is not set up, as a (what, fix) pair, or None when it is.
+    Same test as mcc's `set_up()` (src/main.rs): config.toml loads and has
+    its `[env]` table. With tomllib it runs no subprocess at all; without it,
+    `mcc doctor --json-v2` decides. Runs nothing that could set mcc up."""
+    path = os.path.join(home, ".mcc", "config.toml")
+    not_set_up = f"mcc is not set up yet: {path}"
+    init = ("ask the user to run `mcc init` (or `mcc add NAME --clone` for a first profile); "
+            "this script does not set mcc up on its own.")
+    force = ("ask the user to fix the file by hand, or move it away and run `mcc init --force`; "
+             "`mcc doctor` shows the error.")
+    if not os.path.isfile(path):
+        return f"{not_set_up} does not exist.", init
+    if tomllib:
+        try:
+            with open(path, "rb") as f:
+                data = tomllib.load(f)
+        except OSError as e:
+            return (f"{not_set_up} cannot be read ({e.strerror}).",
+                    "check the file's permissions, then run `mcc doctor`.")
+        except ValueError as e:  # TOMLDecodeError, UnicodeDecodeError
+            return f"{not_set_up} does not parse ({e}).", force
+        env = data.get("env")
+        if not isinstance(env, dict):
+            return f"{not_set_up} has no [env] table.", init
+        bad = [name for name, kind in ENV_REQUIRED if not isinstance(env.get(name), kind)]
+        if bad:
+            return (f"{not_set_up} [env] table is incomplete (missing/invalid: {', '.join(bad)}).",
+                    force)
+        return None
+    # No tomllib (Python < 3.11): mcc's own verdict. doctor loads config.toml
+    # exactly as `set_up()` does, and also runs `claude` once per profile.
+    # Exit 1 with JSON is normal (any problem sets it), so read the init check.
+    doctor = run_mcc(["doctor", "--json-v2"])
+    try:
+        checks = json.loads(doctor.stdout)["checks"]
+    except (ValueError, KeyError, TypeError):
+        err = (doctor.stderr or doctor.stdout).strip()
+        return f"{not_set_up} does not load: `mcc doctor` exited {doctor.returncode}: {err!r}.", force
+    init_check = next((c for c in checks if isinstance(c, dict) and c.get("check") == "init"
+                       and c.get("profile") is None), None)
+    if not init_check:
+        return f"{not_set_up} could not be checked: `mcc doctor --json-v2` has no init check.", init
+    if init_check.get("status") != "ok":
+        return (f"{not_set_up} has no [env] table (`mcc doctor` init check: "
+                f"{init_check.get('status')!r}).", init)
+    return None
 
 
 def parse_args(argv):
@@ -113,10 +187,9 @@ def main():
         fail(1, f"mcc {'.'.join(map(str, ver))} is too old for this skill (needs {'.'.join(map(str, MIN_VERSION))}+).",
              "upgrade it: brew upgrade mcc (or re-run the install script).")
 
-    if not os.path.isfile(os.path.join(home, ".mcc", "config.toml")):
-        fail(1, f"mcc is not set up yet: {home}/.mcc/config.toml does not exist.",
-             "ask the user to run `mcc init` (or `mcc add NAME --clone` for a first profile); "
-             "this script does not set mcc up on its own.")
+    problem = setup_problem(home)
+    if problem:
+        fail(1, *problem)
 
     listing = run_mcc(["list", "--json-v2", "--no-usage", "--hide-email"])
     if listing.returncode != 0:

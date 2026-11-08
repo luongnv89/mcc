@@ -4,6 +4,10 @@ All notable changes to mcc are recorded here. The format follows [Keep a Changel
 
 ## [Unreleased]
 
+### Fixed
+
+- The `mcc-accounts` agent skill's `scripts/mcc_whoami.py` now checks that mcc is set up the way mcc does: `~/.mcc/config.toml` must load and hold a complete `[env]` table. Before, it only checked that the file existed, so a `config.toml` without `[env]` let it run `mcc list`, which started mcc's first-run setup. A missing, unreadable, unparseable or incomplete file now exits 1 with "mcc is not set up yet" and changes nothing. On Python 3.11+ the check reads the file and starts no other command. On older Python it asks the read-only `mcc doctor --json-v2`. `SKILL.md` and `references/inspect.md` describe the same condition. ([#110](https://github.com/luongnv89/mcc/issues/110))
+
 ## [0.8.0] - 2026-11-07
 
 `mcc usage --all` now refreshes expired account tokens through Claude Code: when it finds an account's access token expired, it runs one tiny, one-turn Claude Code session as that profile, in a project mapped to it with `mcc project set` or, for a profile no project maps to, in a new empty folder, then looks the account up again and shows and caches the fresh usage. Each session is announced on stderr before it starts, naming the account and the folder, and uses a little of that account's quota; mcc never sends a refresh token itself. An account that can't be refreshed is named on stderr with `mcc run --profile PROFILE` to refresh it by hand, and the command still exits 0. Plain `mcc usage`, `[usage] live = true` and `--json` output are unchanged.

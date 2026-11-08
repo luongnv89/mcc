@@ -87,7 +87,7 @@ Usage comes from a cache: report its age (`updated_at`). Read `references/inspec
 
 ## Edge cases
 
-- mcc is installed but not set up (no `~/.mcc/config.toml`): the script exits 1. Hand off `mcc init`. Do not run `mcc list`: it would set mcc up.
+- mcc is installed but not set up: `~/.mcc/config.toml` is missing, unreadable, or does not parse, or its `[env]` table (what `mcc init` writes) is missing or incomplete. The script exits 1 and its `Fix:` line names the hand-off: `mcc init`, or for a file that does not parse or has an incomplete `[env]`, fixing it or `mcc init --force`. Do not run `mcc list`: it would set mcc up.
 - `CLAUDE_CONFIG_DIR` matches no profile: say so. Do not guess.
 - Usage `null` or `no_data` is unknown, not 0%. Team and Enterprise seats may report none.
 - `login_expires_at: null` on macOS can mean a Keychain-only login: report it as unknown.
