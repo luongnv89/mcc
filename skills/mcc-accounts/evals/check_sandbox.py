@@ -7,6 +7,10 @@ Usage:
 Prints JSON: the fake claude's calls (profile dir + arguments), the credential
 variables it saw (names only), the project mappings, and the global default.
 Read-only; runs mcc inside the sandbox's own environment.
+
+The fake claude's logs hold one tab-separated line per entry (time, profile
+dir, arguments or variable name), so a sandbox path with spaces parses. A line
+in any other format stops with an error: rebuild the sandbox.
 """
 
 import json
@@ -29,6 +33,18 @@ def lines(path):
         return []
 
 
+def log_entries(path):
+    """(profile dir, last field) per line of a tab-separated fake claude log."""
+    entries = []
+    for line in lines(path):
+        parts = line.split("\t", 2)
+        if len(parts) < 3:
+            fail(f"{path} has a line that is not tab-separated: {line!r}",
+                 "rebuild the sandbox with the current evals/sandbox.sh and re-run the eval.")
+        entries.append((parts[1], parts[2]))
+    return entries
+
+
 def sandbox_mcc(sb, *args):
     cmd = f". '{sb}/env.sh' && mcc " + " ".join(args)
     out = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, timeout=120)
@@ -49,17 +65,10 @@ def main():
     home = os.path.join(sb, "home")
     projects = json.loads(sandbox_mcc(sb, "project", "list", "--json-v2"))
     default = sandbox_mcc(sb, "default").strip().splitlines()
-    calls = []
-    for line in lines(os.path.join(home, "claude-calls.log")):
-        parts = line.split(" ", 2)
-        if len(parts) >= 2:
-            calls.append({"profile_dir": parts[1].replace(home, "~"),
-                          "args": parts[2] if len(parts) > 2 else ""})
-    seen = []
-    for line in lines(os.path.join(home, "claude-env.log")):
-        parts = line.split(" ")
-        if len(parts) >= 3:
-            seen.append({"profile_dir": parts[1].replace(home, "~"), "variable": parts[2]})
+    calls = [{"profile_dir": d.replace(home, "~"), "args": args}
+             for d, args in log_entries(os.path.join(home, "claude-calls.log"))]
+    seen = [{"profile_dir": d.replace(home, "~"), "variable": v}
+            for d, v in log_entries(os.path.join(home, "claude-env.log"))]
     json.dump({
         "claude_calls": calls,
         "credential_vars_seen_by_claude": seen,
