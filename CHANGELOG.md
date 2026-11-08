@@ -4,6 +4,14 @@ All notable changes to mcc are recorded here. The format follows [Keep a Changel
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-08
+
+This release makes no change to the `mcc` binary apart from its version number. It adds [mcc-accounts](https://github.com/luongnv89/mcc/blob/v0.9.0/skills/mcc-accounts/SKILL.md), an agent skill that lets an AI agent use your profiles through mcc: tell which account a session or repository uses, report usage and login expiry, run a command or a headless `claude -p` task as a profile you name (`mcc exec`), and change mcc settings when you ask. It reads no tokens, hides emails, and never picks, ranks or runs an account because another one is at its limit. It works with mcc 0.7.0 and later.
+
+### Added
+
+- [mcc-accounts](https://github.com/luongnv89/mcc/blob/v0.9.0/skills/mcc-accounts/SKILL.md), an agent skill in `skills/mcc-accounts/` that lets an AI agent use the accounts mcc manages. It tells the profile a session runs as apart from the one `mcc run` would start in a directory: `scripts/mcc_whoami.py` matches `CLAUDE_CONFIG_DIR` against each profile's `dir` from `mcc list --json-v2`, so a renamed profile whose folder keeps its old name still resolves. It reports each account's 5-hour and weekly usage and login expiry from `mcc usage --json-v2`, with the age of mcc's usage cache, and runs `mcc usage --all` only when asked for a live lookup. It runs a command, or a headless `claude -p` task, as a profile the user names exactly with `mcc exec`. `mcc exec` keeps `ANTHROPIC_API_KEY` and the other credential variables mcc strips for its own `claude` runs, so the skill removes any that are set for that one command and says so. A headless task starts at once only when the user gave its exact text and it needs no tool that writes; otherwise the skill shows the profile, prompt, directory and allowed tools and waits for a yes. It changes mcc state (project mappings, the default, sync, share) only on request, confirms destructive changes, checks each change with a read-only command, and hands interactive commands (`mcc run`, launchers, `mcc login`, `mcc add`) to the user. A description such as "my work account" picks nothing: the skill shows the profiles and asks. It reads no tokens, passes `--hide-email` unless asked for emails, and never picks, ranks or runs an account because another is at its limit, even one the user names, nor builds automatic switching: at a limit it reports when the limit resets and hands the choice to `mcc run`, as mcc does. It needs mcc 0.7.0 or later, and Python 3 for `scripts/mcc_whoami.py` (without Python, `references/inspect.md` has the manual steps). Install it from this repository with a skill manager, or copy `skills/mcc-accounts/` into `~/.claude/skills/`; see its [installation and usage guide](https://github.com/luongnv89/mcc/blob/v0.9.0/skills/mcc-accounts/docs/README.md). Its `evals/` hold six eval prompts and `evals/sandbox.sh`, which builds a sandbox (`MCC_HOME` and a fake `claude`) that touches no real account. ([#109](https://github.com/luongnv89/mcc/issues/109))
+
 ### Fixed
 
 - The `mcc-accounts` agent skill's `scripts/mcc_whoami.py` now checks that mcc is set up the way mcc does: `~/.mcc/config.toml` must load and hold a complete `[env]` table. Before, it only checked that the file existed, so a `config.toml` without `[env]` let it run `mcc list`, which started mcc's first-run setup. A missing, unreadable, unparseable or incomplete file now exits 1 with "mcc is not set up yet" and changes nothing. On Python 3.11+ the check reads the file and starts no other command. On older Python it asks the read-only `mcc doctor --json-v2`. `SKILL.md` and `references/inspect.md` describe the same condition. ([#110](https://github.com/luongnv89/mcc/issues/110))
@@ -165,7 +173,8 @@ The first version of mcc.
 - Access tokens are kept in memory only, sent only to the usage endpoint for their own profile, and never printed, logged or written to disk. Expired tokens are never sent. ([#15](https://github.com/luongnv89/mcc/pull/15))
 - GitHub private vulnerability reporting is enabled, and `contact@luongnv.com` is listed as the security contact. ([#21](https://github.com/luongnv89/mcc/pull/21))
 
-[Unreleased]: https://github.com/luongnv89/mcc/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/luongnv89/mcc/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/luongnv89/mcc/releases/tag/v0.9.0
 [0.8.0]: https://github.com/luongnv89/mcc/releases/tag/v0.8.0
 [0.7.0]: https://github.com/luongnv89/mcc/releases/tag/v0.7.0
 [0.6.1]: https://github.com/luongnv89/mcc/releases/tag/v0.6.1

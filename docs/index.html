@@ -23,7 +23,7 @@
     "description": "Manage multiple Claude Code profiles (accounts) from one CLI.",
     "applicationCategory": "DeveloperApplication",
     "operatingSystem": "macOS, Linux",
-    "softwareVersion": "0.8.0",
+    "softwareVersion": "0.9.0",
     "license": "https://www.apache.org/licenses/LICENSE-2.0",
     "codeRepository": "https://github.com/luongnv89/mcc",
     "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
@@ -56,7 +56,7 @@
   <section class="hero">
     <div class="wrap hero-grid">
       <div>
-        <p class="hero-release"><a class="pill pill-link" href="changelog.html#v0.8.0"><span class="pill-tag">v0.8.0</span> What's new: usage --all refreshes expired tokens<span aria-hidden="true">→</span></a></p>
+        <p class="hero-release"><a class="pill pill-link" href="changelog.html#v0.9.0"><span class="pill-tag">v0.9.0</span> What's new: the mcc-accounts agent skill<span aria-hidden="true">→</span></a></p>
         <span class="eyebrow">Open-source CLI · macOS &amp; Linux</span>
         <h1>Run every Claude Code account <span class="hl">side by side.</span></h1>
         <p class="lede">mcc gives each account its own login, its own command, and a copy of your main setup. Type <code>work</code> for one account and <code>claude</code> for the other. No logging out in between.</p>
@@ -177,6 +177,11 @@ work       12%     4h 10m     30%     5d 2h      48m ago
           <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg></div>
           <h3>Each project on its own account</h3>
           <p><code>mcc project set work</code> makes <code>work</code> the profile <code>mcc run</code> starts in this repository. At its limit, <code>mcc run</code> asks first, with waiting as the default: mcc never switches accounts for you. <code>eval "$(mcc env)"</code> points plain <code>claude</code>, IDE extensions and scripts at the same profile. Outside projects, <code>mcc default work</code> makes <code>work</code> the account plain <code>claude</code> and <code>mcc run</code> start.</p>
+        </article>
+        <article class="card feature">
+          <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg></div>
+          <h3>Ask your agent about your accounts</h3>
+          <p>The <a href="https://github.com/luongnv89/mcc/blob/main/skills/mcc-accounts/docs/README.md">mcc-accounts</a> agent skill lets an AI agent answer from mcc: which account a session or project uses, how much 5-hour and weekly usage each one has left, and when its login ends. It runs a command or a headless Claude task as an account you name, and changes mcc settings only when you ask. It reads no tokens and, at a limit, tells you when it resets instead of switching accounts.</p>
         </article>
         <article class="card feature feature-wide">
           <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 015.8 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg></div>

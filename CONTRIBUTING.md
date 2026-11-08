@@ -36,6 +36,15 @@ CI (`.github/workflows/ci.yml`) runs the same checks on every push and pull requ
 
 The tests never touch your real `~/.claude`, rc files, or keychain, and never reach the network. The integration suite sets `MCC_HOME` to a temp dir, puts a fake `claude` script on `PATH`, points `MCC_SECURITY_BIN` at a fake `security` script, and points `MCC_USAGE_URL` at a refused loopback port or a local stub server. Keep new tests sandboxed the same way.
 
+The agent skill in `skills/mcc-accounts/` has its own Python tests, which CI does not run. If you change the skill, run them from the repo root (Python 3; some cases are skipped when `mcc` is not on `PATH`):
+
+```sh
+python3 -m unittest skills/mcc-accounts/evals/test_mcc_whoami.py -v
+python3 -m unittest skills/mcc-accounts/evals/test_check_sandbox.py -v
+```
+
+The skill's sandboxed evals, which never touch a real account, are described in [`skills/mcc-accounts/evals/README.md`](skills/mcc-accounts/evals/README.md).
+
 ## Making a change
 
 1. Fork the repository and create a branch named `<type>/<issue>-<short-description>`, for example `fix/42-sync-dry-run-output`.

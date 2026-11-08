@@ -52,7 +52,26 @@
           <h2>Unreleased</h2>
           <span class="pill pill-muted">main</span>
         </div>
-        <p style="margin:0">Nothing yet beyond 0.8.0. Follow <a href="https://github.com/luongnv89/mcc/commits/main">commits on <code>main</code></a> for work in progress.</p>
+        <p style="margin:0">Nothing yet beyond 0.9.0. Follow <a href="https://github.com/luongnv89/mcc/commits/main">commits on <code>main</code></a> for work in progress.</p>
+      </article>
+
+      <article class="release" id="v0.9.0">
+        <div class="release-head">
+          <h2>0.9.0</h2>
+          <span class="pill pill-muted">2026-11-08</span>
+        </div>
+        <p>This release makes no change to the <code>mcc</code> binary apart from its version number. It adds <a href="https://github.com/luongnv89/mcc/blob/main/skills/mcc-accounts/SKILL.md">mcc-accounts</a>, an agent skill that lets an AI agent use your profiles through mcc: tell which account a session or repository uses, report usage and login expiry, run a command or a headless <code>claude -p</code> task as a profile you name (<code>mcc exec</code>), and change mcc settings when you ask. It reads no tokens, hides emails, and never picks, ranks or runs an account because another one is at its limit. It works with mcc 0.7.0 and later. <a href="https://github.com/luongnv89/mcc/releases/tag/v0.9.0">Release v0.9.0</a>.</p>
+
+        <h3>Added</h3>
+        <ul>
+          <li><a href="https://github.com/luongnv89/mcc/blob/main/skills/mcc-accounts/SKILL.md">mcc-accounts</a>, an agent skill that lets an AI agent use the accounts mcc manages. It tells the profile a session runs as apart from the one <code>mcc run</code> would start in a directory, matching <code>CLAUDE_CONFIG_DIR</code> against each profile's folder, so a renamed profile whose folder keeps its old name still resolves. It reports each account's 5-hour and weekly usage and login expiry from <code>mcc usage --json-v2</code>, with the age of mcc's usage cache, and runs <code>mcc usage --all</code> only when asked for a live lookup. It runs a command, or a headless <code>claude -p</code> task, as a profile you name exactly with <code>mcc exec</code>, removing <code>ANTHROPIC_API_KEY</code> and the other credential variables mcc strips for its own <code>claude</code> runs for that one command and saying so. A headless task starts at once only when you gave its exact text and it needs no tool that writes; otherwise the skill shows the profile, prompt, directory and allowed tools and waits for a yes. It changes mcc state (project mappings, the default, sync, share) only on request, confirms destructive changes, checks each change with a read-only command, and hands interactive commands (<code>mcc run</code>, launchers, <code>mcc login</code>, <code>mcc add</code>) back to you. A description such as "my work account" picks nothing: the skill shows the profiles and asks. It reads no tokens, passes <code>--hide-email</code> unless asked for emails, and never picks, ranks or runs an account because another is at its limit, nor builds automatic switching: at a limit it reports when the limit resets and leaves the choice to <code>mcc run</code>, as mcc does. It needs mcc 0.7.0 or later, and Python 3 for its helper script (without Python, it follows manual steps). Install it from this repository with a skill manager, or from a clone copy <code>skills/mcc-accounts/</code> into <code>~/.claude/skills/</code>; see its <a href="https://github.com/luongnv89/mcc/blob/main/skills/mcc-accounts/docs/README.md">installation and usage guide</a>. <span class="ref"><a href="https://github.com/luongnv89/mcc/issues/109">#109</a></span></li>
+        </ul>
+
+        <h3>Fixed</h3>
+        <ul>
+          <li>The <code>mcc-accounts</code> skill now checks that mcc is set up the way mcc does: <code>~/.mcc/config.toml</code> must load and hold a complete <code>[env]</code> table. Before, it only checked that the file existed, so a <code>config.toml</code> without <code>[env]</code> let it run <code>mcc list</code>, which started mcc's first-run setup. A missing, unreadable or incomplete file now stops it with "mcc is not set up yet" and changes nothing. <span class="ref"><a href="https://github.com/luongnv89/mcc/issues/110">#110</a></span></li>
+          <li>The <code>mcc-accounts</code> eval sandbox now works at a path that contains spaces: its fake <code>claude</code> writes its logs as tab-separated lines, so a space in the sandbox path no longer cuts it short. Eval tooling only: the shipped skill and mcc are unchanged. <span class="ref"><a href="https://github.com/luongnv89/mcc/issues/111">#111</a></span></li>
+        </ul>
       </article>
 
       <article class="release" id="v0.8.0">
