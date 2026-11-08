@@ -48,3 +48,9 @@ python3 -m unittest skills/mcc-accounts/evals/test_mcc_whoami.py -v
 ```
 
 On Python < 3.11 (no `tomllib`) the cases that read the file directly are skipped; the `mcc doctor` path still runs.
+
+`test_check_sandbox.py` checks that `check_sandbox.py` reads the fake `claude` logs (tab-separated: time, profile dir, arguments or variable) correctly when the sandbox path contains a space, fails with an Error/Fix on a log in the old space-separated format, and that `sandbox.sh` refuses a path with a tab or newline. One case builds a real sandbox with `sandbox.sh` and is skipped when `mcc` is not on `PATH`. CI does not run it. From the repo root:
+
+```sh
+python3 -m unittest skills/mcc-accounts/evals/test_check_sandbox.py -v
+```

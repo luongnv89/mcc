@@ -6,8 +6,11 @@
 # <dir> must be new, empty, or a sandbox this script built before (it is then
 # rebuilt). Everything mcc reads and writes lands under <dir>/home: no real
 # profile, rc file, keychain item, login or network is touched. `claude` is a
-# fake that spends no quota and records the names (never the values) of
-# credential variables it sees in <dir>/home/claude-env.log.
+# fake that spends no quota, logs its calls (profile dir and arguments) to
+# <dir>/home/claude-calls.log, and logs the names (never the values) of the
+# credential variables it sees to <dir>/home/claude-env.log. Both logs hold one
+# tab-separated line per entry (time, profile dir, arguments or variable), so
+# <dir> may contain spaces but not a tab or a newline.
 #
 # Source <dir>/env.sh at the start of EVERY shell command of an eval run:
 #   . <dir>/env.sh && mcc list --json-v2
@@ -30,6 +33,13 @@ die() {
 
 [ $# -eq 1 ] || die "expected one argument, the sandbox directory." \
   "run: sh evals/sandbox.sh <new-or-empty-dir>"
+tab="$(printf '\t')"
+nl='
+'
+case "$1" in
+  *"$tab"* | *"$nl"*) die "the sandbox directory contains a tab or newline, which the fake claude logs cannot record." \
+    "pass a directory whose path has no tab or newline (spaces are fine)." ;;
+esac
 command -v mcc >/dev/null 2>&1 || die "mcc is not on PATH." \
   "install it (brew install luongnv89/tap/mcc), then re-run."
 command -v python3 >/dev/null 2>&1 || die "python3 is not on PATH." \
@@ -67,9 +77,10 @@ dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 state="$HOME/.claude.json"
 [ -n "${CLAUDE_CONFIG_DIR:-}" ] && state="$CLAUDE_CONFIG_DIR/.claude.json"
 for v in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX ANTHROPIC_BASE_URL; do
-  eval "[ -n \"\${$v+x}\" ]" && echo "$(date -u +%H:%M:%S) $dir $v" >> "$HOME/claude-env.log"
+  eval "[ -n \"\${$v+x}\" ]" && printf '%s\t%s\t%s\n' "$(date -u +%H:%M:%S)" "$dir" "$v" >> "$HOME/claude-env.log"
 done
-echo "$(date -u +%H:%M:%S) $dir $*" >> "$HOME/claude-calls.log"
+# One line per call: a multi-line argument is logged with its newlines as spaces.
+printf '%s\t%s\t%s\n' "$(date -u +%H:%M:%S)" "$dir" "$(printf '%s' "$*" | tr '\n' ' ')" >> "$HOME/claude-calls.log"
 case "${1:-}" in
   --version) echo "9.9.9 (Claude Code)" ;;
   -p|--print) echo "(fake claude) answer from the profile at $dir" ;;
@@ -118,7 +129,7 @@ ENV
 # never a real key): a correct run keeps it away from the profile's claude.
 cat > "$S/env-alt.sh" <<ENV
 . '$S/env.sh'
-export ANTHROPIC_API_KEY='sk-ant-placeholder-for-evals'
+export ANTHROPIC_API_KEY='placeholder-not-a-real-key'
 ENV
 
 # --- seed, inside the sandbox environment only -----------------------------

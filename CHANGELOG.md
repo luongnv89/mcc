@@ -7,6 +7,7 @@ All notable changes to mcc are recorded here. The format follows [Keep a Changel
 ### Fixed
 
 - The `mcc-accounts` agent skill's `scripts/mcc_whoami.py` now checks that mcc is set up the way mcc does: `~/.mcc/config.toml` must load and hold a complete `[env]` table. Before, it only checked that the file existed, so a `config.toml` without `[env]` let it run `mcc list`, which started mcc's first-run setup. A missing, unreadable, unparseable or incomplete file now exits 1 with "mcc is not set up yet" and changes nothing. On Python 3.11+ the check reads the file and starts no other command. On older Python it asks the read-only `mcc doctor --json-v2`. `SKILL.md` and `references/inspect.md` describe the same condition. ([#110](https://github.com/luongnv89/mcc/issues/110))
+- The `mcc-accounts` eval sandbox now works at a path that contains spaces. The fake `claude` that `evals/sandbox.sh` builds writes its call and credential-variable logs as tab-separated lines, and `evals/check_sandbox.py` reads them by tab. Before, both used spaces, so a space in the sandbox path cut `profile_dir` short and moved the rest of the path into `args` or `variable`. `sandbox.sh` refuses a path with a tab or newline, the fake writes a multi-line argument on one line, and `check_sandbox.py` stops with "rebuild the sandbox" on a log line in the old format. `env-alt.sh`'s placeholder `ANTHROPIC_API_KEY` no longer looks like a real key. Eval tooling only: the shipped skill and mcc are unchanged. ([#111](https://github.com/luongnv89/mcc/issues/111))
 
 ## [0.8.0] - 2026-11-07
 
