@@ -31,6 +31,18 @@ const FAKE_CLAUDE: &str = r#"#!/bin/sh
 # holds in $HOME/p-ls, and with $FAKE_REFRESH_INTERRUPT sends Ctrl+C (SIGINT)
 # to its parent. Both record the names
 # (never values) of credential variables they see in $HOME/claude-env.log.
+# Per-directory accounts (`mcc default` tests): `auth status` reports the
+# email in <dir>/.fake-account when there is one. With $FAKE_PER_DIR set,
+# `auth login` counts itself in $HOME/login-count, fails the Nth time when
+# $FAKE_LOGIN_FAIL_AT=N, signs in as $FAKE_LOGIN_AS_<N> if set, else as its
+# --email, else as $FAKE_EMAIL, writes that to <dir>/.fake-account and to
+# the state file's oauthAccount (replaced whole, as Claude Code does), records organization $FAKE_LOGIN_ORG_<N>
+# (an id) in <dir>/.fake-org (which `auth status` reports as orgId), and
+# appends "<dir> login <email>" to
+# $HOME/auth.log ("<dir> logout" for `auth logout`). `auth login --help`
+# lists --email unless $FAKE_NO_EMAIL_FLAG is set (an older Claude Code).
+# A <dir>/.fake-status-broken file makes `auth status` print no status
+# (an error on stderr, exit 1), as a Claude Code that can't check would.
 dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 state="$HOME/.claude.json"
 [ -n "$CLAUDE_CONFIG_DIR" ] && state="$CLAUDE_CONFIG_DIR/.claude.json"
@@ -45,11 +57,43 @@ cfgdir=""
 case "$1 $2" in
   "--version "*) echo "9.9.9 (Claude Code)" ;;
   "auth login")
+    if [ "$3" = "--help" ]; then
+      echo "Options:"
+      [ -z "$FAKE_NO_EMAIL_FLAG" ] && echo "  --email <email>  Pre-populate email address on the login page"
+      echo "  --sso            Force SSO login flow"
+      exit 0
+    fi
     shift 2
     printf '%s\n' "$@" > "$HOME/login-args"
     mkdir -p "$dir"
     envlog login
     [ -n "$FAKE_LOGIN_FAIL" ] && { echo "login aborted" >&2; exit 1; }
+    if [ -n "$FAKE_PER_DIR" ]; then
+      n=$(( $(cat "$HOME/login-count" 2>/dev/null || echo 0) + 1 ))
+      echo "$n" > "$HOME/login-count"
+      [ "$FAKE_LOGIN_FAIL_AT" = "$n" ] && { echo "login aborted" >&2; exit 1; }
+      who=""
+      eval "who=\"\${FAKE_LOGIN_AS_$n:-}\""
+      if [ -z "$who" ]; then
+        while [ $# -gt 0 ]; do [ "$1" = "--email" ] && who="$2"; shift; done
+      fi
+      [ -z "$who" ] && who="${FAKE_EMAIL:-fake@example.com}"
+      echo "$who" > "$dir/.fake-account"
+      org_now=""
+      eval "org_now=\"\${FAKE_LOGIN_ORG_$n:-}\""
+      if [ -n "$org_now" ]; then echo "$org_now" > "$dir/.fake-org"; else rm -f "$dir/.fake-org"; fi
+      echo "$dir login $who" >> "$HOME/auth.log"
+      echo '{"token":"fake"}' > "$dir/.credentials.json"
+      acct="{\"emailAddress\":\"$who\"}"
+      [ -n "$org_now" ] && acct="{\"emailAddress\":\"$who\",\"organizationUuid\":\"$org_now\"}"
+      if [ -f "$state" ] && grep -q '"oauthAccount"' "$state"; then
+        sed -e "s/\"oauthAccount\": *{[^}]*}/\"oauthAccount\":$acct/" "$state" > "$state.tmp" && mv "$state.tmp" "$state"
+      elif [ ! -f "$state" ]; then
+        echo "{\"oauthAccount\":$acct}" > "$state"
+      fi
+      echo "Login successful."
+      exit 0
+    fi
     if [ -n "$FAKE_LOGIN_CREDS" ]; then
       printf '%s' "$FAKE_LOGIN_CREDS" > "$dir/.credentials.json"
     else
@@ -69,18 +113,25 @@ case "$1 $2" in
     [ -n "$FAKE_REFRESH_CREDS" ] && printf '%s' "$FAKE_REFRESH_CREDS" > "$dir/.credentials.json"
     echo "fake claude $*" ;;
   "auth status")
-    if [ -f "$dir/.credentials.json" ]; then
+    if [ -f "$dir/.fake-status-broken" ]; then
+      echo "auth status failed" >&2; exit 1
+    elif [ -f "$dir/.credentials.json" ]; then
       org=""
       [ -n "$FAKE_ORG_NAME" ] && org=", \"orgId\": \"$FAKE_ORG_ID\", \"orgName\": \"$FAKE_ORG_NAME\""
+      [ -f "$dir/.fake-org" ] && org=", \"orgId\": \"$(cat "$dir/.fake-org")\""
       src=""
       [ -n "$FAKE_API_KEY_SOURCE" ] && src=", \"apiKeySource\": \"$FAKE_API_KEY_SOURCE\""
-      echo "{\"loggedIn\": true, \"authMethod\": \"${FAKE_AUTH_METHOD:-claude.ai}\", \"email\": \"${FAKE_EMAIL:-fake@example.com}\"$org$src$cfgdir}"
+      email="${FAKE_EMAIL:-fake@example.com}"
+      [ -f "$dir/.fake-account" ] && email=$(cat "$dir/.fake-account")
+      echo "{\"loggedIn\": true, \"authMethod\": \"${FAKE_AUTH_METHOD:-claude.ai}\", \"email\": \"$email\"$org$src$cfgdir}"
     else
       echo "{\"loggedIn\": false, \"authMethod\": \"none\"$cfgdir}"
     fi ;;
   "auth logout")
     # Like the real claude (2.1.x): exits 0 even when nothing was logged in.
-    rm -f "$dir/.credentials.json"; echo "Successfully logged out." ;;
+    rm -f "$dir/.credentials.json" "$dir/.fake-account" "$dir/.fake-org"
+    [ -n "$FAKE_PER_DIR" ] && echo "$dir logout" >> "$HOME/auth.log"
+    echo "Successfully logged out." ;;
   "plugin-root "*) echo "plugin root: ${CLAUDE_CODE_PLUGIN_CACHE_DIR:-unset}" ;;
   *) echo "fake claude $*" ;;
 esac
@@ -228,6 +279,24 @@ impl Sandbox {
 }
 
 impl Sandbox {
+    /// Sign the config dir `rel_dir` in to `email` for the fake `claude`
+    /// (`auth status` reports it), with the state file `state_rel` saying so
+    /// too (`oauthAccount`), keeping the rest of a state file already there.
+    pub fn sign_in(&self, rel_dir: &str, state_rel: &str, email: &str) {
+        self.write(
+            &format!("{rel_dir}/.credentials.json"),
+            r#"{"token":"fake"}"#,
+        );
+        self.write(&format!("{rel_dir}/.fake-account"), &format!("{email}\n"));
+        let mut state = if self.exists(state_rel) {
+            json(self.read(state_rel).as_bytes())
+        } else {
+            serde_json::json!({})
+        };
+        state["oauthAccount"] = serde_json::json!({ "emailAddress": email });
+        self.write(state_rel, &serde_json::to_string(&state).unwrap());
+    }
+
     /// Claude Code OAuth credentials (`claudeAiOauth`) in `<rel_dir>/.credentials.json`.
     pub fn seed_oauth(&self, rel_dir: &str, token: &str, expires_at_ms: i64) {
         self.write(

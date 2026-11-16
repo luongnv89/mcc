@@ -116,7 +116,7 @@ fn add_default(paths: &Paths, cfg: &Config, env: &EnvInfo, args: &AddArgs) -> Re
         &paths.default_json,
         None,
     )? {
-        warn_if_duplicate(paths, cfg, None, &account);
+        warn_if_duplicate(paths, cfg, None, &account, false);
     }
     ui::result(true, "default profile ready — start it with `claude`");
     Ok(())
@@ -134,7 +134,7 @@ fn login_options(args: &AddArgs) -> claude::LoginOptions<'_> {
 /// An `--email` value: one address, nothing that could read as an option.
 /// The value is not repeated in the message: emails are hidden by default
 /// (see `mcc list`), and the user can see what they typed.
-fn check_email(email: &str) -> std::result::Result<(), String> {
+pub(crate) fn check_email(email: &str) -> std::result::Result<(), String> {
     let t = email.trim();
     if t.is_empty() {
         return Err("--email is empty".into());
@@ -210,7 +210,7 @@ fn login_steps(
 /// A Console sign-in (API usage billing) is allowed, but Claude Code keeps
 /// it outside `CLAUDE_CONFIG_DIR`, so it isn't isolated per profile like a
 /// Claude subscription login. Never fails.
-fn warn_console(command: &str) {
+pub(crate) fn warn_console(command: &str) {
     ui::warn(
         "this profile is signed in with an Anthropic Console account (API usage billing), not a Claude subscription — Claude Code stores a Console sign-in outside the profile's directory, so profiles don't keep it separate",
     );
@@ -222,7 +222,7 @@ fn warn_console(command: &str) {
 /// The account `claude auth status` reports, completed from the profile's
 /// state file (`oauthAccount`: account and organization UUIDs) when that
 /// describes the same login.
-fn logged_in_account(status: &claude::AuthStatus, state_json: &Path) -> Account {
+pub(crate) fn logged_in_account(status: &claude::AuthStatus, state_json: &Path) -> Account {
     let reported = Account {
         email: status.email.clone(),
         uuid: None,
@@ -243,7 +243,11 @@ fn logged_in_account(status: &claude::AuthStatus, state_json: &Path) -> Account 
 /// The other profiles' accounts: what each state file says now, else what
 /// `mcc add` recorded. `alias` is the profile being added (`None` for the
 /// default profile), which is left out.
-fn other_accounts(paths: &Paths, cfg: &Config, alias: Option<&str>) -> Vec<(String, Account)> {
+pub(crate) fn other_accounts(
+    paths: &Paths,
+    cfg: &Config,
+    alias: Option<&str>,
+) -> Vec<(String, Account)> {
     let mut out = Vec::new();
     if alias.is_some()
         && let Some(a) = metrics::account_info(&paths.default_json)
@@ -266,8 +270,20 @@ fn other_accounts(paths: &Paths, cfg: &Config, alias: Option<&str>) -> Vec<(Stri
 /// organization: two such profiles share its usage limits, so it is usually
 /// a mistake. The same login in another organization (a personal plan and a
 /// work seat) has limits of its own: that only gets a note. Never fails.
-fn warn_if_duplicate(paths: &Paths, cfg: &Config, alias: Option<&str>, account: &Account) {
-    let others = other_accounts(paths, cfg, alias);
+/// `from_default`: the account is moving here from the default profile
+/// (`mcc default --new --keep-as`), which is about to sign out of it, so
+/// the default is left out.
+fn warn_if_duplicate(
+    paths: &Paths,
+    cfg: &Config,
+    alias: Option<&str>,
+    account: &Account,
+    from_default: bool,
+) {
+    let mut others = other_accounts(paths, cfg, alias);
+    if from_default {
+        others.retain(|(name, _)| name != "default");
+    }
     let who = account.email.as_deref().unwrap_or("this account");
     let quote = |names: &[String]| -> String {
         names
@@ -298,9 +314,9 @@ fn warn_if_duplicate(paths: &Paths, cfg: &Config, alias: Option<&str>, account: 
         Some(alias) => ui::hint(&format!(
             "if this was a mistake, remove it with `mcc delete {alias}` and add it again with another account"
         )),
-        None => {
-            ui::hint("run `claude auth login` to switch the default profile to another account")
-        }
+        None => ui::hint(
+            "run `mcc default --new` to switch the default profile to another account, or `mcc default <profile>` to trade accounts with a profile",
+        ),
     }
 }
 
@@ -345,10 +361,20 @@ pub(crate) fn check_label(label: &str) -> std::result::Result<(), String> {
 /// The profile's label: `--label`, else asked (interactive, without `-y`):
 /// none, "personal", the account's organization, or one typed in.
 fn resolve_label(args: &AddArgs, account: Option<&Account>) -> Result<Option<String>> {
-    if let Some(l) = &args.label {
+    pick_label(args.label.as_deref(), args.yes, account)
+}
+
+/// A profile's label: `given` (`--label`), else asked (interactive, without
+/// `-y`): none, "personal", the account's organization, or one typed in.
+pub(crate) fn pick_label(
+    given: Option<&str>,
+    yes: bool,
+    account: Option<&Account>,
+) -> Result<Option<String>> {
+    if let Some(l) = given {
         return Ok(Some(l.trim().to_string()));
     }
-    if args.yes || !ui::is_interactive() {
+    if yes || !ui::is_interactive() {
         return Ok(None);
     }
     let org = account.and_then(|a| a.organization.as_deref());
@@ -381,7 +407,7 @@ fn resolve_label(args: &AddArgs, account: Option<&Account>) -> Result<Option<Str
 /// `claude auth login` stores credentials but not `hasCompletedOnboarding`, so
 /// without this the first interactive start shows the theme picker and the
 /// login screen again even though the account is already logged in.
-fn mark_onboarded(state_json: &Path, theme_src: Option<&Path>) -> Result<()> {
+pub(crate) fn mark_onboarded(state_json: &Path, theme_src: Option<&Path>) -> Result<()> {
     let mut doc = copy::read_json(state_json)?.unwrap_or_else(|| Value::Object(Map::new()));
     let Some(obj) = doc.as_object_mut() else {
         return Ok(());
@@ -617,7 +643,7 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
     undo.commit();
     let logged_in = account.is_some();
     if let Some(a) = &account {
-        warn_if_duplicate(paths, cfg, Some(&alias), a);
+        warn_if_duplicate(paths, cfg, Some(&alias), a, args.from_default);
     }
 
     // The profile exists by now: a failed prompt or save only loses the label.

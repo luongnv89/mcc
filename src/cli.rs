@@ -68,7 +68,7 @@ Examples:
   mcc sync --all                 Bring every profile up to date with the default
   mcc diff work                  Show how `work` differs from the default
   mcc rename work job            Rename profile `work` (and its command) to `job`
-  mcc default work               Make `work` the default: plain `claude` and `mcc run` start it
+  mcc default work               Trade accounts: ~/.claude signs in to `work`'s account, `work` to the old one
   mcc share work                 Share `work`'s sessions with your other sharing profiles
   mcc project set work           Start `work` in this project (git repo) with `mcc run`
   mcc run                        Start Claude Code with this project's profile
@@ -256,9 +256,9 @@ pub enum Command {
     )]
     Rename(RenameArgs),
 
-    /// Show or choose the default profile: the one plain `claude` and `mcc run` start
+    /// Show or change the account of the default profile (~/.claude), the one plain `claude` starts
     #[command(
-        after_help = "Examples:\n  mcc default                    Show the default profile\n  mcc default work               Make `work` the default profile\n  mcc default default            Go back to ~/.claude (`claude` also names it)\n\nNothing moves: ~/.claude keeps its login and setup, and stays the profile\n`mcc sync` and `mcc add --clone` copy from. mcc records the choice as\n`default_profile` in ~/.mcc/config.toml and adds a `claude` function to your\nshell's rc file (a `# >>> mcc:default >>>` block) that starts the chosen\nprofile's launcher. So:\n\n  plain `claude`     starts it in new interactive shells (open a new terminal,\n                     or run `exec $SHELL`), except in a shell already pointed\n                     at a profile (`mcc env` or direnv, ~/.claude included;\n                     `mcc exec`, a Claude Code session)\n  `mcc run`, `mcc env`\n                     start it outside projects; a project default\n                     (`mcc project set`) still wins inside its project\n  `mcc list`, `mcc usage`, `mcc`\n                     mark it with ★\n\n`command claude`, IDEs and scripts still start ~/.claude. `mcc rename` and\n`mcc delete` keep the choice up to date (deleting the default profile goes\nback to ~/.claude), and `mcc doctor` checks it. Choosing the profile that is\nalready the default changes nothing."
+        after_help = "Examples:\n  mcc default                    Show the account ~/.claude is signed in to\n  mcc default work               Trade accounts: ~/.claude takes `work`'s account, `work` takes the old one\n  mcc default --new              Sign ~/.claude in to another account (offers to keep the old one as a profile)\n  mcc default --new --email me@acme.com --keep-as personal\n\n~/.claude is always the default profile: plain `claude`, `mcc run` outside\nprojects, IDEs and scripts start it. `mcc default` changes the account it is\nsigned in to by logging it out and signing it in again (`claude auth logout`,\nthen `claude auth login` in the browser). Its setup, history and sessions\nstay where they are. mcc never reads or moves a credential.\n\n`mcc default PROFILE` hands ~/.claude the account PROFILE is signed in to.\nThat account is already on this machine, so mcc asks first, then swaps:\n~/.claude signs in to PROFILE's account, and PROFILE signs out and in to the\naccount ~/.claude had, so both accounts stay reachable. Two browser sign-ins,\neach pre-filled with the account it expects (`--email`, where Claude Code has\nit); mcc checks that each landed on that account (and organization) before\ngoing on, and stops with the exact state and a recovery command otherwise.\nOnce ~/.claude is verified, mcc forgets both profiles' cached usage and\nPROFILE's recorded account and label, and moves the projects mapped to either\nprofile with their account (asked first; -y moves them, --keep-projects\nleaves them); after PROFILE's sign-in it records PROFILE's new account and\nasks for its label (--label, or none with -y). Each profile keeps its history\nand sessions, so mcc warns when the accounts are in different organizations.\n\n`mcc default --new` signs ~/.claude in to another account. When no profile\nholds the account it is signed in to now, mcc offers to keep it as a new\nprofile first (`mcc add --clone`, signed in to that account; --keep-as ALIAS\nnames it, -y alone just signs it out). When the new account (--email, or the\none you signed in to) turns out to be a profile's, mcc asks to swap instead,\nas `mcc default PROFILE` does.\n\nClose running Claude Code sessions of the profiles involved first: a sign-out\nends their login. A trade refuses Console (API billing) sign-ins and\nsession-sharing profiles that would end up sharing across organizations;\n`--new` signs a Console sign-in out after a warning (no profile can keep it).\nmcc runs `claude` with the credential variables (ANTHROPIC_API_KEY…) removed,\nso it sees each profile's stored login. Even plain `mcc default` asks\n`claude auth status`. An older mcc's\n`mcc default PROFILE` pointer (`default_profile` and the `# >>> mcc:default\n>>>` block that made plain `claude` start another profile) is removed the\nnext time mcc runs."
     )]
     Default(DefaultArgs),
 
@@ -399,11 +399,10 @@ pub enum Command {
         "  mcc env | source              The same as eval, in fish\n",
         "\n",
         "Without PROFILE it prints the profile `mcc run` would start here: the\n",
-        "project's default (`mcc project set`), else the global default\n",
-        "(`mcc default`), else the default profile. A second line sets\n",
-        "MCC_PROFILE=default for the default profile (~/.claude) and clears it for\n",
-        "any other, so the `claude` function of `mcc default` keeps that shell on\n",
-        "~/.claude. Usage isn't checked. The shell is --shell, else bash inside a direnv .envrc\n",
+        "project's default (`mcc project set`), else the default profile. A\n",
+        "second line sets MCC_PROFILE=default for the default profile (~/.claude)\n",
+        "and clears it for any other, which tells tools that ~/.claude was chosen\n",
+        "on purpose. Usage isn't checked. The shell is --shell, else bash inside a direnv .envrc\n",
         "(direnv evaluates it with bash), else $SHELL; zsh and bash get the same\n",
         "POSIX line. With direnv, put this in the project's .envrc:\n",
         "\n",
@@ -586,6 +585,11 @@ pub struct AddArgs {
     /// Accept defaults without prompting
     #[arg(short, long)]
     pub yes: bool,
+
+    /// Set by `mcc default --new --keep-as`: the account moves here from
+    /// the default profile, so the default holding it is no duplicate.
+    #[arg(skip)]
+    pub from_default: bool,
 }
 
 #[derive(Debug, Args)]
@@ -690,8 +694,37 @@ pub struct RenameArgs {
 
 #[derive(Debug, Args)]
 pub struct DefaultArgs {
-    /// Profile to make the default (`default` or `claude` for ~/.claude); omit to show the current one
+    /// Profile whose account ~/.claude takes over (the profile gets ~/.claude's account in exchange); omit to show the current account
+    #[arg(conflicts_with = "new")]
     pub profile: Option<String>,
+
+    /// Sign ~/.claude in to another account instead of trading with a profile
+    #[arg(long)]
+    pub new: bool,
+
+    /// Pre-fill this address on the sign-in page (passed to `claude auth login --email`)
+    #[arg(long, value_name = "ADDRESS")]
+    pub email: Option<String>,
+
+    /// Sign in through your organization's SSO (passed to `claude auth login --sso`)
+    #[arg(long)]
+    pub sso: bool,
+
+    /// Keep the account ~/.claude is leaving as a new profile with this name (`mcc add ALIAS --clone`)
+    #[arg(long, value_name = "ALIAS")]
+    pub keep_as: Option<String>,
+
+    /// Label for the profile that receives ~/.claude's old account (asked if omitted; none with -y)
+    #[arg(long, value_name = "LABEL")]
+    pub label: Option<String>,
+
+    /// Leave project defaults on their profiles instead of moving them with their account
+    #[arg(long)]
+    pub keep_projects: bool,
+
+    /// Don't ask: confirm the switch, swap with a profile on the same account, move project defaults with their account
+    #[arg(short, long)]
+    pub yes: bool,
 }
 
 #[derive(Debug, Args)]

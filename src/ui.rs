@@ -183,6 +183,12 @@ impl Steps {
         Self { total, current: 0 }
     }
 
+    /// Count `n` more steps than planned (a retry, or work that turned out
+    /// to be needed).
+    pub fn extend(&mut self, n: usize) {
+        self.total += n;
+    }
+
     pub fn start(&mut self, label: &str) -> Step {
         self.current += 1;
         log::write(

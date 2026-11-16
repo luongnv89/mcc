@@ -13,7 +13,7 @@ Read this when you need a JSON field, a `reason` code, an exit code, or when `sc
 | `name`, `command` | Profile name and the command that starts it (`claude` for `default`) |
 | `dir` | Config dir, abbreviated with `~` (= `$MCC_HOME`, else `$HOME`). Expand it before comparing paths |
 | `is_default` | `true` only for `~/.claude` itself |
-| `is_global_default` | `true` for the profile `mcc default` chose (mcc 0.7.0+). Plain `claude` in new shells starts it |
+| `is_global_default` | mcc 0.10.0+: `true` for `default` (`~/.claude`) only, the profile plain `claude` starts. mcc 0.7.0 to 0.9.x: `true` for the profile `mcc default` chose, which plain `claude` in new shells started |
 | `account` | Email; `null` with `--hide-email`. `[privacy] show_email = true` shows it unless you pass `--hide-email` |
 | `organization`, `organization_uuid`, `label`, `color` | Who the account belongs to; `label` is the user's own name for it |
 | `project_defaults` | Directories whose `mcc run` starts this profile |

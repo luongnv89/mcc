@@ -99,7 +99,7 @@ pub struct LoginOptions<'a> {
 
 impl LoginOptions<'_> {
     /// The arguments after `claude auth login`, each its own argv entry.
-    fn args(&self) -> Vec<&str> {
+    pub(crate) fn args(&self) -> Vec<&str> {
         let mut args = Vec::new();
         if let Some(email) = self.email {
             args.extend(["--email", email]);
@@ -166,6 +166,22 @@ impl Claude<'_> {
     }
 }
 
+/// Whether this Claude Code's `claude auth login` takes `--email` (its
+/// help lists it). Only reads the help: nothing signs in.
+pub fn login_takes_email(bin: &Path, paths: &Paths) -> bool {
+    Command::new(bin)
+        .args(["auth", "login", "--help"])
+        .env("HOME", &paths.home)
+        .stdin(Stdio::null())
+        .output()
+        .is_ok_and(|o| {
+            o.status.success()
+                && String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .any(|l| l.trim_start().starts_with("--email"))
+        })
+}
+
 /// `claude auth status --json` run through a profile's launcher, so the
 /// result reflects the `CLAUDE_CONFIG_DIR` the launcher exports (none is
 /// inherited from mcc). `None` when it printed no JSON object. The
@@ -183,7 +199,7 @@ pub fn launcher_status(launcher: &Path, paths: &Paths) -> Result<Option<AuthStat
     Ok(status_from(&out.stdout))
 }
 
-fn status_from(stdout: &[u8]) -> Option<AuthStatus> {
+pub(crate) fn status_from(stdout: &[u8]) -> Option<AuthStatus> {
     match serde_json::from_slice::<Value>(stdout) {
         Ok(raw @ Value::Object(_)) => Some(parse_status(raw)),
         _ => None,

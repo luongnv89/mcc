@@ -211,6 +211,25 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             log::write("INFO", "live usage lookup disclosure shown");
         }
     }
+    if cfg.default_profile.is_some() && !matches!(command, Command::Default(_)) {
+        // An older mcc's `mcc default PROFILE` pointer: retired once, under
+        // the lock (taken for this alone when the command doesn't hold it),
+        // so plain `claude` and `mcc run` never disagree. `mcc default`
+        // retires it itself; a failure here only warns.
+        let _retire_lock = match lock {
+            Some(_) => None,
+            None => {
+                let l = config::lock(&paths)?;
+                cfg = config::Config::load(&paths.config_file)?;
+                Some(l)
+            }
+        };
+        if let Err(e) = commands::default::retire_pointer(&paths, &mut cfg) {
+            ui::warn(&format!(
+                "could not remove the default-profile pointer of an older mcc: {e:#} — run `mcc default` to retry"
+            ));
+        }
+    }
     let _lock = lock;
 
     match command {
@@ -272,8 +291,9 @@ fn writes_config(command: &Command) -> bool {
         | Command::Share(_)
         | Command::Link(_) => true,
         Command::Project(args) => !matches!(args.action, cli::ProjectAction::List { .. }),
-        // Without a profile it only shows the default.
-        Command::Default(args) => args.profile.is_some(),
+        // Switching signs profiles in and records them; even showing may
+        // retire an older mcc's pointer.
+        Command::Default(_) => true,
         // install/uninstall edit settings.json files and mcc's state, one
         // run at a time; the bare shim is routed before the lock is taken.
         Command::Statusline(args) => args.action.is_some(),

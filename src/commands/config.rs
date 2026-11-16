@@ -153,7 +153,7 @@ fn settable(key: &str, parts: &[String]) -> Result<Key> {
         }
         ["default_profile"] => {
             return Err(managed(
-                "the default profile is set with `mcc default <profile>`, which also updates the shell's `claude` function (see `mcc help default`)",
+                "~/.claude is always the default profile; `mcc default` switches the account it is signed in to (see `mcc help default`)",
             ));
         }
         ["usage", "live_disclosed_at"] => {
