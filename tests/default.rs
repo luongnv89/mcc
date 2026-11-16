@@ -467,6 +467,32 @@ fn new_with_y_alone_signs_the_old_account_out_of_the_machine() {
 }
 
 #[test]
+fn a_sign_in_mcc_cant_read_is_never_signed_out() {
+    let sb = sandbox();
+    // ~/.claude is signed in, but `claude auth status` fails for it: --new
+    // must not take it for signed out and sign it out unkept.
+    sb.write(".claude/.fake-status-broken", "");
+    mcc(&sb)
+        .args(["default", "--new", "--email", "new@else.test", "-y"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("can't read ~/.claude's sign-in"));
+    assert!(auth_log(&sb).is_empty());
+    assert_eq!(account(&sb, ".claude").as_deref(), Some(HOME_ACCOUNT));
+
+    // Nor can a trade go ahead with a side it can't read.
+    std::fs::remove_file(sb.path(".claude/.fake-status-broken")).unwrap();
+    sb.write(".mcc/profiles/work/.fake-status-broken", "");
+    mcc(&sb)
+        .args(["default", "work", "-y"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("can't read `work`'s sign-in"));
+    assert!(auth_log(&sb).is_empty());
+    assert_eq!(account(&sb, ".claude").as_deref(), Some(HOME_ACCOUNT));
+}
+
+#[test]
 fn new_does_not_keep_an_account_a_profile_holds() {
     let sb = sandbox();
     sb.sign_in(

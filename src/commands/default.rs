@@ -219,13 +219,21 @@ impl Side {
         cmd
     }
 
-    fn status(&self, bin: &Path, paths: &Paths) -> Result<claude::AuthStatus> {
+    /// `claude auth status --json`, or `None` when it printed no status mcc
+    /// can read (an error, a crash, no `loggedIn`): a side mcc can't read
+    /// must never pass for a signed-out one. The exit code tells nothing
+    /// apart: Claude Code exits 1 when signed out.
+    fn status(&self, bin: &Path, paths: &Paths) -> Result<Option<claude::AuthStatus>> {
         let out = self
             .claude(bin, paths, &["auth", "status", "--json"])
             .stdin(Stdio::null())
             .output()
             .with_context(|| format!("running {} auth status", bin.display()))?;
-        Ok(claude::status_from(&out.stdout).unwrap_or_default())
+        let says_logged_in = serde_json::from_slice::<serde_json::Value>(&out.stdout)
+            .is_ok_and(|v| v.get("loggedIn").is_some_and(serde_json::Value::is_boolean));
+        Ok(says_logged_in
+            .then(|| claude::status_from(&out.stdout))
+            .flatten())
     }
 
     fn logout(&self, bin: &Path, paths: &Paths) -> Result<bool> {
@@ -303,7 +311,9 @@ impl Login {
 }
 
 fn login_of(side: &Side, bin: &Path, paths: &Paths) -> Result<Login> {
-    let status = side.status(bin, paths)?;
+    let Some(status) = side.status(bin, paths)? else {
+        return Ok(Login::Unknown);
+    };
     Ok(if !status.logged_in {
         Login::Out
     } else if status.is_console() {
@@ -313,17 +323,28 @@ fn login_of(side: &Side, bin: &Path, paths: &Paths) -> Result<Login> {
     })
 }
 
+/// Refusal for a side whose `claude auth status` mcc can't read: it may be
+/// signed in, so signing anything out could lose an account.
+fn unreadable(shown: &str) -> anyhow::Error {
+    CliError::runtime(format!(
+        "mcc can't read {shown}'s sign-in: `claude auth status --json` printed no status it understands"
+    ))
+    .hint("run `claude auth status --json` for it to see why, then try again")
+    .into()
+}
+
 /// The account `side` is signed in to, or why it can't take part in a
 /// trade.
 fn known_account(side: &Side, bin: &Path, paths: &Paths) -> Result<Account> {
     let shown = side.shown();
     match login_of(side, bin, paths)? {
         Login::In(a) if !a.is_anonymous() => Ok(a),
-        Login::In(_) | Login::Unknown => Err(CliError::runtime(format!(
+        Login::In(_) => Err(CliError::runtime(format!(
             "{shown} is signed in, but Claude Code doesn't say to which account"
         ))
         .hint("update Claude Code (`claude update`) and try again")
         .into()),
+        Login::Unknown => Err(unreadable(&shown)),
         Login::Out => Err(CliError::runtime(format!("{shown} is not signed in"))
             .hint(match side.profile.config_dir {
                 None => "sign ~/.claude in with `mcc default --new`".to_string(),
@@ -963,7 +984,8 @@ fn switch_new(paths: &Paths, cfg: &mut Config, args: &DefaultArgs) -> Result<()>
         Login::In(a) if !a.is_anonymous() => (Some(a), false),
         Login::Out => (None, false),
         Login::Console => (None, true),
-        Login::In(_) | Login::Unknown => {
+        Login::Unknown => return Err(unreadable("~/.claude")),
+        Login::In(_) => {
             return Err(CliError::runtime(
                 "~/.claude is signed in, but Claude Code doesn't say to which account: mcc can't tell what signing it out would lose",
             )

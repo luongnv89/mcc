@@ -41,6 +41,8 @@ const FAKE_CLAUDE: &str = r#"#!/bin/sh
 # appends "<dir> login <email>" to
 # $HOME/auth.log ("<dir> logout" for `auth logout`). `auth login --help`
 # lists --email unless $FAKE_NO_EMAIL_FLAG is set (an older Claude Code).
+# A <dir>/.fake-status-broken file makes `auth status` print no status
+# (an error on stderr, exit 1), as a Claude Code that can't check would.
 dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 state="$HOME/.claude.json"
 [ -n "$CLAUDE_CONFIG_DIR" ] && state="$CLAUDE_CONFIG_DIR/.claude.json"
@@ -111,7 +113,9 @@ case "$1 $2" in
     [ -n "$FAKE_REFRESH_CREDS" ] && printf '%s' "$FAKE_REFRESH_CREDS" > "$dir/.credentials.json"
     echo "fake claude $*" ;;
   "auth status")
-    if [ -f "$dir/.credentials.json" ]; then
+    if [ -f "$dir/.fake-status-broken" ]; then
+      echo "auth status failed" >&2; exit 1
+    elif [ -f "$dir/.credentials.json" ]; then
       org=""
       [ -n "$FAKE_ORG_NAME" ] && org=", \"orgId\": \"$FAKE_ORG_ID\", \"orgName\": \"$FAKE_ORG_NAME\""
       [ -f "$dir/.fake-org" ] && org=", \"orgId\": \"$(cat "$dir/.fake-org")\""
