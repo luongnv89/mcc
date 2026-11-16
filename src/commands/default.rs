@@ -484,7 +484,11 @@ fn stop(
 /// Sign `side` out and in again until it lands on what `want` asks for:
 /// a mismatch offers another try in a terminal, else stops with
 /// `stopped(state)` (the state it was left in), as does any error once it
-/// is signed out. Returns the account.
+/// is signed out. `signed_out_before` says whether another side was already
+/// signed out before this one (the profile half of a trade): then even an
+/// error on the first sign-out stops with `stopped(state)`. Returns the
+/// account.
+#[allow(clippy::too_many_arguments)]
 fn switch_side(
     steps: &mut ui::Steps,
     side: &Side,
@@ -492,6 +496,7 @@ fn switch_side(
     paths: &Paths,
     want: Want,
     opts: &LoginOptions,
+    signed_out_before: bool,
     stopped: &dyn Fn(&Login) -> CliError,
 ) -> Result<Account> {
     let shown = side.shown();
@@ -514,8 +519,9 @@ fn switch_side(
             Ok(false) => {
                 step.warn("`claude auth logout` failed; the sign-in replaces the login anyway")
             }
-            // Nothing signed out yet on the first round.
-            Err(e) if first => {
+            // Nothing signed out yet: this is the first round, and no other
+            // side was signed out before this one.
+            Err(e) if first && !signed_out_before => {
                 step.fail("");
                 return Err(e);
             }
@@ -798,6 +804,7 @@ fn swap(paths: &Paths, cfg: &mut Config, args: &DefaultArgs, alias: &str) -> Res
             email: home.prefill_for(&theirs),
             sso: false,
         },
+        false,
         &|now| {
             CliError::runtime(format!(
                 "the trade stopped: ~/.claude is {}; `{alias}` is unchanged",
@@ -888,6 +895,7 @@ fn trade_profile(
             email: side.prefill_for(old),
             sso: false,
         },
+        true,
         &|now| {
             CliError::runtime(format!(
                 "the trade stopped halfway: ~/.claude is signed in to {}, but `{alias}` is {} (mcc has recorded the trade already)",
@@ -1125,6 +1133,7 @@ fn switch_new(paths: &Paths, cfg: &mut Config, args: &DefaultArgs) -> Result<()>
             email,
             sso: args.sso,
         },
+        false,
         &|now| {
             let mut e = CliError::runtime(format!(
                 "~/.claude did not switch accounts: it is {}",
