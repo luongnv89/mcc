@@ -32,7 +32,7 @@ An account is **user-picked** when the user's words match a profile's name or la
 
 A request that spans branches runs Inspect first, then the others in table order.
 
-**Switch** is always a hand-off. A running session cannot change its account. Give the user `<profile>` (the profile's command) or `mcc run --profile <profile>` for a new terminal. Never use `mcc default` or `mcc project set` for a one-off switch: both are lasting changes.
+**Switch** is always a hand-off. A running session cannot change its account. Give the user `<profile>` (the profile's command) or `mcc run --profile <profile>` for a new terminal. Never use `mcc default` or `mcc project set` for a one-off switch: both are lasting changes, and `mcc default` signs accounts out.
 
 ## Prerequisites (check on every run)
 
@@ -48,7 +48,7 @@ This skill requires mcc 0.7.0+, and Python 3 for its script.
 Answer the account asked about, or both:
 
 - **Session account**: the profile whose directory is `$CLAUDE_CONFIG_DIR`, or `default` when it is unset. It exists only inside Claude Code (`CLAUDECODE=1`); elsewhere, call it "this shell's account".
-- **Project account**: the account `mcc run` would start in a directory: the project mapping, else the global default (`mcc default`), else `default`.
+- **Project account**: the account `mcc run` would start in a directory: the project mapping, else `default`. (mcc 0.7.0 to 0.9.x also had a global default set with `mcc default <p>`; mcc 0.10.0 removes it on its next run.)
 
 1. Run `python3 <skill-dir>/scripts/mcc_whoami.py` (add `--dir DIR` for another directory). Its JSON gives `session.profile`, `in_claude_code`, `here.profile`, `same_account`, `credential_env`, and `notes`. It fetches no usage and hides emails.
 2. If python3 is missing, follow the manual steps in `references/inspect.md`.

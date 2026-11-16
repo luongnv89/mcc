@@ -12,11 +12,11 @@ Pass `-y`/`--yes` only after the user confirmed. With `MCC_NON_INTERACTIVE=1`, a
 | --- | --- | --- | --- |
 | `mcc project set <p> [--path DIR] [--allow q]` | `mcc run` starts `<p>` in that project (git top, or DIR). Running it again without `--allow` clears the allow list | run | `mcc run --dry-run` in the project → `<p>` |
 | `mcc project unset [--path DIR]` | Removes the mapping that applies here | run | `mcc project list --json-v2` |
-| `mcc default <p>` | Plain `claude` in **new** shells, and `mcc run` outside projects, start `<p>`. Writes `config.toml` and a block in the rc file. `mcc default default` undoes it | run | `mcc default`; tell the user to open a new shell |
+| `mcc default <p>`, `mcc default --new` | Switches the account of `~/.claude` (`default`) by signing it out and in again in the browser. `<p>` trades accounts with that profile, so `<p>` is signed out and in too; `--new` signs `~/.claude` in to another account and may keep the old one as a new profile. Moves project mappings with their account unless `--keep-projects`. (mcc 0.7.0 to 0.9.x: a pointer that made plain `claude` start `<p>`; mcc 0.10.0 removes it.) | hand off: it signs accounts out and needs browser sign-ins; never run it yourself, not even with `-y` | `mcc list --json-v2 --hide-email` → each profile's `account` |
 | `mcc sync <p>` | Copies the default's setup into `<p>`, keeps local edits, backs up what it replaces | run `--dry-run` first and show it, then run | `mcc list --json-v2` → `sync` |
 | `mcc sync <p> --prune`, `mcc sync <p> --force`, `mcc sync --all` | Removes profile-only files, overwrites conflicts, or syncs every profile (all backed up first) | confirm | `mcc diff <p>` |
 | `mcc diff <p>` | Nothing (read-only) | run | — |
-| `mcc rename <old> <new>` | The command becomes `<new>`. The folder keeps its old name; login, mappings, and the default move to `<new>` | confirm (the user's command changes) | `mcc list --json-v2 --hide-email` |
+| `mcc rename <old> <new>` | The command becomes `<new>`. The folder keeps its old name; login and mappings move to `<new>` | confirm (the user's command changes) | `mcc list --json-v2 --hide-email` |
 | `mcc config set <key> <value>` | One setting in `~/.mcc/config.toml`; checked before it is written | run | `mcc config get <key>` |
 | `mcc config set usage.live true`, `mcc config set privacy.show_email true` | Every usage lookup then sends each account's token to Anthropic's usage endpoint / every listing shows emails | confirm | `mcc config get <key>` |
 | `mcc share <p> [--group g]` / `--off` | Shares `<p>`'s session history with the group (off by default). Prints a terms note the first time | confirm; relay the note | `mcc list --json-v2` → `share_sessions` |

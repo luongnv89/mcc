@@ -244,7 +244,7 @@ fn interrupted_error() -> anyhow::Error {
 }
 
 /// An account as messages name it: "a@x.com (Acme)".
-fn describe(a: &Account) -> String {
+pub(crate) fn describe(a: &Account) -> String {
     let who = a
         .email
         .as_deref()

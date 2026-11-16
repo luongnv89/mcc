@@ -748,7 +748,7 @@ mod tests {
         let (a, b, gone) = (root.join("a"), root.join("b"), root.join("gone"));
         std::fs::create_dir(&a).unwrap();
         std::fs::create_dir(&b).unwrap();
-        let mut cfg: Config = toml::from_str(&format!(
+        let cfg: Config = toml::from_str(&format!(
             "[projects.\"{}\"]\nprofile = \"work\"\n\
              [projects.\"{}\"]\nprofile = \"lab\"\n\
              [projects.\"{}\"]\nprofile = \"lab\"\n",
@@ -763,13 +763,12 @@ mod tests {
         // Mapped nowhere: a new empty folder, whatever the default is.
         assert_eq!(place(&cfg, "default"), Place::Scratch);
         assert_eq!(place(&cfg, "side"), Place::Scratch);
-        cfg.default_profile = Some("side".into());
-        assert_eq!(place(&cfg, "side"), Place::Scratch);
-        assert_eq!(place(&cfg, "default"), Place::Scratch);
         // `mcc run` starts the profile there, and nowhere else.
         assert!(starts_there(&cfg, &a, "work"));
         assert!(!starts_there(&cfg, &a, "lab"));
-        assert!(starts_there(&cfg, &root, "side"));
+        // Outside every project, ~/.claude starts.
+        assert!(starts_there(&cfg, &root, "default"));
+        assert!(!starts_there(&cfg, &root, "side"));
         // An empty folder must lie outside every project.
         assert!(outside_projects(&cfg, &root));
         assert!(!outside_projects(&cfg, &a.join("x")));

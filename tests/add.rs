@@ -675,7 +675,7 @@ fn default_profile_warns_about_a_profile_on_the_same_account() {
         .stderr(predicate::str::contains(
             "fake@example.com is already logged in to profile \"work\"",
         ))
-        .stderr(predicate::str::contains("claude auth login"));
+        .stderr(predicate::str::contains("mcc default --new"));
 }
 
 #[test]

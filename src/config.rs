@@ -19,10 +19,12 @@ use crate::paths::Paths;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
-    /// The profile plain `claude` and `mcc run` start outside any project
-    /// (`mcc default <alias>`); unset means the default profile (~/.claude).
-    /// Declared first so it is written before the tables. Left out of the
-    /// file while unset. Read it with [`Config::global_default`].
+    /// Legacy: the profile an older `mcc default <alias>` (0.7.0–0.9.x)
+    /// pointed plain `claude` and `mcc run` at, through a `claude` function
+    /// in the shell's rc file. Still read so mcc can retire it
+    /// ([`crate::commands::default::retire_pointer`]): ~/.claude is always
+    /// the default profile now, and `mcc default` switches its account.
+    /// Left out of the file while unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_profile: Option<String>,
     #[serde(default)]
@@ -502,31 +504,27 @@ impl Config {
         crate::fsutil::write_atomic(path, text.as_bytes())
     }
 
-    /// The profile that applies outside any project: the one `mcc default`
-    /// chose, else `default` (~/.claude). Not checked against the registry:
-    /// a hand-edited name may be no profile at all.
-    pub fn global_default(&self) -> &str {
-        self.default_profile.as_deref().unwrap_or("default")
-    }
-
-    /// Point the global default at `new` when it is `old` (`mcc rename`).
-    /// Returns whether it changed.
-    pub fn rename_global_default(&mut self, old: &str, new: &str) -> bool {
-        if self.default_profile.as_deref() != Some(old) {
-            return false;
+    /// Exchange `a` and `b` in the project defaults and allow lists (`mcc
+    /// default`, when the projects follow the accounts that trade places).
+    /// Returns how many projects changed.
+    pub fn swap_project_profiles(&mut self, a: &str, b: &str) -> usize {
+        let swap = |name: &mut String| {
+            if name == a {
+                *name = b.to_string();
+            } else if name == b {
+                *name = a.to_string();
+            }
+        };
+        let mut n = 0;
+        for p in self.projects.values_mut() {
+            let before = (p.profile.clone(), p.allow.clone());
+            swap(&mut p.profile);
+            p.allow.iter_mut().for_each(swap);
+            if (&p.profile, &p.allow) != (&before.0, &before.1) {
+                n += 1;
+            }
         }
-        self.default_profile = Some(new.to_string());
-        true
-    }
-
-    /// Clear the global default when it is `alias` (`mcc delete`): plain
-    /// `claude` starts ~/.claude again. Returns whether it changed.
-    pub fn clear_global_default(&mut self, alias: &str) -> bool {
-        if self.default_profile.as_deref() != Some(alias) {
-            return false;
-        }
-        self.default_profile = None;
-        true
+        n
     }
 
     /// Point the project defaults naming `old` at `new` (`mcc rename`).
@@ -820,7 +818,7 @@ mod tests {
     /// The global default: written before the tables of a file that has
     /// them, read back, and gone again (byte for byte) once cleared.
     #[test]
-    fn global_default_round_trip_and_absent_when_unset() {
+    fn legacy_default_pointer_is_read_and_removed_on_save() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         let legacy = "# mcc configuration — managed by `mcc`; safe to edit by hand.\n\n\
@@ -828,28 +826,12 @@ mod tests {
             [usage]\n\n\
             [profiles.work]\ndir = \"/h/.mcc/profiles/work\"\nmode = \"clone\"\n\
             created_at = \"2026-10-10T00:00:00+02:00\"\n";
-        std::fs::write(&path, legacy).unwrap();
+        std::fs::write(&path, format!("default_profile = \"work\"\n{legacy}")).unwrap();
         let mut cfg = Config::load(&path).unwrap();
-        assert_eq!(cfg.default_profile, None);
-        assert_eq!(cfg.global_default(), "default");
+        assert_eq!(cfg.default_profile.as_deref(), Some("work"));
+        // Retiring the pointer leaves the file as it was without it.
+        cfg.default_profile = None;
         cfg.save(&path).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), legacy);
-
-        cfg.default_profile = Some("work".into());
-        cfg.save(&path).unwrap();
-        let text = std::fs::read_to_string(&path).unwrap();
-        let at = text.find("default_profile = \"work\"").expect(&text);
-        assert!(at < text.find("[sync]").unwrap(), "{text}");
-        let mut back = Config::load(&path).unwrap();
-        assert_eq!(back.global_default(), "work");
-
-        assert!(!back.rename_global_default("lab", "x"));
-        assert!(back.rename_global_default("work", "job"));
-        assert_eq!(back.global_default(), "job");
-        assert!(!back.clear_global_default("work"));
-        assert!(back.clear_global_default("job"));
-        assert_eq!(back.default_profile, None);
-        back.save(&path).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), legacy);
 
         // A fresh file: no key at all while unset.
@@ -890,6 +872,28 @@ mod tests {
         assert_eq!(back.remove_project_defaults("job"), ["/src/a", "/src/c"]);
         assert_eq!(back.projects.keys().collect::<Vec<_>>(), ["/src/b"]);
         assert!(back.remove_project_defaults("nope").is_empty());
+    }
+
+    #[test]
+    fn swapping_project_profiles_exchanges_defaults_and_allow_lists() {
+        let mut cfg = Config::default();
+        let names = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<String>>();
+        cfg.projects
+            .insert("/a".into(), Project::new("work", names(&["lab"])));
+        cfg.projects
+            .insert("/b".into(), Project::new("default", names(&["work"])));
+        cfg.projects
+            .insert("/c".into(), Project::new("lab", names(&["side"])));
+        assert_eq!(cfg.swap_project_profiles("default", "work"), 2);
+        assert_eq!(cfg.projects["/a"].profile, "default");
+        assert_eq!(cfg.projects["/a"].allow, ["lab"]);
+        assert_eq!(cfg.projects["/b"].profile, "work");
+        assert_eq!(cfg.projects["/b"].allow, ["default"]);
+        assert_eq!(cfg.projects["/c"].profile, "lab");
+        // Swapping back restores every entry.
+        assert_eq!(cfg.swap_project_profiles("work", "default"), 2);
+        assert_eq!(cfg.projects["/a"].profile, "work");
+        assert_eq!(cfg.projects["/b"].allow, ["work"]);
     }
 
     /// A config with project defaults written before allow lists existed:

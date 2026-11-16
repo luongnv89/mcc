@@ -257,7 +257,18 @@ pub(crate) fn group_risks(
     profile: &Profile,
     group: &Option<String>,
 ) -> (OrgId, Vec<(String, OrgId, Risk)>) {
-    let me = OrgId::of(&metrics::profile_account(profile));
+    risks_for(cfg, alias, &metrics::profile_account(profile), group)
+}
+
+/// [`group_risks`] for `alias` signed in to `account`, which it may not be
+/// yet (`mcc default` checks the account a profile is about to receive).
+pub(crate) fn risks_for(
+    cfg: &Config,
+    alias: &str,
+    account: &Account,
+    group: &Option<String>,
+) -> (OrgId, Vec<(String, OrgId, Risk)>) {
+    let me = OrgId::of(account);
     let others = cfg
         .profiles
         .iter()

@@ -98,8 +98,8 @@ struct Entry {
     login_expires_source: Option<DeadlineSource>,
     /// The login runs out within `[usage] login_warn_days` (or has).
     login_warning: bool,
-    /// The global default (`mcc default`): the profile plain `claude` and
-    /// `mcc run` start outside any project. Added in #104.
+    /// The profile plain `claude` and `mcc run` start outside any project:
+    /// always ~/.claude, whose account `mcc default` switches. Added in #104.
     is_global_default: bool,
     #[serde(skip)]
     config_dir: PathBuf,
@@ -161,9 +161,8 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
         },
     };
 
-    let global = cfg.global_default();
     for e in &mut entries {
-        e.is_global_default = e.name == global;
+        e.is_global_default = e.is_default;
     }
 
     let show_email = (cfg.show_email() || args.show_email) && !args.hide_email;

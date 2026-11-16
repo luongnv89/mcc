@@ -69,9 +69,9 @@ pub struct ProfileMetrics {
     pub auto_sync: Option<crate::commands::launch_sync::Info>,
     /// 5-hour/weekly usage; filled in by `mcc list` (network), not by `collect`.
     pub usage: Usage,
-    /// The global default: the profile plain `claude` and `mcc run` start
-    /// outside any project (`mcc default`; ~/.claude until one is chosen).
-    /// Filled in by `mcc list`. `is_default` still marks ~/.claude itself.
+    /// The profile plain `claude` and `mcc run` start outside any project:
+    /// always ~/.claude now (`mcc default` switches its account), so the
+    /// same as `is_default`. Kept for --json consumers (#104).
     pub is_global_default: bool,
     /// The config dir as Claude Code sees it (`CLAUDE_CONFIG_DIR`).
     #[serde(skip)]

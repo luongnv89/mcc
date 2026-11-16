@@ -83,10 +83,7 @@ fn here(paths: &Paths, cfg: &Config) -> Here {
     let (name, origin) = match cwd.as_deref() {
         Some(d) => super::run::applies_in(cfg, d),
         // No current directory: no project applies.
-        None => match cfg.default_profile.as_deref() {
-            Some(name) => (name, super::run::Origin::Global),
-            None => ("default", super::run::Origin::Builtin),
-        },
+        None => ("default", super::run::Origin::Builtin),
     };
     let why = super::run::why(paths, origin);
     let known = name == "default" || cfg.profiles.contains_key(name);

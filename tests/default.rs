@@ -1,66 +1,104 @@
-//! `mcc default`: choose the profile plain `claude` and `mcc run` start,
-//! without moving any profile's data.
+//! `mcc default`: switch the account of the default profile (~/.claude) by
+//! signing it out and in again; trade accounts with a profile that holds
+//! the one asked for; retire the pointer an older `mcc default` kept.
 
 mod common;
 
-use std::collections::BTreeMap;
 use std::path::Path;
 
 use common::{Sandbox, by_name, json, stdout_of, with_profile};
 use predicates::prelude::*;
 
-const BEGIN: &str = "# >>> mcc:default >>>";
+const HOME_ACCOUNT: &str = "me@home.test";
+const WORK_ACCOUNT: &str = "dev@acme.test";
+const LAB_ACCOUNT: &str = "lab@lab.test";
 
-/// A sandbox with ~/.claude and two profiles, `work` and `lab`.
+const OLD_BLOCK: &str = "# >>> mcc:default >>>\n\
+    # Plain `claude` starts profile \"work\" — managed by mcc (reset with: mcc default default).\n\
+    function claude {\n  \"$HOME/.local/bin/work\" \"$@\"\n}\n\
+    # <<< mcc:default <<<\n";
+
+/// ~/.claude on HOME_ACCOUNT, `work` (a clone) on WORK_ACCOUNT with a
+/// label, `lab` (fresh) on LAB_ACCOUNT.
 fn sandbox() -> Sandbox {
     let sb = Sandbox::new();
     sb.seed_default();
     with_profile(&sb, "work", "--clone");
     with_profile(&sb, "lab", "--fresh");
+    sb.sign_in(".claude", ".claude.json", HOME_ACCOUNT);
+    sb.sign_in(
+        ".mcc/profiles/work",
+        ".mcc/profiles/work/.claude.json",
+        WORK_ACCOUNT,
+    );
+    sb.sign_in(
+        ".mcc/profiles/lab",
+        ".mcc/profiles/lab/.claude.json",
+        LAB_ACCOUNT,
+    );
+    sb.mcc()
+        .args(["config", "set", "profiles.work.label", "Acme (work)"])
+        .assert()
+        .success();
     sb
 }
 
-/// `mcc default` (show): what it prints on stdout.
-fn shown_default(sb: &Sandbox) -> String {
-    stdout_of(sb.mcc().arg("default"))
+/// `mcc` with the fake `claude` keeping one account per directory.
+fn mcc(sb: &Sandbox) -> assert_cmd::Command {
+    let mut cmd = sb.mcc();
+    cmd.env("FAKE_PER_DIR", "1");
+    cmd
 }
 
-/// Every file under `rel` with its bytes, to tell that nothing changed.
-fn snapshot(sb: &Sandbox, rel: &str) -> BTreeMap<String, Vec<u8>> {
-    walk(&sb.path(rel))
+/// The account the fake `claude` has `rel_dir` signed in to.
+fn account(sb: &Sandbox, rel_dir: &str) -> Option<String> {
+    sb.exists(&format!("{rel_dir}/.fake-account")).then(|| {
+        sb.read(&format!("{rel_dir}/.fake-account"))
+            .trim()
+            .to_string()
+    })
 }
 
-fn walk(dir: &Path) -> BTreeMap<String, Vec<u8>> {
-    let mut out = BTreeMap::new();
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(d) = stack.pop() {
-        for e in std::fs::read_dir(&d).unwrap() {
-            let p = e.unwrap().path();
-            let meta = std::fs::symlink_metadata(&p).unwrap();
-            if meta.is_dir() {
-                stack.push(p);
-            } else if meta.is_file() {
-                out.insert(p.display().to_string(), std::fs::read(&p).unwrap());
-            }
-        }
+/// What the fake `claude` did, in order, with the sandbox path cut off:
+/// `.claude logout`, `.mcc/profiles/work login a@b`, …
+fn auth_log(sb: &Sandbox) -> Vec<String> {
+    if !sb.exists("auth.log") {
+        return Vec::new();
     }
-    out
+    let home = format!("{}/", sb.home().display());
+    sb.read("auth.log")
+        .lines()
+        .map(|l| l.replace(&home, ""))
+        .collect()
 }
 
-fn backups(sb: &Sandbox) -> usize {
-    std::fs::read_dir(sb.path(".mcc/backups")).map_or(0, |d| d.count())
-}
-
-/// `mcc list --json` (usage off).
+/// `mcc list --json` (usage off, emails shown).
 fn list(sb: &Sandbox) -> Vec<serde_json::Value> {
-    json(stdout_of(sb.mcc().args(["list", "--json", "--no-usage"])).as_bytes())
-        .as_array()
-        .unwrap()
-        .clone()
+    json(
+        stdout_of(
+            sb.mcc()
+                .args(["list", "--json", "--no-usage", "--show-email"]),
+        )
+        .as_bytes(),
+    )
+    .as_array()
+    .unwrap()
+    .clone()
 }
 
-/// `mcc run --dry-run` in `dir`: the profile it would start, and stderr.
-fn run_in(sb: &Sandbox, dir: &Path) -> (String, String) {
+fn project(sb: &Sandbox, name: &str, profile: &str) -> std::path::PathBuf {
+    let dir = sb.path(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    sb.mcc()
+        .args(["project", "set", profile, "--path"])
+        .arg(&dir)
+        .assert()
+        .success();
+    dir
+}
+
+/// `mcc run --dry-run` in `dir`: the profile it would start.
+fn runs_in(sb: &Sandbox, dir: &Path) -> String {
     let out = sb
         .mcc()
         .env("MCC_NO_USAGE", "1")
@@ -69,117 +107,571 @@ fn run_in(sb: &Sandbox, dir: &Path) -> (String, String) {
         .assert()
         .success()
         .get_output()
+        .stdout
         .clone();
-    (
-        String::from_utf8(out.stdout).unwrap().trim().to_string(),
-        String::from_utf8(out.stderr).unwrap(),
-    )
+    String::from_utf8(out).unwrap().trim().to_string()
 }
 
 #[test]
-fn set_show_and_reset_the_default_profile() {
+fn show_names_the_default_profile_and_its_account() {
     let sb = sandbox();
-    let rc_before = sb.read(".zshrc");
-    let default_before = snapshot(&sb, ".claude");
-    let default_json = sb.read(".claude.json");
-    let work_before = snapshot(&sb, ".mcc/profiles/work");
-    assert_eq!(shown_default(&sb), "default\n");
-
-    sb.mcc()
-        .args(["default", "work"])
-        .assert()
-        .success()
-        .stderr(predicate::str::contains(
-            "the default profile is now `work` (was `default` (~/.claude))",
-        ))
-        .stderr(predicate::str::contains("`command claude`"))
-        .stderr(predicate::str::contains("exec $SHELL"));
-    assert_eq!(shown_default(&sb), "work\n");
     let cfg = sb.read(".mcc/config.toml");
-    assert!(cfg.contains("default_profile = \"work\"\n"), "{cfg}");
-    // The shell's `claude` runs work's launcher, only without CLAUDE_CONFIG_DIR
-    // and without MCC_PROFILE (~/.claude chosen explicitly).
-    let rc = sb.read(".zshrc");
-    assert!(rc.starts_with(&rc_before), "{rc}");
-    assert_eq!(rc.matches(BEGIN).count(), 1, "{rc}");
-    assert!(
-        rc.contains(
-            "function claude {\n  if [ -z \"${CLAUDE_CONFIG_DIR:-}\" ] && [ -z \"${MCC_PROFILE:-}\" ]; then \"$HOME/.local/bin/work\" \"$@\"; else command claude \"$@\"; fi\n}\n# <<< mcc:default <<<\n"
-        ),
-        "{rc}"
-    );
-
-    // AC3: nothing moved and no data was touched.
-    assert_eq!(snapshot(&sb, ".claude"), default_before);
-    assert_eq!(sb.read(".claude.json"), default_json);
-    assert_eq!(snapshot(&sb, ".mcc/profiles/work"), work_before);
-    assert!(sb.exists(".mcc/profiles/work/.credentials.json"));
-
-    // Back to ~/.claude: the key and the block go, the rc file is as it was.
-    sb.mcc()
-        .args(["default", "claude"])
+    mcc(&sb)
+        .arg("default")
         .assert()
         .success()
-        .stderr(predicate::str::contains(
-            "the default profile is now `default` (~/.claude) (was `work`)",
-        ));
-    assert_eq!(shown_default(&sb), "default\n");
-    assert!(!sb.read(".mcc/config.toml").contains("default_profile"));
-    assert_eq!(sb.read(".zshrc"), rc_before);
-    assert_eq!(snapshot(&sb, ".claude"), default_before);
-    assert_eq!(snapshot(&sb, ".mcc/profiles/work"), work_before);
+        .stdout("default\n")
+        .stderr(predicate::str::contains("the default profile is ~/.claude"))
+        .stderr(predicate::str::contains("an account (email hidden)"))
+        .stderr(predicate::str::contains(HOME_ACCOUNT).not())
+        .stderr(predicate::str::contains("mcc default --new"));
+    mcc(&sb)
+        .args(["config", "set", "privacy.show_email", "true"])
+        .assert()
+        .success();
+    mcc(&sb)
+        .arg("default")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(format!(
+            "it is signed in to {HOME_ACCOUNT}"
+        )));
+    assert!(auth_log(&sb).is_empty());
+    assert!(!cfg.contains("default_profile"));
 }
 
 #[test]
-fn an_unknown_profile_exits_2_and_changes_nothing() {
+fn trading_with_a_profile_swaps_both_accounts() {
     let sb = sandbox();
-    for setup in [None, Some("work")] {
-        if let Some(p) = setup {
-            sb.mcc().args(["default", p]).assert().success();
-        }
-        let (cfg, rc, n) = (sb.read(".mcc/config.toml"), sb.read(".zshrc"), backups(&sb));
-        sb.mcc()
-            .args(["default", "ghost"])
+    sb.write(".mcc/state/default/usage.json", "{}");
+    sb.write(".mcc/state/work/usage.json", "{}");
+    mcc(&sb)
+        .args(["default", "work", "-y"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(format!(
+            "~/.claude is now signed in to {WORK_ACCOUNT}, and `work` to {HOME_ACCOUNT}"
+        )))
+        .stderr(predicate::str::contains(
+            "`work`'s label \"Acme (work)\" was for",
+        ));
+    assert_eq!(account(&sb, ".claude").as_deref(), Some(WORK_ACCOUNT));
+    assert_eq!(
+        account(&sb, ".mcc/profiles/work").as_deref(),
+        Some(HOME_ACCOUNT)
+    );
+    assert_eq!(
+        account(&sb, ".mcc/profiles/lab").as_deref(),
+        Some(LAB_ACCOUNT)
+    );
+    // ~/.claude first, each sign-in pre-filled with the account it takes.
+    assert_eq!(
+        auth_log(&sb),
+        [
+            ".claude logout".to_string(),
+            format!(".claude login {WORK_ACCOUNT}"),
+            ".mcc/profiles/work logout".to_string(),
+            format!(".mcc/profiles/work login {HOME_ACCOUNT}"),
+        ]
+    );
+    assert_eq!(sb.read("login-args"), format!("--email\n{HOME_ACCOUNT}\n"));
+
+    // The registry follows: `work`'s account, its label (for the account
+    // it gave away) gone, both caches forgotten.
+    let cfg = sb.read(".mcc/config.toml");
+    assert!(
+        cfg.contains(&format!(
+            "[profiles.work.account]\nemail = \"{HOME_ACCOUNT}\""
+        )),
+        "{cfg}"
+    );
+    assert!(!cfg.contains("Acme (work)"), "{cfg}");
+    assert!(!sb.exists(".mcc/state/default/usage.json"));
+    assert!(!sb.exists(".mcc/state/work/usage.json"));
+    let all = list(&sb);
+    assert_eq!(by_name(&all, "default")["account"], WORK_ACCOUNT);
+    assert_eq!(by_name(&all, "work")["account"], HOME_ACCOUNT);
+    assert_eq!(by_name(&all, "default")["is_global_default"], true);
+    assert_eq!(by_name(&all, "work")["is_global_default"], false);
+
+    // Trading back restores both, and --label labels the profile.
+    mcc(&sb)
+        .args(["default", "work", "-y", "--label", "Acme (work)"])
+        .assert()
+        .success();
+    assert_eq!(account(&sb, ".claude").as_deref(), Some(HOME_ACCOUNT));
+    assert_eq!(
+        account(&sb, ".mcc/profiles/work").as_deref(),
+        Some(WORK_ACCOUNT)
+    );
+    assert!(
+        sb.read(".mcc/config.toml")
+            .contains("label = \"Acme (work)\"")
+    );
+}
+
+#[test]
+fn without_a_terminal_a_switch_needs_y_and_changes_nothing() {
+    let sb = sandbox();
+    let cfg = sb.read(".mcc/config.toml");
+    for args in [&["default", "work"][..], &["default", "--new"]] {
+        mcc(&sb)
+            .args(args)
             .assert()
             .code(2)
-            .stderr(predicate::str::contains("no profile named \"ghost\""));
-        assert_eq!(sb.read(".mcc/config.toml"), cfg);
-        assert_eq!(sb.read(".zshrc"), rc);
-        assert_eq!(backups(&sb), n);
+            .stderr(predicate::str::contains("pass -y to confirm"));
     }
+    assert!(auth_log(&sb).is_empty());
+    assert_eq!(account(&sb, ".claude").as_deref(), Some(HOME_ACCOUNT));
+    assert_eq!(sb.read(".mcc/config.toml"), cfg);
 }
 
 #[test]
-fn the_profile_that_is_already_the_default_changes_nothing() {
+fn projects_follow_their_account_unless_kept() {
     let sb = sandbox();
-    for name in ["default", "work", "work"] {
-        if name == "work" && !sb.read(".mcc/config.toml").contains("default_profile") {
-            sb.mcc().args(["default", "work"]).assert().success();
-        }
-        let (cfg, rc, n) = (sb.read(".mcc/config.toml"), sb.read(".zshrc"), backups(&sb));
-        sb.mcc()
-            .args(["default", name])
-            .assert()
-            .success()
-            .stderr(predicate::str::contains(
-                "is already the default profile — nothing changed",
-            ));
-        assert_eq!(sb.read(".mcc/config.toml"), cfg);
-        assert_eq!(sb.read(".zshrc"), rc);
-        assert_eq!(backups(&sb), n, "no rc backup: nothing was written");
-    }
+    let at_work = project(&sb, "src/acme", "work");
+    let at_home = project(&sb, "src/home", "default");
+    let at_lab = project(&sb, "src/lab", "lab");
+    mcc(&sb)
+        .args(["default", "work", "-y"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "2 projects followed their account",
+        ));
+    // The repository that used WORK_ACCOUNT through `work` still does.
+    assert_eq!(runs_in(&sb, &at_work), "default");
+    assert_eq!(runs_in(&sb, &at_home), "work");
+    assert_eq!(runs_in(&sb, &at_lab), "lab");
+
+    mcc(&sb)
+        .args(["default", "work", "-y", "--keep-projects"])
+        .assert()
+        .success();
+    assert_eq!(runs_in(&sb, &at_work), "default");
+    assert_eq!(runs_in(&sb, &at_home), "work");
 }
 
 #[test]
-fn the_already_default_profile_repairs_a_missing_shell_block() {
+fn landing_on_the_wrong_account_stops_before_the_profile_signs_out() {
     let sb = sandbox();
-    let rc_before = sb.read(".zshrc");
-    sb.mcc().args(["default", "work"]).assert().success();
-    let with_block = sb.read(".zshrc");
-    sb.write(".zshrc", &rc_before);
     let cfg = sb.read(".mcc/config.toml");
+    mcc(&sb)
+        .env("FAKE_LOGIN_AS_1", "other@else.test")
+        .args(["default", "work", "-y"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "the trade stopped: ~/.claude is signed in to other@else.test; `work` is unchanged",
+        ))
+        .stderr(predicate::str::contains(format!(
+            "`claude auth login --email {HOME_ACCOUNT}`"
+        )));
+    assert_eq!(
+        account(&sb, ".mcc/profiles/work").as_deref(),
+        Some(WORK_ACCOUNT)
+    );
+    assert!(auth_log(&sb).iter().all(|l| !l.contains("work")));
+    assert_eq!(sb.read(".mcc/config.toml"), cfg);
 
-    // doctor sees it, and its fix puts the block back.
+    // The hint's command puts ~/.claude back; the trade then works.
+    sb.command("claude")
+        .env("FAKE_PER_DIR", "1")
+        .args(["auth", "login", "--email", HOME_ACCOUNT])
+        .status()
+        .unwrap();
+    assert_eq!(account(&sb, ".claude").as_deref(), Some(HOME_ACCOUNT));
+    mcc(&sb).args(["default", "work", "-y"]).assert().success();
+    assert_eq!(account(&sb, ".claude").as_deref(), Some(WORK_ACCOUNT));
+}
+
+#[test]
+fn a_failed_second_sign_in_stops_halfway_with_the_way_to_finish() {
+    let sb = sandbox();
+    let at_work = project(&sb, "src/acme", "work");
+    sb.write(".mcc/state/work/usage.json", "{}");
+    mcc(&sb)
+        .env("FAKE_LOGIN_FAIL_AT", "2")
+        .args(["default", "work", "-y"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(format!(
+            "the trade stopped halfway: ~/.claude is signed in to {WORK_ACCOUNT}, but `work` is signed out"
+        )))
+        .stderr(predicate::str::contains(format!(
+            "`mcc exec work -- claude auth login --email {HOME_ACCOUNT}`"
+        )));
+    assert_eq!(account(&sb, ".claude").as_deref(), Some(WORK_ACCOUNT));
+    assert_eq!(account(&sb, ".mcc/profiles/work"), None);
+    // The registry already follows ~/.claude's move: the project that used
+    // WORK_ACCOUNT through `work` uses it through ~/.claude, and what
+    // described WORK_ACCOUNT under `work` is gone.
+    assert_eq!(runs_in(&sb, &at_work), "default");
+    let cfg = sb.read(".mcc/config.toml");
+    assert!(!cfg.contains("Acme (work)"), "{cfg}");
+    assert!(!cfg.contains(WORK_ACCOUNT), "{cfg}");
+    assert!(!sb.exists(".mcc/state/work/usage.json"));
+
+    // The hint's command finishes the trade.
+    mcc(&sb)
+        .args([
+            "exec",
+            "work",
+            "--",
+            "claude",
+            "auth",
+            "login",
+            "--email",
+            HOME_ACCOUNT,
+        ])
+        .assert()
+        .success();
+    assert_eq!(
+        account(&sb, ".mcc/profiles/work").as_deref(),
+        Some(HOME_ACCOUNT)
+    );
+    assert_eq!(by_name(&list(&sb), "work")["account"], HOME_ACCOUNT);
+}
+
+#[test]
+fn a_trade_is_refused_before_anything_changes() {
+    let sb = sandbox();
+    let refused = |sb: &Sandbox, args: &[&str], code: i32, msg: &str| {
+        mcc(sb)
+            .args(args)
+            .assert()
+            .code(code)
+            .stderr(predicate::str::contains(msg));
+        assert!(auth_log(sb).is_empty(), "{args:?}");
+    };
+    refused(&sb, &["default", "default", "-y"], 2, "already");
+    refused(&sb, &["default", "claude", "-y"], 2, "already");
+    refused(&sb, &["default", "ghost", "-y"], 2, "ghost");
+    refused(&sb, &["default", "work", "--new"], 2, "cannot be used with");
+    refused(
+        &sb,
+        &["default", "work", "--keep-as", "x"],
+        2,
+        "--keep-as goes with --new",
+    );
+    refused(
+        &sb,
+        &["default", "--email", "a@b.c"],
+        2,
+        "--email goes with --new",
+    );
+
+    // Both on one account: nothing to trade.
+    sb.sign_in(
+        ".mcc/profiles/lab",
+        ".mcc/profiles/lab/.claude.json",
+        HOME_ACCOUNT,
+    );
+    refused(&sb, &["default", "lab", "-y"], 1, "nothing to trade");
+    // A signed-out profile has no account to give.
+    std::fs::remove_file(sb.path(".mcc/profiles/lab/.credentials.json")).unwrap();
+    refused(&sb, &["default", "lab", "-y"], 1, "`lab` is not signed in");
+    // A Console login can't move.
+    let mut cmd = mcc(&sb);
+    cmd.env("FAKE_AUTH_METHOD", "api_key")
+        .env("FAKE_API_KEY_SOURCE", "/login managed key")
+        .args(["default", "work", "-y"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("Anthropic Console"));
+    assert!(auth_log(&sb).is_empty());
+}
+
+#[test]
+fn a_sharing_profile_is_not_handed_an_account_of_another_kind() {
+    let sb = sandbox();
+    // `work` and `lab` share sessions in one Team organization.
+    for (rel, email) in [("work", WORK_ACCOUNT), ("lab", LAB_ACCOUNT)] {
+        sb.write(
+            &format!(".mcc/profiles/{rel}/.claude.json"),
+            &format!(
+                r#"{{"oauthAccount":{{"emailAddress":"{email}","organizationUuid":"org-acme","organizationName":"Acme","organizationType":"claude_team"}}}}"#
+            ),
+        );
+    }
+    let cfg = sb.read(".mcc/config.toml");
+    let cfg = cfg
+        .replace(
+            "[profiles.work]\n",
+            "[profiles.work]\nshare_sessions = true\n",
+        )
+        .replace(
+            "[profiles.lab]\n",
+            "[profiles.lab]\nshare_sessions = true\n",
+        );
+    sb.write(".mcc/config.toml", &cfg);
+    mcc(&sb)
+        .args(["default", "work", "-y"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("across organizations"))
+        .stderr(predicate::str::contains("mcc share work --off"));
+    assert!(auth_log(&sb).is_empty());
+}
+
+#[test]
+fn new_keeps_the_old_account_as_a_profile_before_signing_out() {
+    let sb = sandbox();
+    mcc(&sb)
+        .args([
+            "default",
+            "--new",
+            "--email",
+            "new@else.test",
+            "--keep-as",
+            "personal",
+            "-y",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "~/.claude is now signed in to new@else.test",
+        ))
+        // The account moves to `personal`: no duplicate warning.
+        .stderr(predicate::str::contains("already logged in to").not());
+    assert_eq!(account(&sb, ".claude").as_deref(), Some("new@else.test"));
+    assert_eq!(
+        account(&sb, ".mcc/profiles/personal").as_deref(),
+        Some(HOME_ACCOUNT)
+    );
+    assert_eq!(
+        auth_log(&sb),
+        [
+            format!(".mcc/profiles/personal login {HOME_ACCOUNT}"),
+            ".claude logout".to_string(),
+            ".claude login new@else.test".to_string(),
+        ]
+    );
+    // A clone of ~/.claude's setup.
+    assert!(sb.exists(".mcc/profiles/personal/settings.json"));
+    assert!(sb.read(".zshrc").contains("alias personal="));
+}
+
+#[test]
+fn new_with_y_alone_signs_the_old_account_out_of_the_machine() {
+    let sb = sandbox();
+    mcc(&sb)
+        .args(["default", "--new", "--email", "new@else.test", "-y"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(format!(
+            "{HOME_ACCOUNT} will no longer be signed in on this machine"
+        )));
+    assert_eq!(account(&sb, ".claude").as_deref(), Some("new@else.test"));
+    assert!(!sb.exists(".mcc/profiles/personal"));
+}
+
+#[test]
+fn new_does_not_keep_an_account_a_profile_holds() {
+    let sb = sandbox();
+    sb.sign_in(
+        ".mcc/profiles/lab",
+        ".mcc/profiles/lab/.claude.json",
+        HOME_ACCOUNT,
+    );
+    mcc(&sb)
+        .args([
+            "default",
+            "--new",
+            "--email",
+            "new@else.test",
+            "--keep-as",
+            "personal",
+            "-y",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("--keep-as personal is not needed"))
+        .stderr(predicate::str::contains(format!(
+            "{HOME_ACCOUNT} stays signed in to `lab`"
+        )));
+    assert!(!sb.exists(".mcc/profiles/personal"));
+}
+
+#[test]
+fn new_with_a_profiles_email_is_a_trade() {
+    let sb = sandbox();
+    mcc(&sb)
+        .args(["default", "--new", "--email", WORK_ACCOUNT, "-y"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(format!(
+            "{WORK_ACCOUNT} is the account of profile `work`"
+        )));
+    assert_eq!(account(&sb, ".claude").as_deref(), Some(WORK_ACCOUNT));
+    assert_eq!(
+        account(&sb, ".mcc/profiles/work").as_deref(),
+        Some(HOME_ACCOUNT)
+    );
+}
+
+#[test]
+fn new_landing_on_a_profiles_account_offers_the_trade() {
+    let sb = sandbox();
+    mcc(&sb)
+        .env("FAKE_LOGIN_AS_1", WORK_ACCOUNT)
+        .args(["default", "--new", "-y"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(format!(
+            "{WORK_ACCOUNT} is also the account of `work`"
+        )))
+        .stderr(predicate::str::contains(format!(
+            "~/.claude is now signed in to {WORK_ACCOUNT}, and `work` to {HOME_ACCOUNT}"
+        )));
+    assert_eq!(
+        account(&sb, ".mcc/profiles/work").as_deref(),
+        Some(HOME_ACCOUNT)
+    );
+}
+
+#[test]
+fn new_landing_on_the_same_account_stops() {
+    let sb = sandbox();
+    mcc(&sb)
+        .env("FAKE_LOGIN_AS_1", HOME_ACCOUNT)
+        .args(["default", "--new", "-y"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(format!(
+            "~/.claude did not switch accounts: it is signed in to {HOME_ACCOUNT}"
+        )));
+}
+
+#[test]
+fn new_signs_in_a_signed_out_default() {
+    let sb = sandbox();
+    std::fs::remove_file(sb.path(".claude/.credentials.json")).unwrap();
+    mcc(&sb)
+        .args(["default", "--new", "--email", "new@else.test"])
+        .assert()
+        .code(2);
+    mcc(&sb)
+        .args(["default", "--new", "--email", "new@else.test", "-y"])
+        .assert()
+        .success();
+    assert_eq!(account(&sb, ".claude").as_deref(), Some("new@else.test"));
+}
+
+#[test]
+fn an_older_claude_without_email_prefill_still_trades() {
+    let sb = sandbox();
+    mcc(&sb)
+        .env("FAKE_NO_EMAIL_FLAG", "1")
+        .args(["default", "--new", "--email", "new@else.test", "-y"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("has no --email option"));
+    assert!(auth_log(&sb).is_empty());
+    // A trade signs in blank and checks the account all the same.
+    mcc(&sb)
+        .env("FAKE_NO_EMAIL_FLAG", "1")
+        .env("FAKE_LOGIN_AS_1", WORK_ACCOUNT)
+        .env("FAKE_LOGIN_AS_2", HOME_ACCOUNT)
+        .args(["default", "work", "-y"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("can't pre-fill the sign-in page"));
+    assert!(!sb.read("login-args").contains("--email"));
+    assert_eq!(account(&sb, ".claude").as_deref(), Some(WORK_ACCOUNT));
+}
+
+#[test]
+fn a_signed_out_profile_does_not_count_as_keeping_the_old_account() {
+    let sb = sandbox();
+    // `lab`'s state file still names HOME_ACCOUNT, but it is signed out.
+    sb.sign_in(
+        ".mcc/profiles/lab",
+        ".mcc/profiles/lab/.claude.json",
+        HOME_ACCOUNT,
+    );
+    std::fs::remove_file(sb.path(".mcc/profiles/lab/.credentials.json")).unwrap();
+    std::fs::remove_file(sb.path(".mcc/profiles/lab/.fake-account")).unwrap();
+    mcc(&sb)
+        .args([
+            "default",
+            "--new",
+            "--email",
+            "new@else.test",
+            "--keep-as",
+            "personal",
+            "-y",
+        ])
+        .assert()
+        .success();
+    assert_eq!(
+        account(&sb, ".mcc/profiles/personal").as_deref(),
+        Some(HOME_ACCOUNT)
+    );
+}
+
+#[test]
+fn credential_variables_never_reach_the_sign_ins() {
+    let sb = sandbox();
+    mcc(&sb)
+        .env("ANTHROPIC_API_KEY", "sk-test-not-a-key")
+        .env("CLAUDE_CODE_OAUTH_TOKEN", "not-a-token")
+        .args(["default", "work", "-y"])
+        .assert()
+        .success();
+    assert_eq!(account(&sb, ".claude").as_deref(), Some(WORK_ACCOUNT));
+    let seen = if sb.exists("claude-env.log") {
+        sb.read("claude-env.log")
+    } else {
+        String::new()
+    };
+    assert!(seen.is_empty(), "{seen}");
+}
+
+#[test]
+fn a_trade_across_organizations_says_what_history_it_opens() {
+    let sb = sandbox();
+    sb.write(
+        ".mcc/profiles/work/.claude.json",
+        &format!(
+            r#"{{"oauthAccount":{{"emailAddress":"{WORK_ACCOUNT}","organizationUuid":"org-acme","organizationName":"Acme","organizationType":"claude_team"}}}}"#
+        ),
+    );
+    sb.write(".mcc/profiles/work/.fake-org", "org-acme\n");
+    mcc(&sb)
+        .env("FAKE_LOGIN_ORG_1", "org-acme")
+        .args(["default", "work", "-y"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "~/.claude keeps its history and sessions",
+        ))
+        .stderr(predicate::str::contains(format!(
+            "what {HOME_ACCOUNT} (a personal account) did there can be resumed under {WORK_ACCOUNT} (organization Acme)"
+        )));
+    // The same organization on both sides of each sign-in: it went through.
+    assert_eq!(account(&sb, ".claude").as_deref(), Some(WORK_ACCOUNT));
+    // Two personal accounts: nothing to say.
+    let sb = sandbox();
+    mcc(&sb)
+        .args(["default", "lab", "-y"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("keeps its history").not());
+}
+
+#[test]
+fn an_older_pointer_is_retired_on_the_next_run() {
+    let sb = sandbox();
+    let cfg = sb.read(".mcc/config.toml");
+    let rc = sb.read(".zshrc");
+    sb.write(
+        ".mcc/config.toml",
+        &format!("default_profile = \"work\"\n{cfg}"),
+    );
+    sb.write(".zshrc", &format!("{rc}\n{OLD_BLOCK}"));
+
+    // doctor only reports it.
     let checks =
         json(stdout_of(sb.mcc().env("MCC_NO_USAGE", "1").args(["doctor", "--json"])).as_bytes());
     let f = checks
@@ -189,354 +681,64 @@ fn the_already_default_profile_repairs_a_missing_shell_block() {
         .find(|f| f["check"] == "default_profile")
         .expect("a default_profile finding");
     assert_eq!(f["status"], "warn", "{f}");
-    assert_eq!(f["fix"], "mcc default work", "{f}");
+    assert_eq!(f["fix"], "mcc default", "{f}");
 
+    // Any other command retires both at once.
     sb.mcc()
-        .args(["default", "work"])
+        .args(["list", "--no-usage"])
         .assert()
         .success()
         .stderr(predicate::str::contains(
-            "repaired the shell's `claude` command",
+            "`mcc default` now switches the account of ~/.claude",
+        ))
+        .stderr(predicate::str::contains(
+            "`mcc default work` makes its account the default",
         ));
-    assert_eq!(sb.read(".zshrc"), with_block);
     assert_eq!(sb.read(".mcc/config.toml"), cfg);
-}
-
-#[test]
-fn a_project_default_beats_the_global_default_which_beats_claude() {
-    let sb = sandbox();
-    let app = sb.path("code/app");
-    std::fs::create_dir_all(&app).unwrap();
-    sb.mcc()
-        .args(["project", "set", "lab", "--path"])
-        .arg(&app)
-        .assert()
-        .success();
-    let home = sb.home().to_path_buf();
-
-    // No global default yet: ~/.claude outside the project.
-    let (name, err) = run_in(&sb, &home);
-    assert_eq!(name, "default");
-    assert!(err.contains("no project default here"), "{err}");
-
-    sb.mcc().args(["default", "work"]).assert().success();
-    let (name, err) = run_in(&sb, &home);
-    assert_eq!(name, "work");
-    assert!(err.contains("the global default (`mcc default`)"), "{err}");
-    assert_eq!(run_in(&sb, &app).0, "lab");
-    // A profile picked by name, `default` included, is still that profile.
-    let picked = stdout_of(sb.mcc().env("MCC_NO_USAGE", "1").args([
-        "run",
-        "--dry-run",
-        "--profile",
-        "default",
-    ]));
-    assert_eq!(picked.trim(), "default");
-
-    // `mcc env` agrees.
-    let env = |dir: &Path| stdout_of(sb.mcc().args(["env", "--shell", "zsh"]).current_dir(dir));
-    let work_dir = sb.path(".mcc/profiles/work");
-    assert!(
-        env(&home).contains(&format!(
-            "export CLAUDE_CONFIG_DIR='{}'",
-            work_dir.display()
-        )),
-        "{}",
-        env(&home)
-    );
-    assert!(env(&app).contains(".mcc/profiles/lab'"), "{}", env(&app));
-
-    // And so does the status view.
-    let status = stdout_of(sb.mcc().env("MCC_NO_USAGE", "1"));
-    assert!(
-        status.starts_with("Here: `work` — the global default (`mcc default`)\n"),
-        "{status}"
-    );
-    let status = stdout_of(sb.mcc().env("MCC_NO_USAGE", "1").current_dir(&app));
-    assert!(
-        status.starts_with("Here: `lab` — the default for "),
-        "{status}"
-    );
-
-    sb.mcc().args(["default", "default"]).assert().success();
-    assert_eq!(run_in(&sb, &home).0, "default");
-    assert!(env(&home).contains("unset CLAUDE_CONFIG_DIR"));
-}
-
-#[test]
-fn list_usage_and_status_mark_the_default_profile() {
-    let sb = sandbox();
-    let all = list(&sb);
-    assert_eq!(by_name(&all, "default")["is_global_default"], true);
-    assert_eq!(by_name(&all, "work")["is_global_default"], false);
-
-    sb.mcc().args(["default", "work"]).assert().success();
-    let all = list(&sb);
-    let (default, work, lab) = (
-        by_name(&all, "default"),
-        by_name(&all, "work"),
-        by_name(&all, "lab"),
-    );
-    // `is_default` keeps meaning ~/.claude.
-    assert_eq!(default["is_default"], true);
-    assert_eq!(default["is_global_default"], false);
-    assert_eq!(work["is_default"], false);
-    assert_eq!(work["is_global_default"], true);
-    assert_eq!(lab["is_global_default"], false);
-
-    let usage =
-        json(stdout_of(sb.mcc().env("MCC_NO_USAGE", "1").args(["usage", "--json"])).as_bytes());
-    let usage = usage.as_array().unwrap();
-    assert_eq!(by_name(usage, "default")["is_default"], true);
-    assert_eq!(by_name(usage, "default")["is_global_default"], false);
-    assert_eq!(by_name(usage, "work")["is_global_default"], true);
-
-    let table = stdout_of(sb.mcc().args(["list", "--no-usage"]));
-    assert!(table.contains("\nwork ★"), "{table}");
-    assert!(!table.contains("default ★"), "{table}");
-    let long = stdout_of(sb.mcc().args(["list", "--long", "--no-usage"]));
-    assert!(long.contains("◆ default (~/.claude)\n"), "{long}");
-    assert!(long.contains("◆ work ★ (default profile)\n"), "{long}");
-    let status = stdout_of(sb.mcc().env("MCC_NO_USAGE", "1"));
-    assert!(status.contains("\nwork ★"), "{status}");
-}
-
-#[test]
-fn rename_moves_the_default_to_the_new_name() {
-    let sb = sandbox();
-    sb.mcc().args(["default", "work"]).assert().success();
-    sb.mcc()
-        .args(["rename", "work", "job"])
-        .assert()
-        .success()
-        .stderr(predicate::str::contains("the default profile is now `job`"));
-    assert_eq!(shown_default(&sb), "job\n");
-    let rc = sb.read(".zshrc");
-    assert_eq!(rc.matches(BEGIN).count(), 1, "{rc}");
-    assert!(rc.contains("\"$HOME/.local/bin/job\" \"$@\"; else"), "{rc}");
-    assert!(!rc.contains(".local/bin/work"), "{rc}");
-    assert!(
-        sb.read(".mcc/config.toml")
-            .contains("default_profile = \"job\"")
-    );
-    assert_eq!(by_name(&list(&sb), "job")["is_global_default"], true);
-
-    // Renaming another profile leaves the default alone.
-    let rc = sb.read(".zshrc");
-    sb.mcc().args(["rename", "lab", "lab2"]).assert().success();
-    assert_eq!(shown_default(&sb), "job\n");
-    let after = sb.read(".zshrc");
-    let block = |t: &str| {
-        t[t.find(BEGIN).unwrap()..]
-            .split("# <<<")
-            .next()
-            .unwrap()
-            .to_string()
-    };
-    assert_eq!(block(&after), block(&rc));
-}
-
-#[test]
-fn delete_goes_back_to_claude_when_the_default_is_deleted() {
-    let sb = sandbox();
-    let default_before = snapshot(&sb, ".claude");
-    sb.mcc().args(["default", "work"]).assert().success();
-    sb.mcc().args(["delete", "lab", "--yes"]).assert().success();
-    assert_eq!(shown_default(&sb), "work\n");
-    assert!(sb.read(".zshrc").contains(BEGIN));
-
-    sb.mcc()
-        .args(["delete", "work", "--yes"])
-        .assert()
-        .success()
-        .stderr(predicate::str::contains("it was the default profile"))
-        .stderr(predicate::str::contains("the default is ~/.claude again"));
-    assert_eq!(shown_default(&sb), "default\n");
-    assert!(!sb.read(".mcc/config.toml").contains("default_profile"));
     assert!(!sb.read(".zshrc").contains("mcc:default"));
-    assert_eq!(snapshot(&sb, ".claude"), default_before);
-    assert_eq!(run_in(&sb, sb.home()).0, "default");
-}
-
-#[test]
-fn a_default_naming_no_profile_is_flagged_and_reset() {
-    let sb = sandbox();
-    let cfg = sb.read(".mcc/config.toml");
-    sb.write(
-        ".mcc/config.toml",
-        &format!("default_profile = \"ghost\"\n{cfg}"),
-    );
-
-    let out = sb
-        .mcc()
-        .env("MCC_NO_USAGE", "1")
-        .args(["doctor", "--json"])
-        .assert()
-        .code(1)
-        .get_output()
-        .stdout
-        .clone();
-    let checks = json(&out);
-    let f = checks
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|f| f["check"] == "default_profile")
-        .expect("a default_profile finding");
-    assert_eq!(f["status"], "problem", "{f}");
-    assert_eq!(f["fix"], "mcc default default", "{f}");
-
+    assert!(sb.read(".zshrc").contains("alias work="));
+    assert_eq!(runs_in(&sb, sb.home()), "default");
+    // Said once.
     sb.mcc()
-        .env("MCC_NO_USAGE", "1")
-        .args(["run", "--dry-run"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains(
-            "the global default is \"ghost\", which is not a profile",
-        ))
-        .stderr(predicate::str::contains("mcc default default"));
-    sb.mcc()
-        .env("MCC_NO_USAGE", "1")
+        .args(["list", "--no-usage"])
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            "Here: `ghost` — the global default",
-        ))
-        .stderr(predicate::str::contains("the global default is \"ghost\""));
-
-    sb.mcc().args(["default", "default"]).assert().success();
-    assert_eq!(shown_default(&sb), "default\n");
-    assert_eq!(run_in(&sb, sb.home()).0, "default");
-}
-
-#[test]
-fn doctor_reports_nothing_new_until_a_default_is_chosen() {
-    let sb = sandbox();
-    let checks = |sb: &Sandbox| -> Vec<serde_json::Value> {
-        let out = sb
-            .mcc()
-            .env("MCC_NO_USAGE", "1")
-            .args(["doctor", "--json"])
-            .output()
-            .unwrap()
-            .stdout;
-        json(&out)
+        .stderr(predicate::str::contains("mcc default").not());
+    let checks =
+        json(stdout_of(sb.mcc().env("MCC_NO_USAGE", "1").args(["doctor", "--json"])).as_bytes());
+    assert!(
+        checks
             .as_array()
             .unwrap()
             .iter()
-            .filter(|f| f["check"] == "default_profile")
-            .cloned()
-            .collect()
-    };
-    assert!(checks(&sb).is_empty());
-    sb.mcc().args(["default", "work"]).assert().success();
-    let found = checks(&sb);
-    assert_eq!(found.len(), 1, "{found:?}");
-    assert_eq!(found[0]["status"], "ok", "{found:?}");
+            .all(|f| f["check"] != "default_profile")
+    );
+}
 
-    // A block left behind with ~/.claude the default is flagged.
+#[test]
+fn a_leftover_shell_function_alone_is_removed_by_mcc_default() {
+    let sb = sandbox();
     let rc = sb.read(".zshrc");
-    sb.mcc().args(["default", "default"]).assert().success();
-    sb.write(".zshrc", &rc);
-    let found = checks(&sb);
-    assert_eq!(found[0]["status"], "warn", "{found:?}");
-    assert_eq!(found[0]["fix"], "mcc default default", "{found:?}");
-    sb.mcc()
-        .args(["default", "default"])
+    sb.write(".zshrc", &format!("{rc}\n{OLD_BLOCK}"));
+    mcc(&sb)
+        .arg("default")
         .assert()
         .success()
-        .stderr(predicate::str::contains("repaired"));
-    assert!(!sb.read(".zshrc").contains(BEGIN));
+        .stderr(predicate::str::contains(
+            "removed the `claude` function in ~/.zshrc",
+        ));
+    assert!(!sb.read(".zshrc").contains("mcc:default"));
+    assert!(auth_log(&sb).is_empty());
 }
 
-/// The block, sourced by bash: plain `claude` starts the default profile's
-/// launcher; `command claude` and a shell already pointed at a profile
-/// start claude as they always did.
 #[test]
-fn the_shell_function_starts_the_default_only_without_a_config_dir() {
+fn the_default_profiles_key_is_not_settable() {
     let sb = sandbox();
-    sb.mcc().args(["default", "work"]).assert().success();
-    let rc = sb.read(".zshrc");
-    let start = rc.find(BEGIN).unwrap();
-    sb.write("block.sh", &rc[start..]);
-    let config_dir = |script: &str, preset: Option<&str>| -> String {
-        let mut cmd = sb.command("/bin/bash");
-        cmd.arg("-c")
-            .arg(format!(". \"$HOME/block.sh\"; {script}"))
-            .env("FAKE_CONFIG_DIRECTORY", "1")
-            .env("MCC_NO_USAGE", "1");
-        if let Some(dir) = preset {
-            cmd.env("CLAUDE_CONFIG_DIR", dir);
-        }
-        let out = cmd.output().unwrap();
-        assert!(out.status.success(), "{out:?}");
-        let v = json(&out.stdout);
-        v["configDirectory"].as_str().unwrap().to_string()
-    };
-    let work = sb.path(".mcc/profiles/work").display().to_string();
-    assert_eq!(config_dir("claude auth status", None), work);
-    assert_eq!(
-        config_dir("command claude auth status", None),
-        sb.path(".claude").display().to_string()
-    );
-    let lab = sb.path(".mcc/profiles/lab").display().to_string();
-    assert_eq!(config_dir("claude auth status", Some(&lab)), lab);
-}
-
-/// With a global default set, a project whose default is ~/.claude
-/// (`mcc project set default`) keeps plain `claude` on ~/.claude once
-/// `eval "$(mcc env)"` (or direnv) has run there: the project default beats
-/// the global default, as it does for `mcc run`.
-#[test]
-fn the_shell_function_keeps_a_project_default_of_claude() {
-    let sb = sandbox();
-    sb.mcc().args(["default", "work"]).assert().success();
-    let (claude_app, lab_app) = (sb.path("code/claude"), sb.path("code/lab"));
-    for (dir, profile) in [(&claude_app, "default"), (&lab_app, "lab")] {
-        std::fs::create_dir_all(dir).unwrap();
-        sb.mcc()
-            .args(["project", "set", profile, "--path"])
-            .arg(dir)
-            .assert()
-            .success();
-    }
-    let rc = sb.read(".zshrc");
-    sb.write("block.sh", &rc[rc.find(BEGIN).unwrap()..]);
-    // `eval "$(mcc env)"` in `dir`, then plain `claude` in the same shell.
-    let config_dir = |dir: &Path| -> String {
-        let env = stdout_of(sb.mcc().args(["env", "--shell", "bash"]).current_dir(dir));
-        let out = sb
-            .command("/bin/bash")
-            .arg("-c")
-            .arg(format!(". \"$HOME/block.sh\"\n{env}\nclaude auth status"))
-            .env("FAKE_CONFIG_DIRECTORY", "1")
-            .env("MCC_NO_USAGE", "1")
-            .current_dir(dir)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "{out:?}");
-        json(&out.stdout)["configDirectory"]
-            .as_str()
-            .unwrap()
-            .to_string()
-    };
-    let path = |rel: &str| sb.path(rel).display().to_string();
-    assert_eq!(config_dir(&claude_app), path(".claude"));
-    assert_eq!(config_dir(&lab_app), path(".mcc/profiles/lab"));
-    // No project default: the global default.
-    assert_eq!(config_dir(sb.home()), path(".mcc/profiles/work"));
-
-    // `mcc exec`/`mcc run` as ~/.claude say so too, for a shell they start.
-    let marker = |profile: &str| {
-        stdout_of(sb.mcc().args([
-            "exec",
-            profile,
-            "--",
-            "/bin/sh",
-            "-c",
-            "printf %s \"${MCC_PROFILE-unset}\"",
-        ]))
-    };
-    assert_eq!(marker("default"), "default");
-    assert_eq!(marker("lab"), "unset");
+    sb.mcc()
+        .args(["config", "set", "default_profile", "work"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "~/.claude is always the default profile",
+        ));
 }
