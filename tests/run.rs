@@ -208,6 +208,95 @@ fn project_set_list_and_unset() {
     assert!(!sb.read(".mcc/config.toml").contains("[projects"));
 }
 
+/// `mcc run --dry-run` in `rel` with usage off: (profile, stderr).
+fn dry_run_in(sb: &Sandbox, rel: &str) -> (String, String) {
+    let o = sb
+        .mcc()
+        .env("MCC_NO_USAGE", "1")
+        .current_dir(sb.path(rel))
+        .args(["run", "--dry-run"])
+        .assert()
+        .success();
+    let out = o.get_output();
+    (
+        String::from_utf8_lossy(&out.stdout).trim_end().to_string(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// A default set on a workspace folder (not a git repository) applies in
+/// every folder below it that has none of its own, and says it is
+/// inherited; a subfolder's own default wins; removing it falls back to the
+/// next folder up, and with none up to /, to the default profile. Issue #119.
+#[test]
+fn workspace_default_is_inherited_by_subfolders_up_to_the_root() {
+    let sb = run_sandbox();
+    for dir in ["ws/app/src", "ws/site"] {
+        std::fs::create_dir_all(sb.path(dir)).unwrap();
+    }
+    let (ws, app) = (real(&sb, "ws"), real(&sb, "ws/app"));
+    // Outside a git repository, `set` without --path takes the folder itself.
+    sb.mcc()
+        .current_dir(sb.path("ws"))
+        .args(["project", "set", "work"])
+        .assert()
+        .success();
+    assert!(
+        sb.read(".mcc/config.toml").contains(&format!(
+            "[projects.\"{}\"]\nprofile = \"work\"\n",
+            ws.display()
+        )),
+        "the workspace folder itself is stored"
+    );
+    let inherited = |dir: &Path| format!("— inherited from parent folder {}", shown(&sb, dir));
+
+    let (p, err) = dry_run_in(&sb, "ws");
+    assert_eq!(p, "work");
+    assert!(
+        err.contains(&format!("— the default for {}", shown(&sb, &ws))),
+        "{err}"
+    );
+    for dir in ["ws/app", "ws/app/src", "ws/site"] {
+        let (p, err) = dry_run_in(&sb, dir);
+        assert_eq!(p, "work", "{dir}");
+        assert!(err.contains(&inherited(&ws)), "{dir}: {err}");
+    }
+
+    // A subfolder's own default overrides the workspace's, below it too.
+    sb.mcc()
+        .args(["project", "set", "lab", "--path"])
+        .arg(sb.path("ws/app"))
+        .assert()
+        .success();
+    let (p, err) = dry_run_in(&sb, "ws/app/src");
+    assert_eq!(p, "lab");
+    assert!(err.contains(&inherited(&app)), "{err}");
+    assert_eq!(dry_run_in(&sb, "ws/site").0, "work");
+
+    // Removing it falls back to the next folder up.
+    sb.mcc()
+        .args(["project", "unset", "--path"])
+        .arg(sb.path("ws/app"))
+        .assert()
+        .success();
+    let (p, err) = dry_run_in(&sb, "ws/app/src");
+    assert_eq!(p, "work");
+    assert!(err.contains(&inherited(&ws)), "{err}");
+
+    // With no default up to /, the default profile (~/.claude).
+    sb.mcc()
+        .current_dir(sb.path("ws/app/src"))
+        .args(["project", "unset"])
+        .assert()
+        .success();
+    let (p, err) = dry_run_in(&sb, "ws/app/src");
+    assert_eq!(p, "default");
+    assert!(
+        err.contains("would start `default` — no project default here or in a parent folder"),
+        "{err}"
+    );
+}
+
 #[test]
 fn project_set_rejects_unknown_profiles_and_directories() {
     let sb = run_sandbox();
@@ -244,7 +333,7 @@ fn run_starts_the_project_default_and_only_asks_for_its_usage() {
     let (out, err) = dry_run(&sb, &stub);
     assert_eq!(out, "work\n");
     assert!(
-        err.contains("would start `work` — the default for")
+        err.contains("would start `work` — inherited from parent folder ")
             && err.contains("(5h 42%, week 18% used)"),
         "{err}"
     );
@@ -273,7 +362,10 @@ fn run_at_the_limit_defaults_to_waiting_and_shows_no_other_usage() {
     ] {
         assert!(err.contains(line), "missing {line:?} in:\n{err}");
     }
-    assert!(err.contains("`work` (the default for "), "{err}");
+    assert!(
+        err.contains("`work` (inherited from parent folder "),
+        "{err}"
+    );
     // No other account's usage, and no profile the project doesn't allow.
     assert!(!err.contains('%'), "{err}");
     assert!(!err.contains("side") && !err.contains("`default`"), "{err}");
@@ -584,7 +676,7 @@ fn run_outside_a_project_uses_the_default_profile() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "default\n");
     assert!(
         String::from_utf8_lossy(&out.stderr)
-            .contains("would start `default` — no project default here"),
+            .contains("would start `default` — no project default here or in a parent folder"),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );

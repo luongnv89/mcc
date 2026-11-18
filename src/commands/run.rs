@@ -1,8 +1,8 @@
 //! `mcc run` — start Claude Code in the current project with its profile.
 //!
-//! The project's default profile (`mcc project set`) starts; outside any
-//! project, the global default (`mcc default`), else the default profile
-//! (~/.claude). mcc never switches accounts on
+//! The default profile of the current folder, or else of the nearest parent
+//! folder that has one (`mcc project set`), starts; when no folder up to /
+//! has one, the default profile (~/.claude). mcc never switches accounts on
 //! its own: when that profile is known to be at its 5-hour or weekly limit,
 //! `mcc run` asks what to do, and waiting (starting nothing) is the default.
 //! The next choice starts the profile anyway; other profiles are offered
@@ -228,32 +228,50 @@ pub(crate) fn find<'a>(all: &'a [Profile], name: &str) -> Result<&'a Profile> {
 /// Why a profile applies in a directory ([`applies_in`]).
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Origin<'c> {
-    /// The deepest project containing it (`mcc project set`): its directory
-    /// and entry.
+    /// The directory itself has a default (`mcc project set`): the
+    /// directory and its entry.
     Project(&'c str, &'c crate::config::Project),
-    /// No project: the default profile (~/.claude).
+    /// Inherited: the nearest parent folder with a default (`mcc project
+    /// set`, e.g. on a workspace folder or the top of a git repository):
+    /// that folder and its entry.
+    Inherited(&'c str, &'c crate::config::Project),
+    /// No folder up to / has a default: the default profile (~/.claude).
     Builtin,
 }
 
 impl<'c> Origin<'c> {
-    /// The project, when the profile is its default.
+    /// The project (the folder whose default it is, the directory itself or
+    /// a parent folder), when the profile is its default.
     pub(crate) fn project(self) -> Option<(&'c str, &'c crate::config::Project)> {
         match self {
-            Origin::Project(dir, p) => Some((dir, p)),
+            Origin::Project(dir, p) | Origin::Inherited(dir, p) => Some((dir, p)),
             Origin::Builtin => None,
         }
     }
 }
 
 /// The name of the profile that applies in `dir`, and why: the default of
-/// the deepest project containing it, else `default` (~/.claude). The name is not checked against
-/// the registry. `mcc run`, `mcc env` and the bare `mcc` status view all
-/// resolve it here, so they always agree.
+/// `dir` itself, else of the nearest parent folder that has one, up to /
+/// (the deepest project containing `dir`), else `default` (~/.claude). The
+/// name is not checked against the registry. `mcc run`, `mcc env`, `mcc
+/// here` and the bare `mcc` status view all resolve it here, so they always
+/// agree.
 pub(crate) fn applies_in<'c>(cfg: &'c Config, dir: &Path) -> (&'c str, Origin<'c>) {
     if let Some((d, p)) = super::project::lookup(cfg, dir) {
-        return (p.profile.as_str(), Origin::Project(d, p));
+        let origin = if Path::new(d) == dir {
+            Origin::Project(d, p)
+        } else {
+            Origin::Inherited(d, p)
+        };
+        return (p.profile.as_str(), origin);
     }
     ("default", Origin::Builtin)
+}
+
+/// Whether `name` is a profile `mcc run` can start: `default` (~/.claude)
+/// or a registered mcc profile, as [`profiles`] lists them.
+pub(crate) fn is_profile(cfg: &Config, name: &str) -> bool {
+    name == "default" || cfg.profiles.contains_key(name)
 }
 
 /// The profile that applies in the current directory ([`applies_in`]), and
@@ -268,24 +286,30 @@ pub(crate) fn project_default<'a, 'c>(
     if let Some(p) = all.iter().find(|p| p.name == name) {
         return Ok((p, origin));
     }
-    Err(match origin {
-        Origin::Project(dir, _) => CliError::input(format!(
+    Err(match origin.project() {
+        Some((dir, _)) => CliError::input(format!(
             "the project default of {} is \"{name}\", which is not a profile",
             paths.display(Path::new(dir))
         ))
         .hint(
             "set another with `mcc project set <profile>`, or remove it with `mcc project unset`",
         ),
-        Origin::Builtin => CliError::input(format!("\"{name}\" is not a profile")),
+        None => CliError::input(format!("\"{name}\" is not a profile")),
     }
     .into())
 }
 
-/// Why the profile applies: `the default for ~/code/app`.
+/// Why the profile applies: `the default for ~/code/app` (set on this very
+/// directory), `inherited from parent folder ~/ws` (set on a folder above
+/// it), or `no project default here or in a parent folder` (~/.claude).
 pub(crate) fn why(paths: &Paths, origin: Origin) -> String {
     match origin {
         Origin::Project(dir, _) => format!("the default for {}", paths.display(Path::new(dir))),
-        Origin::Builtin => "no project default here".to_string(),
+        Origin::Inherited(dir, _) => format!(
+            "inherited from parent folder {}",
+            paths.display(Path::new(dir))
+        ),
+        Origin::Builtin => "no project default here or in a parent folder".to_string(),
     }
 }
 
@@ -372,6 +396,10 @@ mod tests {
         ));
         assert!(matches!(
             applies_in(&cfg, app),
+            ("lab", Origin::Inherited("/src/app", _))
+        ));
+        assert!(matches!(
+            applies_in(&cfg, Path::new("/src/app")),
             ("lab", Origin::Project("/src/app", _))
         ));
 
@@ -383,11 +411,48 @@ mod tests {
         ));
         assert!(matches!(
             applies_in(&cfg, app),
-            ("lab", Origin::Project(..))
+            ("lab", Origin::Inherited(..))
         ));
         assert_eq!(
             why(&Paths::new("/h".into()), applies_in(&cfg, out).1),
-            "no project default here"
+            "no project default here or in a parent folder"
+        );
+    }
+
+    /// A folder's default applies to every folder below it that has none
+    /// of its own (inherited, and said so); the nearest one wins; with
+    /// none up to /, the default profile (~/.claude). Issue #119.
+    #[test]
+    fn subfolders_inherit_the_nearest_parent_folders_default() {
+        let cfg: Config = toml::from_str(
+            "[profiles.work]\ndir = \"/d/work\"\nmode = \"clone\"\ncreated_at = \"t\"\n\
+             [profiles.lab]\ndir = \"/d/lab\"\nmode = \"clone\"\ncreated_at = \"t\"\n\
+             [projects.\"/h/ws\"]\nprofile = \"work\"\n\
+             [projects.\"/h/ws/app\"]\nprofile = \"lab\"\n",
+        )
+        .unwrap();
+        let paths = Paths::new("/h".into());
+        let at = |d: &str| {
+            let (name, origin) = applies_in(&cfg, Path::new(d));
+            (name, why(&paths, origin))
+        };
+        assert_eq!(at("/h/ws"), ("work", "the default for ~/ws".into()));
+        assert_eq!(
+            at("/h/ws/site/src"),
+            ("work", "inherited from parent folder ~/ws".into())
+        );
+        // A subfolder's own default overrides its parent's, below it too.
+        assert_eq!(at("/h/ws/app"), ("lab", "the default for ~/ws/app".into()));
+        assert_eq!(
+            at("/h/ws/app/src"),
+            ("lab", "inherited from parent folder ~/ws/app".into())
+        );
+        assert_eq!(
+            at("/h/other"),
+            (
+                "default",
+                "no project default here or in a parent folder".into()
+            )
         );
     }
 

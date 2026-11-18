@@ -715,6 +715,16 @@ mcc run -- --resume      # arguments after `--` go to claude
 
 A project is a directory. `mcc project set` uses the top of the git repository you are in (or the current directory outside one; `--path DIR` picks another). It covers everything below it, and when projects are nested, the deepest one containing the current directory applies. Outside every project, `mcc run` starts the default profile (`~/.claude`), whose account [`mcc default`](#choosing-the-default-profile-mcc-default) switches.
 
+**Workspace defaults.** Any folder can have a default, not only a git repository: set one on a folder that holds several projects, and every folder below it that has no default of its own inherits it. mcc looks at the current folder, then each parent folder up to `/`, and uses the first default it finds; with none, the default profile (`~/.claude`). So a subfolder's default overrides its workspace's, and `mcc project unset` on a subfolder makes it fall back to the next folder up. `mcc run` says when a default is inherited:
+
+```console
+$ mcc project set work --path ~/work      # the workspace
+$ mcc project set lab --path ~/work/lab   # one project in it overrides it
+$ cd ~/work/site/src && mcc run --dry-run
+work
+  ● would start `work` — inherited from parent folder ~/work (5h 12%, week 30% used · 48m ago)
+```
+
 `mcc run` starts the project's default. **It never switches to another account on its own.** When the project's profile is at its 5-hour or weekly limit (100% used), it shows when the limit resets and asks what to do. Waiting is preselected: it starts nothing and exits. Starting the profile anyway comes next. Other profiles are offered only when the project allows them, by name and without their usage:
 
 ```console

@@ -74,7 +74,7 @@ fn shows_the_profile_here_and_every_profile() {
     seed_usage_cache(&sb, "work", Some((42.0, 2 * 3600)), Some((18.0, 86400)), 60);
     let out = stdout_of(&mut sb.mcc());
     assert!(
-        out.starts_with("Here: `default` — no project default here\n\n"),
+        out.starts_with("Here: `default` — no project default here or in a parent folder\n\n"),
         "{out}"
     );
     assert!(
@@ -129,7 +129,7 @@ fn says_which_project_default_applies_here_and_why() {
     // (/var → /private/var), so the stored, resolved path shows in full.
     let first = out.lines().next().unwrap_or_default();
     assert!(
-        first.starts_with("Here: `work` (Acme (work)) — the default for ")
+        first.starts_with("Here: `work` (Acme (work)) — inherited from parent folder ")
             && first.ends_with("/app"),
         "{out}"
     );

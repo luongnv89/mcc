@@ -357,7 +357,7 @@ pub enum Command {
 
     /// Choose the profile `mcc run` starts with in a project
     #[command(
-        after_help = "Examples:\n  mcc project set work          `mcc run` starts `work` in this project\n  mcc project set work --allow lab\n  mcc project set default --path ~/code/site\n  mcc project list              Every project, its profile and allowed profiles\n  mcc project unset             Remove the project default that applies here\n\nA project is a directory: by default the top of the git repository you are\nin, else the current directory. It covers everything below it, and the\ndeepest project containing the current directory applies.\n\nWhen the project's profile is at its limit, `mcc run` asks whether to wait\n(the default) or start it anyway. It offers another profile only when the\nproject allows it with `--allow` (repeat it, or separate names with commas).\nRunning `set` again replaces the list: without `--allow`, it is cleared.\nProject defaults are kept in ~/.mcc/config.toml:\n\n  [projects.\"/Users/me/code/app\"]\n  profile = \"work\"\n  allow = [\"lab\"]\n\n`mcc rename` updates them; `mcc delete` removes the ones naming the profile\nand takes it off the allow lists."
+        after_help = "Examples:\n  mcc project set work          `mcc run` starts `work` in this project\n  mcc project set work --allow lab\n  mcc project set default --path ~/code/site\n  mcc project set work --path ~/work   A workspace: every folder below it inherits `work`\n  mcc project list              Every project, its profile and allowed profiles\n  mcc project unset             Remove the project default that applies here\n\nA project is a directory: by default the top of the git repository you are\nin, else the current directory; --path picks any folder, such as a workspace\nholding several repositories. A folder without a default of its own inherits\nthe one of the nearest parent folder that has one, up to /, so a subfolder's\ndefault overrides its parent's. With none up to /, `mcc run` starts the\ndefault profile (~/.claude). Removing a folder's default with `unset` makes\nit fall back to the next folder up.\n\nWhen the project's profile is at its limit, `mcc run` asks whether to wait\n(the default) or start it anyway. It offers another profile only when the\nproject allows it with `--allow` (repeat it, or separate names with commas).\nRunning `set` again replaces the list: without `--allow`, it is cleared.\nProject defaults are kept in ~/.mcc/config.toml:\n\n  [projects.\"/Users/me/code/app\"]\n  profile = \"work\"\n  allow = [\"lab\"]\n\n`mcc rename` updates them; `mcc delete` removes the ones naming the profile\nand takes it off the allow lists."
     )]
     Project(ProjectArgs),
 
@@ -369,8 +369,9 @@ pub enum Command {
         "  mcc run --profile lab         Start `lab` here instead (usage isn't checked)\n",
         "  mcc run --dry-run             Print the profile that would start, and why\n",
         "\n",
-        "The profile that starts is the project's default (`mcc project set`), or\n",
-        "the default profile (~/.claude) outside any project. mcc never switches\n",
+        "The profile that starts is the default of the current folder, else of the\n",
+        "nearest parent folder that has one (`mcc project set`), else the default\n",
+        "profile (~/.claude). mcc never switches\n",
         "accounts on its own. When that profile is at its 5-hour or weekly limit,\n",
         "`mcc run` asks what to do. Waiting (starting nothing) is the default, and\n",
         "starting it anyway comes next. Other profiles are offered only when the\n",
@@ -778,7 +779,7 @@ pub enum ProjectAction {
         /// Profile to start (`default` or `claude` for ~/.claude)
         profile: String,
 
-        /// Project directory (default: the top of the current git repository, else the current directory)
+        /// Project directory, any folder such as a workspace; folders below it inherit its default (default: the top of the current git repository, else the current directory)
         #[arg(long, value_name = "DIR")]
         path: Option<PathBuf>,
 

@@ -86,7 +86,7 @@ fn here(paths: &Paths, cfg: &Config) -> Here {
         None => ("default", super::run::Origin::Builtin),
     };
     let why = super::run::why(paths, origin);
-    let known = name == "default" || cfg.profiles.contains_key(name);
+    let known = super::run::is_profile(cfg, name);
     // A profile name hand-written in the config file could hold control
     // characters: never print those.
     let shown_name = if super::has_control(name) { "?" } else { name };
