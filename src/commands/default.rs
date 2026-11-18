@@ -229,11 +229,7 @@ impl Side {
             .stdin(Stdio::null())
             .output()
             .with_context(|| format!("running {} auth status", bin.display()))?;
-        let says_logged_in = serde_json::from_slice::<serde_json::Value>(&out.stdout)
-            .is_ok_and(|v| v.get("loggedIn").is_some_and(serde_json::Value::is_boolean));
-        Ok(says_logged_in
-            .then(|| claude::status_from(&out.stdout))
-            .flatten())
+        Ok(claude::known_status_from(&out.stdout))
     }
 
     fn logout(&self, bin: &Path, paths: &Paths) -> Result<bool> {

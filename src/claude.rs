@@ -164,6 +164,24 @@ impl Claude<'_> {
             .with_context(|| format!("running {} auth status", self.bin.display()))?;
         Ok(status_from(&out.stdout))
     }
+
+    /// `claude auth status --json` from the stored login only: run without
+    /// the credential variables (`ANTHROPIC_API_KEY`…) that would stand in
+    /// for it. `None` when claude printed no status mcc can read (an error,
+    /// a crash, no boolean `loggedIn`), so a login mcc can't see never passes
+    /// for a signed-out one.
+    pub fn stored_status(&self) -> Result<Option<AuthStatus>> {
+        let mut cmd = self.command();
+        for var in crate::refresh::STRIPPED_ENV {
+            cmd.env_remove(var);
+        }
+        let out = cmd
+            .args(["auth", "status", "--json"])
+            .stdin(Stdio::null())
+            .output()
+            .with_context(|| format!("running {} auth status", self.bin.display()))?;
+        Ok(known_status_from(&out.stdout))
+    }
 }
 
 /// Whether this Claude Code's `claude auth login` takes `--email` (its
@@ -202,6 +220,17 @@ pub fn launcher_status(launcher: &Path, paths: &Paths) -> Result<Option<AuthStat
 pub(crate) fn status_from(stdout: &[u8]) -> Option<AuthStatus> {
     match serde_json::from_slice::<Value>(stdout) {
         Ok(raw @ Value::Object(_)) => Some(parse_status(raw)),
+        _ => None,
+    }
+}
+
+/// [`status_from`], but only for a status that says whether it is signed
+/// in (a boolean `loggedIn`): anything else is a status mcc can't read.
+pub(crate) fn known_status_from(stdout: &[u8]) -> Option<AuthStatus> {
+    match serde_json::from_slice::<Value>(stdout) {
+        Ok(raw @ Value::Object(_)) if raw.get("loggedIn").is_some_and(Value::is_boolean) => {
+            Some(parse_status(raw))
+        }
         _ => None,
     }
 }
@@ -291,5 +320,19 @@ mod tests {
         assert!(status_from(b"claude not found on PATH").is_none());
         assert!(status_from(b"[]").is_none());
         assert!(status_from(br#"{"loggedIn": true}"#).is_some_and(|s| s.logged_in));
+    }
+
+    #[test]
+    fn known_status_needs_a_boolean_logged_in() {
+        assert!(known_status_from(b"").is_none());
+        assert!(known_status_from(b"auth status failed").is_none());
+        assert!(known_status_from(b"[]").is_none());
+        assert!(known_status_from(b"{}").is_none());
+        assert!(known_status_from(br#"{"authMethod": "claude.ai"}"#).is_none());
+        assert!(known_status_from(br#"{"loggedIn": "yes"}"#).is_none());
+        assert!(known_status_from(br#"{"loggedIn": false}"#).is_some_and(|s| !s.logged_in));
+        let s = known_status_from(br#"{"loggedIn": true, "email": "a@b.c"}"#).unwrap();
+        assert!(s.logged_in);
+        assert_eq!(s.email.as_deref(), Some("a@b.c"));
     }
 }
