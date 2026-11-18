@@ -271,3 +271,39 @@ fn a_project_default_naming_no_profile_is_reported_not_an_error() {
             "\"ghost\", which is not a profile",
         ));
 }
+
+/// In a directory that no longer exists, `mcc run` stops with an error, and
+/// `mcc here` says so instead of naming a profile it would start.
+#[test]
+fn a_removed_current_directory_is_reported_like_mcc_run_sees_it() {
+    let sb = sandbox();
+    std::fs::create_dir_all(sb.path("ws/gone")).unwrap();
+    let mut here = std::process::Command::new(assert_cmd::cargo::cargo_bin("mcc"));
+    let mut run = std::process::Command::new(assert_cmd::cargo::cargo_bin("mcc"));
+    // Remove the directory from inside a shell that stays in it.
+    let script = format!(
+        "cd '{0}' && rmdir '{0}' && \"$@\"",
+        sb.path("ws/gone").display()
+    );
+    for (cmd, args) in [
+        (&mut here, &["here"][..]),
+        (&mut run, &["run", "--dry-run"][..]),
+    ] {
+        let mut sh = sb.command("/bin/sh");
+        sh.env("MCC_NO_USAGE", "1")
+            .arg("-c")
+            .arg(&script)
+            .arg("sh")
+            .arg(cmd.get_program())
+            .args(args);
+        *cmd = sh;
+    }
+    let here = here.output().unwrap();
+    let run = run.output().unwrap();
+    let err = String::from_utf8_lossy(&here.stderr);
+    assert!(here.status.success(), "{err}");
+    assert!(err.contains("the current directory can't be read"), "{err}");
+    assert!(err.contains("`mcc run` stops with an error here"), "{err}");
+    assert!(!err.contains("no folder from here up to /"), "{err}");
+    assert!(!run.status.success(), "mcc run must fail there too");
+}

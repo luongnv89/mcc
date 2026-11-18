@@ -38,6 +38,13 @@ pub fn run(paths: &Paths, cfg: &Config) -> Result<()> {
     if let Some(w) = &here.warning {
         ui::warn(&format!("`mcc run` stops with an error here: {w}"));
     }
+    if here.cwd.is_none() {
+        // `mcc run` needs the current directory to find its default.
+        ui::warn(
+            "the current directory can't be read (was it removed?), so `mcc run` stops with an error here — cd into an existing directory",
+        );
+        return Ok(());
+    }
     match here.origin {
         Origin::Project(..) => ui::hint(
             "set on this folder with `mcc project set`; folders below it without a default of their own inherit it, and `mcc project unset` removes it",
