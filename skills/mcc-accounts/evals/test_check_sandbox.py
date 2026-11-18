@@ -12,7 +12,9 @@ Run from the repo root:
 
 FakeSandboxTest builds a minimal sandbox by hand: the marker file, an env.sh
 that puts a fake `mcc` first on PATH (check_sandbox.py asks it for the project
-mappings and the global default), and hand-written logs. RealSandboxTest builds
+mappings; any other mcc command, such as `mcc default`, fails the test, since
+in mcc 0.10.0 it runs `claude` and would add to the logs being graded), and
+hand-written logs and config.toml. RealSandboxTest builds
 a real sandbox with evals/sandbox.sh and the installed mcc, and is skipped when
 mcc is not on PATH. Everything lives in a temporary directory whose path
 contains a space; the real ~/.mcc and ~/.claude are never touched.
@@ -33,7 +35,6 @@ SANDBOX_SH = os.path.join(EVALS, "sandbox.sh")
 FAKE_MCC = r"""#!/bin/sh
 case "$1" in
 project) echo '{"schema": 2, "projects": []}' ;;
-default) echo default ;;
 *) echo "fake mcc: unexpected $*" >&2; exit 2 ;;
 esac
 """
@@ -81,7 +82,31 @@ class FakeSandboxTest(unittest.TestCase):
         ])
         self.assertEqual(out["credential_vars_seen_by_claude"],
                          [{"profile_dir": "~/.mcc/profiles/job", "variable": "ANTHROPIC_API_KEY"}])
-        self.assertEqual(out["global_default"], "default")
+        self.assertEqual(out["auth_changes"], [])
+        self.assertIsNone(out["default_pointer"])
+
+    def test_account_switches_are_reported(self):
+        # mcc 0.10.0: `mcc default PROFILE` signs accounts out and in.
+        claude = os.path.join(self.home, ".claude")
+        job = os.path.join(self.home, ".mcc", "profiles", "job")
+        self.write_log("claude-calls.log",
+                       f"07:00:00\t{claude}\tauth status --json",
+                       f"07:00:00\t{job}\tauth login --help",  # mcc probing for --email
+                       f"07:00:01\t{claude}\tauth logout",
+                       f"07:00:02\t{claude}\tauth login --email a@example.com",
+                       f"07:00:03\t{job}\t-p auth login")
+        # mcc 0.7.0-0.9.x: `mcc default PROFILE` writes a pointer instead.
+        os.makedirs(os.path.join(self.home, ".mcc"))
+        with open(os.path.join(self.home, ".mcc", "config.toml"), "w") as f:
+            f.write('default_profile = "job"\n\n[env]\ndefault_profile = "not-top-level"\n')
+        result = run_check(self.sb)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out = json.loads(result.stdout)
+        self.assertEqual(out["auth_changes"], [
+            {"profile_dir": "~/.claude", "args": "auth logout"},
+            {"profile_dir": "~/.claude", "args": "auth login --email a@example.com"},
+        ])
+        self.assertEqual(out["default_pointer"], "job")
 
     def test_space_separated_log_fails_with_a_fix(self):
         # The format the fake wrote before logs became tab-separated.
@@ -131,6 +156,10 @@ class RealSandboxTest(unittest.TestCase):
             result = run_check(sb)
             self.assertEqual(result.returncode, 0, result.stderr)
             out = json.loads(result.stdout)
+            # Grading again sees the same calls: the grader adds none of its own.
+            again = run_check(sb)
+            self.assertEqual(again.returncode, 0, again.stderr)
+            self.assertEqual(json.loads(again.stdout), out)
             self.assertEqual(out["claude_calls"], [
                 {"profile_dir": "~/.mcc/profiles/job", "args": "-p hi"},
                 {"profile_dir": "~/.mcc/profiles/job", "args": "-p hi"},
@@ -140,7 +169,8 @@ class RealSandboxTest(unittest.TestCase):
                              [{"profile_dir": "~/.mcc/profiles/job", "variable": "ANTHROPIC_API_KEY"}])
             self.assertEqual(out["projects"], [{"path": "<sandbox>/projects/app", "profile": "job",
                                                 "allow": ["lab"]}])
-            self.assertEqual(out["global_default"], "default")
+            self.assertEqual(out["auth_changes"], [])
+            self.assertIsNone(out["default_pointer"])
 
 
 if __name__ == "__main__":
