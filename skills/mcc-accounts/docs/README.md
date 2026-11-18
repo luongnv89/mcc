@@ -14,7 +14,7 @@
 - Tells apart the account a Claude Code session runs as and the account `mcc run` would start in a directory, even for renamed profiles whose folder keeps the old name
 - Reports every account's 5-hour and weekly usage and upcoming login expiry from mcc's cache, without reading tokens
 - Runs a command or a headless Claude task as an account you name (`mcc exec`), keeping stray `ANTHROPIC_API_KEY`-style variables away from it
-- Changes mcc settings (project mappings, the default, sync, share) only when you ask, confirming anything destructive
+- Changes mcc settings (project mappings, sync, share) only when you ask, confirming anything destructive, and hands you the commands that need a browser sign-in, such as switching the default profile's account (`mcc default`)
 - Never picks or runs an account because another is at its limit, even one you name, and never builds automatic account switching: at a limit it reports the reset time and hands the choice to `mcc run`, as mcc itself does
 - Acts only on accounts you name exactly (or the repo's mapping); "my work account" gets a question back
 

@@ -28,7 +28,7 @@ An account is **user-picked** when the user's words match a profile's name or la
 | know which accounts exist, which one this session or a directory uses, usage, login expiry, setup health | **Inspect** |
 | run a command, or a headless Claude task, as a named profile | **Run as** |
 | move this session or a terminal to another account | **Switch** |
-| change mcc state: map a project, set the default, sync, share, rename, add, delete, renew a login | **Manage** |
+| change mcc state: map a project, switch the default profile's account, sync, share, rename, add, delete, renew a login | **Manage** |
 
 A request that spans branches runs Inspect first, then the others in table order.
 
@@ -39,7 +39,7 @@ A request that spans branches runs Inspect first, then the others in table order
 This skill requires mcc 0.7.0+, and Python 3 for its script.
 
 1. Run `mcc --version`. If mcc is missing, tell the user to install it (`brew install luongnv89/tap/mcc`) and stop.
-2. If the version is below 0.7.0, ask the user to upgrade (`brew upgrade mcc`): `mcc default` needs 0.7.0, and `mcc login` and the `login_*` fields need 0.6.0.
+2. If the version is below 0.7.0, ask the user to upgrade (`brew upgrade mcc`): the skill needs 0.7.0 (the first release with `mcc default` and `is_global_default`), and `mcc login` and the `login_*` fields need 0.6.0. From 0.10.0, `mcc default` switches the account of `~/.claude` instead (see `references/manage.md`).
 3. Run `mcc config get usage.live`. If it prints `true`, tell the user that mcc's usage lookups send each account's token to Anthropic's usage endpoint, and add `--no-usage` to every `mcc list` unless the user asked about usage.
 4. Pass `--hide-email` to every `mcc list` and `mcc usage` unless the user asks for emails. Never open `.credentials.json` or the Keychain, and never print a token.
 
