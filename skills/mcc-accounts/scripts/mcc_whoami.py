@@ -64,7 +64,7 @@ ENV_REQUIRED = (
     ("local_bin_on_path", bool),
     ("detected_at", str),
 )
-MIN_VERSION = (0, 7, 0)  # same floor as SKILL.md: `mcc default` needs 0.7.0, `mcc login` 0.6.0
+MIN_VERSION = (0, 7, 0)  # same floor as SKILL.md: `is_global_default` needs 0.7.0, `mcc login` 0.6.0
 
 
 def fail(code, what, fix):

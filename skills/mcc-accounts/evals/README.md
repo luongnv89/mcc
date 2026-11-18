@@ -22,7 +22,7 @@ Never run mcc or claude outside this prefix. The working directory for the task 
 
 ## Grading
 
-1. Run `python3 evals/check_sandbox.py <sandbox>` after each run. It prints the fake `claude` calls, the credential variables `claude` saw (names only), the project mappings, and the global default. Grade the `check_sandbox.py` assertions from this output.
+1. Run `python3 evals/check_sandbox.py <sandbox>` after each run. It prints the fake `claude` calls, the credential variables `claude` saw (names only), the project mappings, and whether the default profile's account changed: `auth_changes` lists the `claude auth login` and `auth logout` calls (how `mcc default` switches it from mcc 0.10.0), and `default_pointer` is the `default_profile` an mcc 0.7.0–0.9.x `mcc default PROFILE` wrote (null when unset). It reads the logs before it runs any mcc command and runs only `mcc project list`, which starts no `claude`, so the calls it reports are the run's own, however many times it runs. Grade the `check_sandbox.py` assertions from this output.
 2. Grade the other assertions from the run's final message and its command transcript.
 3. Exclude the negative trigger from the with-skill vs baseline comparison; it runs with the skill only.
 
@@ -49,7 +49,7 @@ python3 -m unittest skills/mcc-accounts/evals/test_mcc_whoami.py -v
 
 On Python < 3.11 (no `tomllib`) the cases that read the file directly are skipped; the `mcc doctor` path still runs.
 
-`test_check_sandbox.py` checks that `check_sandbox.py` reads the fake `claude` logs (tab-separated: time, profile dir, arguments or variable) correctly when the sandbox path contains a space, fails with an Error/Fix on a log in the old space-separated format, and that `sandbox.sh` refuses a path with a tab or newline. One case builds a real sandbox with `sandbox.sh` and is skipped when `mcc` is not on `PATH`. CI does not run it. From the repo root:
+`test_check_sandbox.py` checks that `check_sandbox.py` reads the fake `claude` logs (tab-separated: time, profile dir, arguments or variable) correctly when the sandbox path contains a space, fails with an Error/Fix on a log in the old space-separated format, reports `auth_changes` and `default_pointer` (and runs no mcc command but `mcc project list`, so a second run reports the same calls), and that `sandbox.sh` refuses a path with a tab or newline. One case builds a real sandbox with `sandbox.sh` and is skipped when `mcc` is not on `PATH`. CI does not run it. From the repo root:
 
 ```sh
 python3 -m unittest skills/mcc-accounts/evals/test_check_sandbox.py -v

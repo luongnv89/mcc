@@ -4,6 +4,10 @@ All notable changes to mcc are recorded here. The format follows [Keep a Changel
 
 ## [Unreleased]
 
+### Fixed
+
+- The `mcc-accounts` eval grader `evals/check_sandbox.py` no longer adds its own `claude` call to the output it grades. With mcc 0.10.0, the bare `mcc default` it ran for `global_default` asks `claude auth status`, which the sandbox's fake `claude` logged, so `claude_calls` gained a call the agent never made (one more per run), and `global_default` was always `default`, so "default unchanged" checks could not fail. It now reads the logs before running any mcc command, runs only `mcc project list`, and replaces `global_default` with `auth_changes` (the `claude auth login` and `auth logout` calls through which `mcc default` switches an account from 0.10.0) and `default_pointer` (the `default_profile` an mcc 0.7.0–0.9.x `mcc default PROFILE` wrote to `~/.mcc/config.toml`). `evals.json` grades "no account switched" from them. Eval tooling only: the shipped skill and mcc are unchanged. ([#122](https://github.com/luongnv89/mcc/issues/122))
+
 ## [0.10.0] - 2026-11-18
 
 `mcc default` now changes the account of the default profile instead of pointing plain `claude` at another profile. `~/.claude` is always the default profile. `mcc default PROFILE` trades accounts with PROFILE: after you confirm, `~/.claude` signs out and in to PROFILE's account, and PROFILE signs out and in to the account `~/.claude` had. `mcc default --new` signs `~/.claude` in to another account and offers to keep the old one as a new profile. mcc only runs `claude auth logout` and `claude auth login`; it never reads, copies or moves a credential. The pointer an older `mcc default PROFILE` set up is removed on the next mcc command.
