@@ -62,11 +62,12 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &AddArgs) -> Result<()> {
     add_profile(paths, cfg, &env, args)
 }
 
-/// No `~/.claude` yet: this account becomes the default profile (`claude`).
+/// No `~/.claude` yet: create the default profile (`claude`), keeping the
+/// login Claude Code already has there, else signing in.
 fn add_default(paths: &Paths, cfg: &Config, env: &EnvInfo, args: &AddArgs) -> Result<()> {
     ui::header("Add the default Claude Code profile");
     ui::info(&format!(
-        "{} does not exist yet, so this account becomes the default profile, started with `claude`.",
+        "{} does not exist yet, so mcc creates it and it becomes the default profile, started with `claude`.",
         paths.display(&paths.default_dir)
     ));
     if let Some(alias) = &args.alias {
@@ -108,6 +109,28 @@ fn add_default(paths: &Paths, cfg: &Config, env: &EnvInfo, args: &AddArgs) -> Re
         paths,
         config_dir: None,
     };
+    // On macOS the login lives in the Keychain and ~/.claude.json outside
+    // ~/.claude, so a missing ~/.claude does not mean signed out: never sign
+    // in over a login that is there, or one mcc can't see.
+    match c.stored_status()? {
+        Some(status) if status.logged_in => {
+            reuse_default_login(&mut steps, paths, cfg, args, &status);
+            return Ok(());
+        }
+        Some(_) => {}
+        None => {
+            steps
+                .start("Log in")
+                .skip("could not tell whether Claude Code is signed in");
+            steps.start("Verify login").warn("login state unknown");
+            ui::warn(
+                "mcc could not tell whether Claude Code is already signed in here (`claude auth status` printed no status), so it did not sign in: that could replace a login mcc can't see",
+            );
+            ui::hint("if it is not signed in, run `claude` to log in, or `mcc login default`");
+            ui::result(true, "default profile created — run `claude` to log in");
+            return Ok(());
+        }
+    }
     if let Some(account) = login_steps(
         &mut steps,
         &c,
@@ -120,6 +143,74 @@ fn add_default(paths: &Paths, cfg: &Config, env: &EnvInfo, args: &AddArgs) -> Re
     }
     ui::result(true, "default profile ready — start it with `claude`");
     Ok(())
+}
+
+/// Claude Code is already signed in at the default location (the Keychain
+/// on macOS): that login becomes the default profile's as it is. Nothing
+/// signs in or out, and the state file's account is left alone.
+fn reuse_default_login(
+    steps: &mut ui::Steps,
+    paths: &Paths,
+    cfg: &Config,
+    args: &AddArgs,
+    status: &claude::AuthStatus,
+) {
+    steps
+        .start("Log in")
+        .skip("already signed in — reusing the existing login");
+    let step = steps.start("Verify login");
+    let account = logged_in_account(status, &paths.default_json);
+    let who = describe_login(&account, status);
+    step.ok(&who);
+    if status.is_console() {
+        warn_console("claude");
+    }
+    if !onboarded(&paths.default_json)
+        && let Err(e) = mark_onboarded(&paths.default_json, None)
+    {
+        ui::warn(&format!(
+            "could not update {}: {e:#} — Claude Code may show its first-run setup once",
+            paths.default_json.display()
+        ));
+    }
+    warn_if_duplicate(paths, cfg, None, &account, false);
+    let unused = match (args.email.is_some(), args.sso) {
+        (true, true) => Some("--email and --sso were"),
+        (true, false) => Some("--email was"),
+        (false, true) => Some("--sso was"),
+        (false, false) => None,
+    };
+    if let Some(unused) = unused {
+        ui::warn(&format!(
+            "{unused} not used: Claude Code is already signed in here as {who}"
+        ));
+        ui::hint(
+            "to switch the default profile to another account on purpose, run `mcc default --new` (it takes --email and --sso)",
+        );
+    }
+    ui::info(&format!(
+        "reusing the login Claude Code already has ({who}) — no new sign-in needed"
+    ));
+    ui::result(true, "default profile ready — start it with `claude`");
+}
+
+/// Whether `state_json` already says Claude Code finished its first-run
+/// setup, so it need not be rewritten.
+fn onboarded(state_json: &Path) -> bool {
+    copy::read_json(state_json)
+        .ok()
+        .flatten()
+        .is_some_and(|v| v.get("hasCompletedOnboarding") == Some(&Value::Bool(true)))
+}
+
+/// How a verified login is shown: its email (and organization), else the
+/// sign-in method.
+fn describe_login(account: &Account, status: &claude::AuthStatus) -> String {
+    match (&account.email, &account.organization) {
+        (Some(e), Some(o)) => format!("{e} ({o})"),
+        (Some(e), None) => e.clone(),
+        _ => status.method.clone().unwrap_or_else(|| "logged in".into()),
+    }
 }
 
 /// `--email` and `--sso`, for `claude auth login`. `--email` was checked in
@@ -185,12 +276,7 @@ fn login_steps(
     if status.logged_in {
         let console = status.is_console();
         let account = logged_in_account(&status, state_json);
-        let who = match (&account.email, &account.organization) {
-            (Some(e), Some(o)) => format!("{e} ({o})"),
-            (Some(e), None) => e.clone(),
-            _ => status.method.unwrap_or_else(|| "logged in".into()),
-        };
-        step.ok(&who);
+        step.ok(&describe_login(&account, &status));
         if console {
             warn_console(command);
         }

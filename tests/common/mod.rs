@@ -42,7 +42,13 @@ const FAKE_CLAUDE: &str = r#"#!/bin/sh
 # $HOME/auth.log ("<dir> logout" for `auth logout`). `auth login --help`
 # lists --email unless $FAKE_NO_EMAIL_FLAG is set (an older Claude Code).
 # A <dir>/.fake-status-broken file makes `auth status` print no status
-# (an error on stderr, exit 1), as a Claude Code that can't check would.
+# (an error on stderr, exit 1), as a Claude Code that can't check would;
+# $HOME/.fake-status-broken-default does the same for the default location
+# only (no CLAUDE_CONFIG_DIR), even when ~/.claude does not exist.
+# A login held in the Keychain (macOS), with no ~/.claude directory: when
+# $HOME/.fake-keychain-login exists and CLAUDE_CONFIG_DIR is unset, `auth
+# status` reports loggedIn true as the email in that file (profiles never
+# see it), and the default's `auth logout` removes it.
 dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 state="$HOME/.claude.json"
 [ -n "$CLAUDE_CONFIG_DIR" ] && state="$CLAUDE_CONFIG_DIR/.claude.json"
@@ -115,6 +121,8 @@ case "$1 $2" in
   "auth status")
     if [ -f "$dir/.fake-status-broken" ]; then
       echo "auth status failed" >&2; exit 1
+    elif [ -z "$CLAUDE_CONFIG_DIR" ] && [ -f "$HOME/.fake-status-broken-default" ]; then
+      echo "auth status failed" >&2; exit 1
     elif [ -f "$dir/.credentials.json" ]; then
       org=""
       [ -n "$FAKE_ORG_NAME" ] && org=", \"orgId\": \"$FAKE_ORG_ID\", \"orgName\": \"$FAKE_ORG_NAME\""
@@ -124,12 +132,15 @@ case "$1 $2" in
       email="${FAKE_EMAIL:-fake@example.com}"
       [ -f "$dir/.fake-account" ] && email=$(cat "$dir/.fake-account")
       echo "{\"loggedIn\": true, \"authMethod\": \"${FAKE_AUTH_METHOD:-claude.ai}\", \"email\": \"$email\"$org$src$cfgdir}"
+    elif [ -z "$CLAUDE_CONFIG_DIR" ] && [ -f "$HOME/.fake-keychain-login" ]; then
+      echo "{\"loggedIn\": true, \"authMethod\": \"claude.ai\", \"email\": \"$(cat "$HOME/.fake-keychain-login")\"$cfgdir}"
     else
       echo "{\"loggedIn\": false, \"authMethod\": \"none\"$cfgdir}"
     fi ;;
   "auth logout")
     # Like the real claude (2.1.x): exits 0 even when nothing was logged in.
     rm -f "$dir/.credentials.json" "$dir/.fake-account" "$dir/.fake-org"
+    [ -z "$CLAUDE_CONFIG_DIR" ] && rm -f "$HOME/.fake-keychain-login"
     [ -n "$FAKE_PER_DIR" ] && echo "$dir logout" >> "$HOME/auth.log"
     echo "Successfully logged out." ;;
   "plugin-root "*) echo "plugin root: ${CLAUDE_CODE_PLUGIN_CACHE_DIR:-unset}" ;;
