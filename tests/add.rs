@@ -36,6 +36,88 @@ fn default_profile_no_login() {
     assert!(!sb.exists(".claude/.credentials.json"));
 }
 
+/// A login held in the Keychain (macOS) with no ~/.claude directory, and
+/// the ~/.claude.json Claude Code wrote at that sign-in (compact, so any
+/// rewrite shows).
+const KEYCHAIN_STATE: &str = r#"{"oauthAccount":{"emailAddress":"kept@example.com","organizationName":"Acme"},"hasCompletedOnboarding":true,"theme":"dark"}"#;
+
+fn keychain_login(sb: &Sandbox) {
+    sb.write(".fake-keychain-login", "kept@example.com");
+    sb.write(".claude.json", KEYCHAIN_STATE);
+}
+
+#[test]
+fn default_profile_reuses_a_login_already_there() {
+    let sb = Sandbox::new();
+    keychain_login(&sb);
+    sb.mcc()
+        .args(["add", "--yes"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "already signed in — reusing the existing login",
+        ))
+        .stderr(predicate::str::contains("kept@example.com (Acme)"))
+        .stderr(predicate::str::contains("start it with `claude`"));
+    // No sign-in ran, nothing replaced the login or the state file.
+    assert!(!sb.exists("login-args"));
+    assert!(sb.path(".claude").is_dir());
+    assert!(sb.exists(".fake-keychain-login"));
+    assert_eq!(sb.read(".claude.json"), KEYCHAIN_STATE);
+}
+
+#[test]
+fn default_profile_reuse_ignores_email_and_sso() {
+    let sb = Sandbox::new();
+    keychain_login(&sb);
+    sb.mcc()
+        .args(["add", "--yes", "--email", "other@example.com", "--sso"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "--email and --sso were not used: Claude Code is already signed in here as kept@example.com",
+        ))
+        .stderr(predicate::str::contains("mcc default --new"))
+        .stderr(predicate::str::contains("other@example.com").not());
+    assert!(!sb.exists("login-args"));
+    assert_eq!(sb.read(".claude.json"), KEYCHAIN_STATE);
+}
+
+#[test]
+fn default_profile_does_not_sign_in_when_the_login_is_unknown() {
+    let sb = Sandbox::new();
+    sb.write(".fake-status-broken-default", "");
+    sb.mcc()
+        .args(["add", "--yes"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "could not tell whether Claude Code is already signed in",
+        ))
+        .stderr(predicate::str::contains("mcc login default"))
+        .stderr(predicate::str::contains("profile ready").not());
+    assert!(!sb.exists("login-args"));
+    assert!(sb.path(".claude").is_dir());
+}
+
+#[test]
+fn adding_a_profile_leaves_the_default_login_alone() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    let state = json(sb.read(".claude.json").as_bytes());
+    sb.mcc().args(["add", "work", "--clone"]).assert().success();
+    // The new profile signed in on its own; the default kept its login.
+    assert!(sb.exists(".mcc/profiles/work/.credentials.json"));
+    assert_eq!(
+        sb.read(".claude/.credentials.json"),
+        r#"{"secret":"default-token"}"#
+    );
+    assert_eq!(
+        json(sb.read(".claude.json").as_bytes())["oauthAccount"],
+        state["oauthAccount"]
+    );
+}
+
 #[test]
 fn clone_profile_end_to_end() {
     let sb = Sandbox::new();
