@@ -106,6 +106,14 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         let cfg = config::Config::load(&paths.config_file)?;
         return commands::status::run(&paths, &cfg);
     };
+    if let Command::Here = &command {
+        // Read-only, even before setup, like bare `mcc`: no log line, no
+        // lock, no first-run setup, no live usage disclosure, no retiring
+        // an older mcc's pointer — nothing written.
+        let paths = paths::Paths::from_env()?;
+        let cfg = config::Config::load(&paths.config_file)?;
+        return commands::here::run(&paths, &cfg);
+    }
     if let Command::Completions(args) = &command {
         // Log only into an existing ~/.mcc/logs: completions never create
         // state, and any logging failure stays silent.
@@ -254,6 +262,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Completions(_)
         | Command::Config(_)
         | Command::Doctor(_)
+        | Command::Here
         | Command::LaunchBanner(_)
         | Command::LaunchSync(_) => {
             unreachable!("handled above")
@@ -311,6 +320,8 @@ fn writes_config(command: &Command) -> bool {
         | Command::Completions(_) => false,
         // Read-only, and never locked: it reports, it doesn't fix.
         Command::Doctor(_) => false,
+        // Read-only, routed before the lock is taken.
+        Command::Here => false,
         // Claude Code writes the new login; mcc writes nothing, and holding
         // the lock while the browser sign-in is open would block every
         // other mcc command.

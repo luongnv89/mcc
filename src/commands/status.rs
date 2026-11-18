@@ -15,7 +15,7 @@
 //! prints the help as it always did (see `main.rs`).
 
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
@@ -69,16 +69,26 @@ pub fn run(paths: &Paths, cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-/// The first line, and a warning when the project's default names no profile.
-struct Here {
-    line: String,
-    warning: Option<String>,
+/// The profile `mcc run` resolves in the current directory, the status
+/// view's first line, and a warning when it names no profile. Bare `mcc`
+/// and `mcc here` both print it.
+pub(crate) struct Here<'c> {
+    /// The current directory (symlinks resolved); `None` when it can't be
+    /// read, and then no project applies.
+    pub(crate) cwd: Option<PathBuf>,
+    /// The profile `mcc run` starts here.
+    pub(crate) name: &'c str,
+    pub(crate) origin: super::run::Origin<'c>,
+    pub(crate) line: String,
+    pub(crate) warning: Option<String>,
 }
 
-/// "Here: `work` (Acme) — the default for ~/code/app", or "Here: `default`
-/// — no project default here": the profile `mcc run` (and `mcc env`) use in
-/// the current directory, and why (the same [`super::run::applies_in`]).
-fn here(paths: &Paths, cfg: &Config) -> Here {
+/// "Here: `work` (Acme) — the default for ~/code/app", "Here: `work` —
+/// inherited from parent folder ~/ws", or "Here: `default` — no project
+/// default here or in a parent folder": the profile `mcc run` (and `mcc
+/// env`) use in the current directory, and why (the same
+/// [`super::run::applies_in`]).
+pub(crate) fn here<'c>(paths: &Paths, cfg: &'c Config) -> Here<'c> {
     let cwd = super::project::current_dir().ok();
     let (name, origin) = match cwd.as_deref() {
         Some(d) => super::run::applies_in(cfg, d),
@@ -104,12 +114,17 @@ fn here(paths: &Paths, cfg: &Config) -> Here {
                 "the project default of {} is \"{shown_name}\", which is not a profile — set another with `mcc project set <profile>`, or remove it with `mcc project unset`",
                 paths.display(Path::new(dir))
             ),
-            None => format!(
-                "the global default is \"{shown_name}\", which is not a profile — set another with `mcc default <profile>`, or go back to ~/.claude with `mcc default default`"
-            ),
+            // Unreachable: outside every project it is `default`.
+            None => format!("\"{shown_name}\" is not a profile"),
         });
     }
-    Here { line, warning }
+    Here {
+        cwd,
+        name,
+        origin,
+        line,
+        warning,
+    }
 }
 
 /// One warning naming every profile a sync would change: "drift: `work` (3

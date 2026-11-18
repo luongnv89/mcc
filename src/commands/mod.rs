@@ -8,6 +8,7 @@ pub mod diff;
 pub mod doctor;
 pub mod env;
 pub mod exec;
+pub mod here;
 pub mod init;
 pub mod launch_sync;
 pub mod link;
