@@ -51,6 +51,7 @@ fn every_subcommand_has_help() {
         "share",
         "refresh-launchers",
         "project",
+        "here",
         "run",
         "doctor",
         "completions",

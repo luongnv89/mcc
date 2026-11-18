@@ -649,7 +649,7 @@ fn run_reads_the_statusline_cache_and_shows_its_age() {
     let err = String::from_utf8(o.get_output().stderr.clone()).unwrap();
     assert!(
         err.contains(
-            "would start `default` — no project default here (5h 42%, week 18% used · 12m ago)"
+            "would start `default` — no project default here or in a parent folder (5h 42%, week 18% used · 12m ago)"
         ),
         "{err}"
     );
@@ -660,7 +660,7 @@ fn run_reads_the_statusline_cache_and_shows_its_age() {
         .args(["run", "--dry-run"])
         .assert()
         .stderr(predicate::str::contains(
-            "`default` (no project default here) is at its 5-hour limit, resets in 35m",
+            "`default` (no project default here or in a parent folder) is at its 5-hour limit, resets in 35m",
         ));
     assert_no_token_lookup(&sb, &stub);
 }

@@ -296,6 +296,7 @@ mcc delete job              # remove it completely
 | `mcc share ALIAS` | Share the profile's sessions with the other sharing profiles of its group (off by default; see [Sharing sessions](#sharing-sessions-between-profiles)) | `--off`, `--group NAME`, `--allow-cross-org` |
 | `mcc link ALIAS [ITEMS]` | Link read-mostly items (`skills`, `agents`, `commands`, `output-styles`, `claude-md`) to the default's copy instead of copying them; edits write through to the default (off by default; see [Linking read-mostly items](#linking-read-mostly-items-mcc-link)). `plugins` shares the default's plugins (see [Sharing plugins](#sharing-plugins-mcc-link-alias-plugins)) | `--off` |
 | `mcc project set PROFILE` | Make PROFILE the one `mcc run` starts in this project (see [Per-project profiles](#per-project-profiles-mcc-project-and-mcc-run)); also `unset` and `list` | `--path DIR`, `--allow PROFILE`, `list --json`, `list --json-v2` |
+| `mcc here` | Show which profile (account) `mcc run` starts in the current directory, and why: this folder's default, one inherited from a parent folder, or none (`~/.claude`); read-only, even before setup (see [Which account applies here](#which-account-applies-here-mcc-here)) | |
 | `mcc run [-- CLAUDE_ARGS]` | Start Claude Code with the current project's profile; at its limit, ask whether to wait (the default) or start it anyway | `--profile NAME`, `--dry-run` |
 | `mcc env [PROFILE]` | Print the shell line that sets `CLAUDE_CONFIG_DIR` for the project's profile (or PROFILE), for `eval` or direnv (see [Using a project's profile everywhere](#using-a-projects-profile-everywhere-mcc-env-and-mcc-exec)) | `--shell zsh\|bash\|fish` |
 | `mcc exec PROFILE -- CMD...` | Run a command with a profile's `CLAUDE_CONFIG_DIR` and return its exit status; `--all` runs it once per profile and reports each result | `--all` |
@@ -715,6 +716,16 @@ mcc run -- --resume      # arguments after `--` go to claude
 
 A project is a directory. `mcc project set` uses the top of the git repository you are in (or the current directory outside one; `--path DIR` picks another). It covers everything below it, and when projects are nested, the deepest one containing the current directory applies. Outside every project, `mcc run` starts the default profile (`~/.claude`), whose account [`mcc default`](#choosing-the-default-profile-mcc-default) switches.
 
+**Workspace defaults.** Any folder can have a default, not only a git repository: set one on a folder that holds several projects, and every folder below it that has no default of its own inherits it. mcc looks at the current folder, then each parent folder up to `/`, and uses the first default it finds; with none, the default profile (`~/.claude`). So a subfolder's default overrides its workspace's, and `mcc project unset` on a subfolder makes it fall back to the next folder up. `mcc run` says when a default is inherited, and [`mcc here`](#which-account-applies-here-mcc-here) shows which default applies in any folder:
+
+```console
+$ mcc project set work --path ~/work      # the workspace
+$ mcc project set lab --path ~/work/lab   # one project in it overrides it
+$ cd ~/work/site/src && mcc run --dry-run
+work
+  ● would start `work` — inherited from parent folder ~/work (5h 12%, week 30% used · 48m ago)
+```
+
 `mcc run` starts the project's default. **It never switches to another account on its own.** When the project's profile is at its 5-hour or weekly limit (100% used), it shows when the limit resets and asks what to do. Waiting is preselected: it starts nothing and exits. Starting the profile anyway comes next. Other profiles are offered only when the project allows them, by name and without their usage:
 
 ```console
@@ -1000,6 +1011,26 @@ mcc statusline uninstall          # put the previous statusLine back
 
 </details>
 
+#### Which account applies here: `mcc here`
+
+<details>
+<summary>mcc here: the profile mcc run starts in this folder, why, and its account</summary>
+
+`mcc here` answers "which account will `mcc run` use in this folder?" without starting or changing anything:
+
+```console
+$ cd ~/work/site && mcc here
+Here: `work` (Acme) — inherited from parent folder ~/work
+  directory  ~/work/site
+  account    Acme (email hidden)
+  config     ~/.mcc/profiles/work
+    → set on ~/work with `mcc project set`, and inherited by every folder below it without a default of its own; `mcc project set <profile> --path .` gives this folder its own
+```
+
+The reason is `the default for DIR` (set on this folder), `inherited from parent folder DIR` (the nearest folder above with a default), or `no project default here or in a parent folder` (then `mcc run` starts the default profile, `~/.claude`). It resolves the profile exactly as `mcc run` does, so the two always agree (`mcc run --dry-run` names the same profile, with its usage). It is read-only: no sign-in, no account switch, no lock, no first-run setup, no usage lookup, and nothing written, not even a log line. The account comes from the files Claude Code and `mcc add` already keep; the email is hidden unless `[privacy] show_email` is set. Before mcc is set up it still answers (the default profile) and says that mcc is not set up yet. A project default naming no profile is reported with a warning that `mcc run` stops there; `mcc here` still exits 0.
+
+</details>
+
 #### Status at a glance: `mcc`
 
 <details>
@@ -1017,7 +1048,7 @@ work       Acme      ████░░░░░░ 42% (2h)  ██░░░░
     → run `mcc doctor` for a full check of every profile, with a fix for each problem
 ```
 
-`Here:` is the profile `mcc run` (and `mcc env`) uses in the current directory and why: a project default set with `mcc project set`, or none (the default profile, `~/.claude`). The table is `mcc list`'s: each profile's account (its label, else its organization), its 5-hour and weekly usage as `mcc statusline` (or the last `mcc usage --all`) cached it, when it was last used, and its sync state. On stderr follow warnings for drift against the default, out-of-date launchers, missing profile directories and a project default naming no profile, then a pointer to `mcc doctor` when there is any.
+`Here:` is the profile `mcc run` (and `mcc env`) uses in the current directory and why: a default set on this folder with `mcc project set`, one inherited from a parent folder, or none (the default profile, `~/.claude`). [`mcc here`](#which-account-applies-here-mcc-here) prints just this, with the account. The table is `mcc list`'s: each profile's account (its label, else its organization), its 5-hour and weekly usage as `mcc statusline` (or the last `mcc usage --all`) cached it, when it was last used, and its sync state. On stderr follow warnings for drift against the default, out-of-date launchers, missing profile directories and a project default naming no profile, then a pointer to `mcc doctor` when there is any.
 
 It is meant to be run often, so it is fast and read-only: no lock, no first-run setup, no log line, and nothing written. Usage is read from the statusline cache only, never looked up live (even with `[usage] live = true`, so no token is read and nothing goes over the network; `mcc usage` looks it up), and the counts and sizes on disk are left to `mcc list --long`. Account emails stay hidden unless `[privacy] show_email` is set. Colors follow `--no-color` and `NO_COLOR`; piped, it prints the same text without colors, so `mcc | grep` works.
 
