@@ -135,6 +135,7 @@ fn invalid_values_leave_the_file_unchanged() {
         ),
         (["sync.extra", "../outside"], 3, "relative path inside"),
         (["profiles.work.label", "a\u{7}b"], 2, "control characters"),
+        (["usage.sort", "bogus"], 2, "expected one of"),
         (["profiles.ghost.label", "x"], 2, "no profile named"),
         (["profiles.work.share_group", "acme"], 2, "mcc share work"),
         (
@@ -154,6 +155,51 @@ fn invalid_values_leave_the_file_unchanged() {
             .stderr(contains(msg));
         assert_eq!(sb.read(CONFIG), before, "changed by {args:?}");
     }
+}
+
+/// Issue #126: `usage.sort` reads its default, round-trips, validates on
+/// `set`, and `config edit`'s check catches a bad hand-edited value.
+#[test]
+fn usage_sort_is_settable_and_validated() {
+    let sb = sandbox();
+    let get = || stdout_of(sb.mcc().args(["config", "get", "usage.sort"]));
+    assert_eq!(get(), "weekly\n");
+    sb.mcc()
+        .args(["config", "set", "usage.sort", "five-hour-reset"])
+        .assert()
+        .success();
+    assert_eq!(get(), "five-hour-reset\n");
+    assert!(
+        sb.read(CONFIG).contains("sort = \"five-hour-reset\""),
+        "{}",
+        sb.read(CONFIG)
+    );
+    // "" goes back to the default.
+    sb.mcc()
+        .args(["config", "set", "usage.sort", ""])
+        .assert()
+        .success();
+    assert!(!sb.read(CONFIG).contains("sort"), "{}", sb.read(CONFIG));
+    assert_eq!(get(), "weekly\n");
+    // A bad value is refused; the file is unchanged.
+    let before = sb.read(CONFIG);
+    sb.mcc()
+        .args(["config", "set", "usage.sort", "bogus"])
+        .assert()
+        .code(2)
+        .stderr(contains("expected one of"))
+        .stderr(contains("weekly-reset"));
+    assert_eq!(sb.read(CONFIG), before);
+    // A bad hand-edited value is caught by `config edit`'s check.
+    let ed = editor(&sb, "printf '[usage]\\nsort = \"bogus\"\\n' > \"$1\"\n");
+    sb.mcc()
+        .args(["config", "edit"])
+        .env("EDITOR", ed)
+        .assert()
+        .failure()
+        .stderr(contains("usage.sort"))
+        .stderr(contains("weekly-reset"));
+    assert_eq!(sb.read(CONFIG), before);
 }
 
 /// Issue #57: the email setting lives in `[privacy]`; `usage.show_email`,

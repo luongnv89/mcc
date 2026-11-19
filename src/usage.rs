@@ -1241,6 +1241,43 @@ mod tests {
     }
 
     #[test]
+    fn sort_order_names_and_parses() {
+        for (s, order) in [
+            ("name", SortOrder::Name),
+            ("five-hour", SortOrder::FiveHour),
+            ("five-hour-reset", SortOrder::FiveHourReset),
+            ("weekly", SortOrder::Weekly),
+            ("weekly-reset", SortOrder::WeeklyReset),
+        ] {
+            assert_eq!(SortOrder::named(s), Some(order), "{s}");
+            assert_eq!(order.name(), s);
+            assert_eq!(serde_json::to_value(order).unwrap(), s);
+        }
+        // Trimmed, case-insensitive (a hand-edited value counts).
+        assert_eq!(SortOrder::named(" Weekly "), Some(SortOrder::Weekly));
+        for bad in ["", "week", "five_hour", "nope"] {
+            assert_eq!(SortOrder::named(bad), None, "{bad}");
+        }
+        // With no --sort and no [usage] sort: weekly usage, least to most.
+        assert_eq!(SortOrder::DEFAULT, SortOrder::Weekly);
+        for s in [
+            "name",
+            "five-hour",
+            "five-hour-reset",
+            "weekly",
+            "weekly-reset",
+        ] {
+            assert!(SORT_ORDERS.contains(s), "{s}");
+        }
+        assert_eq!(check_sort_order(" five-hour ").unwrap(), "five-hour");
+        let err = check_sort_order("bogus").unwrap_err();
+        assert!(
+            err.contains("\"bogus\"") && err.contains("weekly-reset"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn keychain_service_names() {
         assert_eq!(
             keychain_service(Path::new("/Users/me/.claude"), true),

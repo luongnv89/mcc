@@ -749,6 +749,66 @@ mod tests {
     }
 
     #[test]
+    fn sort_entries_orders_by_the_key_with_missing_values_last() {
+        let w = |percent: f64, resets_at: Option<DateTime<Utc>>| Window { percent, resets_at };
+        let entries = || {
+            vec![
+                // 5h 42.4% resets at 13:00; week 18% resets at +5d.
+                entry(
+                    "default",
+                    None,
+                    Usage::ok(
+                        Some(w(42.4, Some(at("2026-10-10T13:00:00Z")))),
+                        Some(w(18.0, Some(at("2026-10-15T12:00:00Z")))),
+                    ),
+                ),
+                // 5h 7% resets at 16:00; week 64% resets at +1d.
+                entry(
+                    "work",
+                    None,
+                    Usage::ok(
+                        Some(w(7.0, Some(at("2026-10-10T16:00:00Z")))),
+                        Some(w(64.0, Some(at("2026-10-11T12:00:00Z")))),
+                    ),
+                ),
+                // A 5-hour window with no reset time; no weekly window.
+                entry("lab", None, Usage::ok(Some(w(90.0, None)), None)),
+                // No usage at all.
+                entry("idle", None, Usage::unavailable(Reason::NoData)),
+            ]
+        };
+        let sorted = |order: usage::SortOrder| {
+            let mut entries = entries();
+            sort_entries(&mut entries, order);
+            entries.iter().map(|e| e.name.clone()).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            sorted(usage::SortOrder::Name),
+            ["default", "idle", "lab", "work"]
+        );
+        // lab has a 5-hour percent, so it counts on the 5-hour order;
+        // idle has none and goes last.
+        assert_eq!(
+            sorted(usage::SortOrder::FiveHour),
+            ["work", "default", "lab", "idle"]
+        );
+        // Soonest reset first; lab's window has no reset time, so both it
+        // and idle sort last, in their previous order.
+        assert_eq!(
+            sorted(usage::SortOrder::FiveHourReset),
+            ["default", "work", "lab", "idle"]
+        );
+        assert_eq!(
+            sorted(usage::SortOrder::Weekly),
+            ["default", "work", "lab", "idle"]
+        );
+        assert_eq!(
+            sorted(usage::SortOrder::WeeklyReset),
+            ["work", "default", "lab", "idle"]
+        );
+    }
+
+    #[test]
     fn login_warnings_name_only_the_profiles_inside_the_window() {
         let now = at("2026-10-10T12:00:00Z");
         let mut entries = [
