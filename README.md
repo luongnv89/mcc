@@ -942,8 +942,8 @@ The `5H` and `WEEK` columns of `mcc list` show how much of each account's 5-hour
 $ mcc usage
 # PROFILE    LAST ACTIVE  LOGIN ENDS  5-HOUR           RESETS IN                  WEEKLY            RESETS IN                 UPDATED
 1 default ★  12m ago      27d 3h      ████░░░░░░ 42%   2h 14m (Sat Oct 10 16:00)  ██░░░░░░░░ 18%    3d 4h (Wed Oct 14 00:00)  12m ago
-2 lab        16d ago      1d 4h       — (no usage cached; run /usage)
-3 work       just now     unknown     █████████░ 85%!  35m (Sat Oct 10 14:21)     ██████████ 96%!!  3d 4h (Wed Oct 14 00:00)  just now
+2 work       just now     unknown     █████████░ 85%!  35m (Sat Oct 10 14:21)     ██████████ 96%!!  3d 4h (Wed Oct 14 00:00)  just now
+3 lab        16d ago      1d 4h       — (no usage cached; run /usage)
   ⚠ Login for 'lab' expires in 1d 4h (Sun Oct 11 16:00) — run `mcc login lab` to renew it
 ```
 
