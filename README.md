@@ -194,6 +194,7 @@ The full documentation, one collapsed section per topic. `mcc help COMMAND` prin
 - **Per-project profiles.** `mcc project set work` makes `work` the profile `mcc run` starts in this repository, so a project stays on one account. Set on a workspace folder (`--path`), a default applies in every folder below it that has none of its own, and `mcc here` shows which one applies where. mcc never switches accounts on its own: if that account is at its 5-hour or weekly limit, `mcc run` asks whether to wait (the default) or start it anyway, and offers another profile only when the project allows it (`--allow`). `mcc env` and `mcc exec` let plain `claude`, IDE extensions and scripts use a profile too.
 - **Linked items, shared plugins and settings overlays.** `mcc link` replaces a profile's copy of the default's skills, agents, commands, output styles or `CLAUDE.md` with a symlink (opt-in), and a clone shares the default's plugins instead of copying them (`mcc link ALIAS plugins` moves an older profile over). A settings overlay keeps a profile's own `model`, permissions or other settings through every sync.
 - **Usage without reading your tokens.** The opt-in `mcc statusline` caches each profile's 5-hour and weekly rate limits as you use Claude Code, for `list`, `usage` and `run`, and `--prefix` puts the active profile's name in the status line. Looking usage up live with each profile's login is opt-in too: always with `[usage] live = true`, or for one run with `mcc usage --all`, which prints a risk notice each time and, for an account whose access token has expired, lets Claude Code refresh it in one tiny session first.
+- **Devin beside your Claude Code accounts.** When the [Devin CLI](https://docs.devin.ai) is signed in, `mcc list`, `mcc usage` and bare `mcc` add a `devin` row with Devin's daily and weekly quota and its overage balance, read with the Devin CLI's own login (mcc never signs it in or stores its token). `mcc devin` starts the Devin CLI with its default configuration (see [Devin](#devin-mcc-devin)).
 - **Usage in Herdr.** [mcc-herdr-plugin](https://github.com/luongnv89/mcc-herdr-plugin) (`herdr plugin install luongnv89/mcc-herdr-plugin`) shows every account's 5-hour and weekly usage in a collapsible pane under Herdr's agent list, with a button that looks every account up live.
 - **Agent skill.** The [mcc-accounts skill](skills/mcc-accounts/SKILL.md) lets an AI agent use your profiles through mcc: tell which account a session or repository uses, report usage and login expiry, run a command or a headless `claude -p` task as a profile you name (`mcc exec`), and change mcc settings when you ask. It reads no tokens, hides emails, and never picks, ranks or runs an account because another one is at its limit. See its [installation and usage guide](skills/mcc-accounts/docs/README.md).
 - **`doctor` and `config`.** `mcc doctor` checks every profile's setup and prints a fix for each problem it finds; `mcc config` reads and changes mcc's settings without hand-editing TOML.
@@ -287,7 +288,7 @@ mcc delete job              # remove it completely
 | `mcc init` | Detect OS, arch, terminal, shell, rc file, the `claude` binary, and whether `~/.local/bin` is on PATH (and offer to add it) | `--force`, `--shell zsh\|bash\|fish` |
 | `mcc add [ALIAS]` | Create the default profile, or a new profile with its own command; records the account and its organization, warns when another profile already uses that account, and asks for an optional label. A clone shares the default's plugins instead of copying them | `--clone`, `--fresh`, `--link ITEMS`, `--copy-plugins`, `--no-login`, `--email ADDRESS`, `--sso`, `--label LABEL`, `--color COLOR`, `-y` |
 | `mcc list` (`ls`) | Show every profile with its account, 5-hour/weekly usage and sync state in a table that fits 120 columns; `--long` adds every metric | `--json`, `--json-v2`, `-l/--long`, `--no-usage`, `--show-email`, `--hide-email` |
-| `mcc usage [PROFILE]` | Show each profile's 5-hour and weekly usage in a table (`default` or `claude` for the default profile), with when it was last active and when its login ends, and warn before a login runs out; `--all` looks every account up live for one run, with a risk notice, and lets Claude Code refresh an expired token first in a one-turn session (see [Live usage lookup](#live-usage-lookup-opt-in)) | `--all`, `--json`, `--json-v2`, `--show-email`, `--hide-email` |
+| `mcc usage [PROFILE]` | Show each profile's 5-hour and weekly usage in a table (`default` or `claude` for the default profile, `devin` for Devin alone), with when it was last active and when its login ends, and warn before a login runs out; `--all` looks every account up live for one run, with a risk notice, and lets Claude Code refresh an expired token first in a one-turn session (see [Live usage lookup](#live-usage-lookup-opt-in)) | `--all`, `--json`, `--json-v2`, `--show-email`, `--hide-email` |
 | `mcc login PROFILE` (`renew`) | Renew a profile's Claude Code sign-in in place before its login runs out, and check that it worked (see [Login expiry](#login-expiry-and-mcc-login)) | `--refresh-only` |
 | `mcc sync [ALIAS]` | Copy the default's setup into a profile (default → profile only), keeping edits made in the profile | `--all`, `--dry-run`, `--prune`, `--force`, `--only ITEMS`, `-y` |
 | `mcc diff ALIAS` | Show how a profile differs from the default's setup, path by path, as `sync` classifies it | `--only ITEMS` |
@@ -297,6 +298,7 @@ mcc delete job              # remove it completely
 | `mcc link ALIAS [ITEMS]` | Link read-mostly items (`skills`, `agents`, `commands`, `output-styles`, `claude-md`) to the default's copy instead of copying them; edits write through to the default (off by default; see [Linking read-mostly items](#linking-read-mostly-items-mcc-link)). `plugins` shares the default's plugins (see [Sharing plugins](#sharing-plugins-mcc-link-alias-plugins)) | `--off` |
 | `mcc project set PROFILE` | Make PROFILE the one `mcc run` starts in this project (see [Per-project profiles](#per-project-profiles-mcc-project-and-mcc-run)); also `unset` and `list` | `--path DIR`, `--allow PROFILE`, `list --json`, `list --json-v2` |
 | `mcc here` | Show which profile (account) `mcc run` starts in the current directory, and why: this folder's default, one inherited from a parent folder, or none (`~/.claude`); read-only, even before setup (see [Which account applies here](#which-account-applies-here-mcc-here)) | |
+| `mcc devin [-- DEVIN_ARGS]` | Start the Devin CLI as it is, with its default configuration and its own login (no `--config`, no environment change); `mcc list` and `mcc usage` show Devin's usage (see [Devin](#devin-mcc-devin)) | `--dry-run` |
 | `mcc run [-- CLAUDE_ARGS]` | Start Claude Code with the current project's profile; at its limit, ask whether to wait (the default) or start it anyway | `--profile NAME`, `--dry-run` |
 | `mcc env [PROFILE]` | Print the shell line that sets `CLAUDE_CONFIG_DIR` for the project's profile (or PROFILE), for `eval` or direnv (see [Using a project's profile everywhere](#using-a-projects-profile-everywhere-mcc-env-and-mcc-exec)) | `--shell zsh\|bash\|fish` |
 | `mcc exec PROFILE -- CMD...` | Run a command with a profile's `CLAUDE_CONFIG_DIR` and return its exit status; `--all` runs it once per profile and reports each result | `--all` |
@@ -332,6 +334,7 @@ mcc list --no-usage                   # offline: skip the usage lookup
 mcc usage                             # every profile's limits, the default included
 mcc usage work                        # only the `work` profile
 mcc usage --all                       # every account looked up live for this run (prints a risk notice)
+mcc devin -- auth status               # run the Devin CLI as is (its own login and default config)
 mcc usage --show-email                # with each profile's account email
 mcc usage --json | jq '.[] | {name, weekly: .usage.weekly.percent}'
 mcc usage --json | jq '.[] | select(.login_warning) | .name'   # logins about to run out
@@ -377,6 +380,8 @@ mcc delete sandbox --yes
 | `--json` | a bare array, one object per profile (per project for `project list`, per check for `doctor`) | 1, implicit | `jq '.[]'` |
 | `--json-v2` | `{"schema": 2, "profiles": [...]}` (`"projects"` for `project list`, `"checks"` for `doctor`), the same objects as `--json` | 2, in the `schema` field | `jq '.profiles[]'`, `jq '.projects[]'`, `jq '.checks[]'` |
 
+Every `mcc list` and `mcc usage` object ends with `provider`: `"claude"` for a Claude Code profile, `"devin"` for [Devin](#devin-mcc-devin)'s row, which is there only when the Devin CLI is signed in. Devin's row has `null` for the Claude Code counts (skills, plugins, sessions, size, …) and, in `usage`, a `daily` window and `overage_usd` instead of a 5-hour window (`five_hour` is `null`); Claude Code profiles' `usage` objects have neither key.
+
 The contract: within a schema, fields may be added to the objects but are never renamed, removed or given another type. A change that breaks a shape gets a new schema number and a new flag, and the old flag keeps working. Scripts that should notice such a change can use `--json-v2` and check `schema` first, e.g. `mcc list --json-v2 | jq -e '.schema == 2' >/dev/null`.
 
 **Deprecation path:** `--json` (schema 1) stays as it is in every 0.x release. If a future major release makes `--json` print the versioned object, the CHANGELOG will say so in an upgrade note, and `--json-v2` will keep printing schema 2 unchanged, so scripts written for it need no change.
@@ -412,6 +417,7 @@ mcc completions fish > ~/.config/fish/completions/mcc.fish
 | Shared sessions | `~/.mcc/shared/projects` (the `default` group) and `~/.mcc/shared/groups/<name>/projects` (`--group <name>`), only for profiles that opted in with `mcc share` (their `projects/` links there) |
 | Project defaults | `[projects."<dir>"]` tables in `~/.mcc/config.toml`, written by `mcc project set` |
 | Statusline state | `~/.mcc/state/<profile>/usage.json` (rate limits cached by `mcc statusline`, or saved by `mcc usage --all`) and `statusline.json` (the `statusLine` it replaced, only after `mcc statusline install`) |
+| Devin | the Devin CLI's own login, `$XDG_DATA_HOME/devin/credentials.toml` (else `~/.local/share/devin/credentials.toml`), only ever read; `~/.mcc/state/devin/quota.json` keeps Devin's last looked-up quota and organization (never its token) |
 | Token refresh state | `~/.mcc/state/<profile>/refresh.lock` (held while `mcc usage --all` or `mcc login --refresh-only` has Claude Code refresh the profile's token, and while `mcc default` signs the profile out and in) and `refresh-failed-at` (when `mcc usage --all` last failed to, so it waits 30 minutes before trying again) |
 | mcc state | `~/.mcc/config.toml` (environment + registry; safe to edit by hand, mcc keeps your comments and formatting), `~/.mcc/.lock` (held while a command writes the config), `~/.mcc/logs/mcc.log` (rotated to `mcc.log.1` at about 1 MB), `~/.mcc/backups/` (rc file backups, session-merge conflicts, `settings.json` backups from `mcc statusline`) |
 
@@ -648,6 +654,34 @@ What `--all` finds is saved to the statusline cache (`~/.mcc/state/<profile>/usa
 Nothing is started for an account that is logged out, whose login has passed its deadline (sign in again with `mcc login PROFILE`), whose token the API rejected while it is still valid, that another mcc command is refreshing (`~/.mcc/state/<profile>/refresh.lock`), or whose refresh failed in the last 30 minutes (`~/.mcc/state/<profile>/refresh-failed-at`). One run spends at most 3 minutes on refreshes, each request at most 2. An account that could not be refreshed is named on stderr with how to refresh it by hand: start it once in Claude Code with `mcc run --profile PROFILE`. Ctrl+C during a request stops the remaining ones, still prints the table, and exits 130. A failed refresh never fails the command. Plain `mcc usage` and `[usage] live = true` never start anything.
 
 `--all` can't be combined with a profile name (`mcc usage work --all` is a usage error, exit 2), and `MCC_NO_USAGE=1` still turns usage off: no lookup and no notice. `mcc list` and `mcc run` have no `--all`; they read the cache unless `live = true`.
+
+The same settings look [Devin](#devin-mcc-devin)'s usage up live when the Devin CLI is signed in: with `live = true` after a one-time Devin note (recorded as `devin_disclosed_at`), and with `--all`, whose notice then gains a line naming `https://app.devin.ai/api`.
+
+</details>
+
+#### Devin: `mcc devin`
+
+<details>
+<summary>Starting the Devin CLI, and Devin's usage in mcc list and mcc usage</summary>
+
+Devin is a provider mcc shows beside your Claude Code profiles. It is not a profile: it has one login, the Devin CLI's own, kept where the CLI keeps it (`$XDG_DATA_HOME/devin/credentials.toml`, else `~/.local/share/devin/credentials.toml`). mcc never signs Devin in, never moves, copies or writes that file, and has no separate sign-in or credential location for it; sign in with `devin auth login` (or `mcc devin -- auth login`).
+
+**Starting it.** `mcc devin` runs the `devin` command (`MCC_DEVIN_BIN`, else the first on `PATH`, else `~/.local/bin/devin`, where Devin's installer links it) with your arguments as given: no `--config`, and no change to `HOME`, `XDG_*` or any other variable, so Devin starts with its default configuration (`~/.config/devin`) and its own login. Put Devin's arguments after `--` (`mcc devin -- auth status`), since mcc reads `--help`, `--version`, `-v` and `-q` before them. `--dry-run` prints the command instead. Without the Devin CLI it says how to install it (exit 1); without a login it starts anyway, with a hint. mcc never creates `~/.local/bin/devin`, and `devin` is a reserved name for profiles.
+
+**Usage.** When the Devin CLI is signed in (its credentials file exists; nothing else is checked), `mcc list` and bare `mcc` add a `devin` row after the profiles (ACCOUNT is Devin's organization, 5H is `n/a`, WEEK its weekly quota; `--long` adds the daily window and the overage balance), and `mcc usage` adds a block under its table:
+
+```text
+PROVIDER  DAILY           RESETS IN  WEEKLY          RESETS IN  OVERAGE  UPDATED
+devin     █░░░░░░░░░ 12%  8h 0m      █████░░░░░ 54%  3d 4h      $3.50    12m ago
+```
+
+Devin has a daily and a weekly quota, never a 5-hour window (`DAILY` is `—` when the plan hides it), plus an overage balance in dollars, shown when it is positive. `mcc usage devin` shows Devin alone.
+
+mcc reads it the way custats-macos's Devin provider does: it takes the session token from the top-level `windsurf_api_key` of `credentials.toml` (re-read each time, sent whole as a bearer token), asks `GET https://app.devin.ai/api/organizations` for the primary organization (else the first), then `GET https://app.devin.ai/api/<org>/billing/quota/usage` with that organization in `x-cog-org-id`, with mcc's own `User-Agent`, no redirects and a 4-second limit. A rejected token (HTTP 401/403) shows "Devin rejected the session token; run `devin auth login`", unless Devin answers that the login has no organization (`no_organizations`).
+
+That lookup sends Devin's token over the network, so it follows the [live usage](#live-usage-lookup-opt-in) settings: it runs only with `[usage] live = true` (after a one-time note) or for `mcc usage --all`, and never with `MCC_NO_USAGE=1`. Otherwise mcc shows what the last lookup saved in `~/.mcc/state/devin/quota.json` (the numbers and the organization, never the token) with its age, or `— (not looked up; mcc usage --all looks it up)`, and reads no token at all. Bare `mcc` never looks it up live. A failed lookup leaves the saved numbers as they were.
+
+`mcc doctor` (or `mcc doctor devin`) checks Devin when its CLI or its login is there: the `devin` command, the login (whether it holds a token is read only with `[usage] live = true`, and the token is never shown) and how its usage is looked up. Devin's findings are warnings at most, never problems.
 
 </details>
 
@@ -1081,6 +1115,7 @@ Before mcc is set up (no `~/.mcc/config.toml` with its `[env]`), bare `mcc` prin
 | No `.projects.mcc-share-*` or `.projects.mcc-unshare-*` left by an interrupted `mcc share` | `mcc share ALIAS` for a sharing profile, else what to move or remove |
 | Drift against the default, as `mcc list` shows it (a warning; local edits are kept by design and linked items, overlays and shared plugins never count) | `mcc sync ALIAS`, or `mcc sync ALIAS --force` for conflicts |
 | With the `mcc statusline` shim installed, each profile's `settings.json` has it too unless its overlay sets a `statusLine` (a warning) | `mcc sync ALIAS --only settings`, or `mcc statusline install --yes` when settings aren't synced |
+| Devin, only when its CLI or its login is there (profile `devin`; warnings at most): the `devin` command is found (`devin_cli`), the Devin CLI is signed in and, with `[usage] live = true`, its login holds a session token (`devin_auth`; never shown), and how Devin's usage is looked up (`devin_usage`) | install the Devin CLI or set `MCC_DEVIN_BIN`; `devin auth login` |
 
 Each finding is `ok`, `warn`, `problem` or `skipped` (with the reason). mcc exits 1 when there is at least one problem, after printing them all; warnings don't fail it. `--json` prints the findings as a bare array of `{"profile", "check", "status", "message", "fix"}` objects (`profile` is `null` for the checks every profile shares, `fix` is `null` when there is nothing to do), and `--json-v2` wraps it as `{"schema": 2, "checks": [...]}`.
 
@@ -1093,7 +1128,7 @@ Each finding is `ok`, `warn`, `problem` or `skipped` (with the reason). mcc exit
 
 An alias must be 1–32 characters: lowercase letters, digits, `-` or `_`, starting with a letter. It is rejected if any of these already uses the name:
 
-- mcc's reserved names: `claude`, `mcc`, `default`, `help`, `all`, `path`, `share`, `link`, `refresh-launchers`, `project`, `run`, `env`, `exec`, `statusline`, `doctor`
+- mcc's reserved names: `claude`, `mcc`, `default`, `help`, `all`, `path`, `share`, `link`, `refresh-launchers`, `project`, `run`, `env`, `exec`, `statusline`, `doctor`, `devin`
 - shell keywords and builtins
 - existing mcc profiles, and the old name of a renamed profile (its directory still uses that name; the error names the profile)
 - executables on `$PATH`
@@ -1105,7 +1140,7 @@ An alias must be 1–32 characters: lowercase letters, digits, `-` or `_`, start
 ### Environment variables
 
 <details>
-<summary>MCC_HOME, MCC_NO_USAGE, MCC_NO_AUTO_SYNC, MCC_USAGE_URL and more</summary>
+<summary>MCC_HOME, MCC_NO_USAGE, MCC_NO_AUTO_SYNC, MCC_USAGE_URL, MCC_DEVIN_BIN and more</summary>
 
 | Variable | Effect |
 |---|---|
@@ -1116,6 +1151,9 @@ An alias must be 1–32 characters: lowercase letters, digits, `-` or `_`, start
 | `MCC_NO_USAGE` | Any value except empty or `0`: same as `mcc list --no-usage`; `mcc usage` shows usage as not fetched (and doesn't read login expiry), and `mcc run` starts the project's profile without checking its usage |
 | `COLUMNS` | Terminal width used to size the usage bars in `mcc list` and `mcc usage` (default: the detected width; unlimited when piped) |
 | `MCC_USAGE_URL` | Test/debug override for the live usage endpoint (`[usage] live = true` or `mcc usage --all`). It receives bearer tokens, so only `https://` URLs and `http://` on loopback (`127.0.0.1`, `localhost`, `[::1]`) are accepted; any other value is refused and usage is not fetched at all |
+| `MCC_DEVIN_BIN` | Path to the `devin` binary `mcc devin` starts (default: the first on `PATH`, else `~/.local/bin/devin`) |
+| `MCC_DEVIN_API_URL` | Test/debug override for Devin's API base (`https://app.devin.ai/api`). It receives Devin's session token, so only `https://` URLs and `http://` on loopback are accepted; any other value is refused and Devin's usage is not fetched |
+| `XDG_DATA_HOME` | Where the Devin CLI keeps its login: `$XDG_DATA_HOME/devin/credentials.toml` when set, else `~/.local/share/devin/credentials.toml` |
 | `MCC_SECURITY_BIN` | Test/debug override for the macOS `security` binary used to read Keychain logins with `[usage] live = true`, `mcc usage --all` or `mcc login` (default `/usr/bin/security`, macOS only) |
 | `NO_COLOR` | Disable colors |
 
