@@ -253,7 +253,8 @@ fn usage_json_has_the_same_information() {
         .keys()
         .map(String::as_str)
         .collect();
-    // Schema 1 only gains fields (#100 added four, #104 the last one).
+    // Schema 1 only gains fields (#100 added four, #104 one more, #124 the
+    // last one).
     assert_eq!(
         keys,
         [
@@ -266,7 +267,8 @@ fn usage_json_has_the_same_information() {
             "login_expires_at",
             "login_expires_source",
             "login_warning",
-            "is_global_default"
+            "is_global_default",
+            "provider"
         ]
     );
     let d = by_name(&arr, "default");
@@ -968,4 +970,24 @@ fn usage_help_documents_all_and_its_notice() {
     // clap wraps long lines; the note's words are all there, in order.
     let words = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(words(&help).contains(&words(ALL_NOTE)), "{help}");
+}
+
+#[test]
+fn usage_without_devin_has_no_devin_block() {
+    // #124: Devin shows only when its CLI's login exists; the sandbox has
+    // none, so the output is the profiles' alone.
+    let sb = usage_sandbox();
+    let stub = usage_stub();
+    let o = sb
+        .mcc()
+        .env("MCC_USAGE_URL", &stub.url)
+        .args(["usage", "--all"])
+        .assert()
+        .success();
+    let out = String::from_utf8(o.get_output().stdout.clone()).unwrap();
+    let err = String::from_utf8(o.get_output().stderr.clone()).unwrap();
+    assert!(!out.contains("PROVIDER") && !out.contains("devin"), "{out}");
+    assert!(!err.contains("Devin"), "{err}");
+    let arr = usage_json(&stdout_of(sb.mcc().args(["usage", "--json"])));
+    assert!(arr.iter().all(|p| p["provider"] == "claude"), "{arr:?}");
 }
