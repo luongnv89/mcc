@@ -289,7 +289,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
 fn needs_live_disclosure(command: &Command, cfg: &config::Config) -> bool {
     let reads_usage = match command {
         Command::List(args) => !args.no_usage,
-        Command::Usage(_) => true,
+        // `mcc usage devin` looks up Devin alone (its own note).
+        Command::Usage(args) => {
+            args.profile.as_deref() != Some(devin::NAME) || cfg.profiles.contains_key(devin::NAME)
+        }
         Command::Run(args) => args.profile.is_none(),
         // Reads the login's timestamps, never usage.
         Command::Login(_) => false,
