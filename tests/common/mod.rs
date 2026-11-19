@@ -1,7 +1,10 @@
 //! Test sandbox: a temp HOME, a fake `claude` binary, and an `mcc` command
 //! wired to them. Nothing here touches the real ~/.claude, rc files, or keychain,
 //! and nothing reaches the network: the keychain is a fake `security` script and
-//! the usage endpoint is a refused loopback port unless a test starts a stub.
+//! the usage endpoints (Anthropic's and Devin's) are a refused loopback port
+//! unless a test starts a stub. Devin is not set up by default: no
+//! credentials file and no `devin` command, unless a test adds them
+//! ([`Sandbox::seed_devin_login`], [`Sandbox::install_fake_devin`]).
 #![allow(dead_code)]
 
 use std::io::{BufRead, BufReader, Write};
@@ -167,6 +170,23 @@ exit 44
 /// Nothing listens on the discard port: connections are refused at once.
 pub const REFUSED_URL: &str = "http://127.0.0.1:9/api/oauth/usage";
 
+/// A fake `devin` CLI: records its arguments (one per line) in
+/// $HOME/devin-args and the variables mcc could have changed in
+/// $HOME/devin-env (`NAME=value`, or `NAME unset`), then exits with
+/// $FAKE_DEVIN_EXIT (0 by default).
+const FAKE_DEVIN: &str = r#"#!/bin/sh
+printf '%s\n' "$@" > "$HOME/devin-args"
+: > "$HOME/devin-env"
+for v in HOME XDG_CONFIG_HOME XDG_DATA_HOME CLAUDE_CONFIG_DIR MCC_PROFILE DEVIN_CONFIG; do
+  if eval "[ -n \"\${$v+x}\" ]"; then eval "echo \"$v=\${$v}\"" >> "$HOME/devin-env"; else echo "$v unset" >> "$HOME/devin-env"; fi
+done
+echo "fake devin $*"
+exit "${FAKE_DEVIN_EXIT:-0}"
+"#;
+
+/// Where the Devin CLI keeps its login in the sandbox (no XDG_DATA_HOME).
+pub const DEVIN_CREDENTIALS: &str = ".local/share/devin/credentials.toml";
+
 pub struct Sandbox {
     pub tmp: TempDir,
 }
@@ -226,6 +246,7 @@ impl Sandbox {
             ("MCC_CLAUDE_BIN", home.join("fakebin/claude").into()),
             ("MCC_SECURITY_BIN", home.join("fakebin/security").into()),
             ("MCC_USAGE_URL", REFUSED_URL.into()),
+            ("MCC_DEVIN_API_URL", REFUSED_URL.into()),
             ("USER", "mcc-test".into()),
             ("MCC_NO_SHELL_PROBE", "1".into()),
             ("MCC_NON_INTERACTIVE", "1".into()),
@@ -290,6 +311,28 @@ impl Sandbox {
 }
 
 impl Sandbox {
+    /// Sign the Devin CLI in: its credentials file, as `devin auth login`
+    /// writes it, holding `token` (a plainly fake value) under the legacy
+    /// `windsurf_api_key` key, with the sibling keys custats ignores.
+    pub fn seed_devin_login(&self, token: &str) {
+        let body = [
+            format!("windsurf_api_key = \"{token}\""),
+            "api_server_url = \"https://server.example.invalid\"".to_string(),
+            "devin_webapp_host = \"app.example.invalid\"".to_string(),
+            String::new(),
+        ]
+        .join("\n");
+        self.write(DEVIN_CREDENTIALS, &body);
+    }
+
+    /// Put a fake `devin` on PATH (`fakebin/devin`, see [`FAKE_DEVIN`]).
+    pub fn install_fake_devin(&self) -> PathBuf {
+        let p = self.path("fakebin/devin");
+        std::fs::write(&p, FAKE_DEVIN).unwrap();
+        chmod_x(&p);
+        p
+    }
+
     /// Sign the config dir `rel_dir` in to `email` for the fake `claude`
     /// (`auth status` reports it), with the state file `state_rel` saying so
     /// too (`oauthAccount`), keeping the rest of a state file already there.
@@ -362,6 +405,16 @@ pub struct StubRequest {
     pub request_line: String,
     pub authorization: Option<String>,
     pub beta: Option<String>,
+    /// Devin's organization header (`x-cog-org-id`).
+    pub org: Option<String>,
+    pub user_agent: Option<String>,
+}
+
+impl StubRequest {
+    /// The request's path: "/api/organizations".
+    pub fn path(&self) -> &str {
+        self.request_line.split(' ').nth(1).unwrap_or_default()
+    }
 }
 
 /// A loopback HTTP server standing in for the usage endpoint. It answers each
@@ -404,6 +457,8 @@ impl UsageStub {
                     request_line: lines.first().cloned().unwrap_or_default(),
                     authorization: header("authorization"),
                     beta: header("anthropic-beta"),
+                    org: header("x-cog-org-id"),
+                    user_agent: header("user-agent"),
                 };
                 let (status, body) = handler(&req);
                 seen.lock().unwrap().push(req);
@@ -416,6 +471,11 @@ impl UsageStub {
             }
         });
         Self { url, requests }
+    }
+
+    /// The stub as Devin's API base (`MCC_DEVIN_API_URL`): `http://…/api`.
+    pub fn devin_base(&self) -> String {
+        self.url.trim_end_matches("/oauth/usage").to_string()
     }
 
     pub fn requests(&self) -> Vec<StubRequest> {
@@ -552,4 +612,56 @@ pub fn usage_stub() -> UsageStub {
         ),
         _ => (401, r#"{"error":"unknown token"}"#.into()),
     })
+}
+
+// ---- Devin (#124) -----------------------------------------------------------
+
+/// The fake session token the Devin fixtures use.
+pub const DEVIN_TOKEN: &str = "test-devin-token";
+
+/// Devin's API: `/organizations` lists a secondary and a primary
+/// organization (`org_main`, served as `org-main`), whose quota has a daily
+/// window of 12% (resets in 8 hours), a weekly one of 54% (in 3 days 4
+/// hours) and $3.50 of overage balance — for [`DEVIN_TOKEN`] only; any
+/// other token gets a 401.
+pub fn devin_stub() -> UsageStub {
+    devin_stub_except(|_| None)
+}
+
+/// [`devin_stub`], except for the requests `answer` answers itself.
+pub fn devin_stub_except(
+    answer: impl Fn(&StubRequest) -> Option<(u16, String)> + Send + 'static,
+) -> UsageStub {
+    let (day, week) = (rfc3339_in(8 * 3600), rfc3339_in(3 * 86400 + 4 * 3600));
+    UsageStub::start(move |req| {
+        if let Some(a) = answer(req) {
+            return a;
+        }
+        if req.authorization.as_deref() != Some(&format!("Bearer {DEVIN_TOKEN}")) {
+            return (401, r#"{"detail":"Unauthorized"}"#.into());
+        }
+        match req.path() {
+            "/api/organizations" => (
+                200,
+                r#"[{"org_id":"org_side","name":"Side"},{"org_id":"org_main","display_name":"Main team","is_primary_org":true}]"#.into(),
+            ),
+            "/api/org-main/billing/quota/usage" => (
+                200,
+                format!(
+                    r#"{{"is_quota_plan":true,"has_quota_allocation":true,"daily_percentage":12,"weekly_percentage":"54","daily_reset_at":"{day}","weekly_reset_at":"{week}","overage_balance":3.5,"hide_daily_quota":false}}"#
+                ),
+            ),
+            _ => (404, r#"{"detail":"Not Found"}"#.into()),
+        }
+    })
+}
+
+/// A table line without its row number: "work  …" for "2 work  …" (and
+/// " 2 work  …" in a table of ten or more). Other lines come back as they are.
+pub fn unnumbered(line: &str) -> &str {
+    let t = line.trim_start();
+    match t.split_once(' ') {
+        Some((n, rest)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => rest,
+        _ => line,
+    }
 }

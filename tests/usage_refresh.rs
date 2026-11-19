@@ -142,7 +142,7 @@ fn assert_no_refresh_only_hint(o: &Out) {
 fn row<'a>(stdout: &'a str, name: &str) -> &'a str {
     stdout
         .lines()
-        .find(|l| l.starts_with(name))
+        .find(|l| common::unnumbered(l).starts_with(name))
         .unwrap_or_else(|| panic!("no {name} row\n{stdout}"))
 }
 
@@ -572,7 +572,7 @@ fn ctrl_c_during_a_refresh_stops_the_others_and_still_shows_the_table() {
         "{}",
         o.stderr
     );
-    assert!(o.stdout.starts_with("PROFILE"), "{}", o.stdout);
+    assert!(o.stdout.starts_with("# PROFILE"), "{}", o.stdout);
     assert!(
         row(&o.stdout, "work").contains("token expired"),
         "{}",

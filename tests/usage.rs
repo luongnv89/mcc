@@ -43,7 +43,7 @@ fn usage_shows_every_profile_as_a_table() {
     // local time is one character longer on two-digit days, so the gap
     // before WEEKLY is that width less the header, plus the separator.
     let resets_width = regex::Regex::new(&format!(
-        r"(?m)^\S+(?: ★)? +(?:just now|unknown) +unknown +\S+ \d+% +(2h 14m {LOCAL_TIME})  "
+        r"(?m)^\d+ \S+(?: ★)? +(?:just now|unknown) +unknown +\S+ \d+% +(2h 14m {LOCAL_TIME})  "
     ))
     .unwrap()
     .captures_iter(&out)
@@ -53,30 +53,30 @@ fn usage_shows_every_profile_as_a_table() {
     let gap = resets_width - "RESETS IN".len() + 2;
     assert_match(
         &format!(
-            r"(?m)^PROFILE    LAST ACTIVE  LOGIN ENDS  5-HOUR          RESETS IN {{{gap}}}WEEKLY          RESETS IN$"
+            r"(?m)^# PROFILE    LAST ACTIVE  LOGIN ENDS  5-HOUR          RESETS IN {{{gap}}}WEEKLY          RESETS IN$"
         ),
         &out,
     );
     assert_match(
         &format!(
-            r"(?m)^default ★  just now     unknown     ████░░░░░░ 42%  2h 14m {LOCAL_TIME}  ██░░░░░░░░ 18%  3d 4h {LOCAL_TIME}$"
+            r"(?m)^\d+ default ★  just now     unknown     ████░░░░░░ 42%  2h 14m {LOCAL_TIME}  ██░░░░░░░░ 18%  3d 4h {LOCAL_TIME}$"
         ),
         &out,
     );
     assert_match(
-        r"(?m)^lab        unknown      unknown     unavailable \(not logged in\)$",
+        r"(?m)^\d+ lab        unknown      unknown     unavailable \(not logged in\)$",
         &out,
     );
     assert_match(
         &format!(
-            r"(?m)^work       unknown      unknown     █░░░░░░░░░ 7%   2h 14m {LOCAL_TIME}  ██████░░░░ 64%  3d 4h {LOCAL_TIME}$"
+            r"(?m)^\d+ work       unknown      unknown     █░░░░░░░░░ 7%   2h 14m {LOCAL_TIME}  ██████░░░░ 64%  3d 4h {LOCAL_TIME}$"
         ),
         &out,
     );
     // Header, then the default first and the profiles in name order.
     let lines: Vec<&str> = out.lines().collect();
     assert_eq!(lines.len(), 4, "{out}");
-    assert!(lines[1].starts_with("default") && lines[2].starts_with("lab"));
+    assert!(lines[1].starts_with("1 default") && lines[2].starts_with("2 lab"));
     // Account emails are hidden by default.
     assert!(
         !out.contains("me@example.com") && !out.contains("ACCOUNT"),
@@ -92,15 +92,15 @@ fn usage_shows_emails_only_when_asked() {
     let run = |args: &[&str]| stdout_of(sb.mcc().env("MCC_USAGE_URL", &stub.url).args(args));
     let shown = |out: &str| {
         assert_match(
-            r"(?m)^PROFILE    ACCOUNT         LAST ACTIVE  LOGIN ENDS  5-HOUR ",
+            r"(?m)^# PROFILE    ACCOUNT         LAST ACTIVE  LOGIN ENDS  5-HOUR ",
             out,
         );
         assert_match(
-            r"(?m)^default ★  me@example\.com  just now     unknown     ████░░░░░░ 42%  ",
+            r"(?m)^\d+ default ★  me@example\.com  just now     unknown     ████░░░░░░ 42%  ",
             out,
         );
         assert_match(
-            r"(?m)^lab        —               unknown      unknown     unavailable \(not logged in\)$",
+            r"(?m)^\d+ lab        —               unknown      unknown     unavailable \(not logged in\)$",
             out,
         );
     };
@@ -127,7 +127,7 @@ fn usage_shows_emails_only_when_asked() {
     assert_eq!(json_account(&["usage", "--json"]), "me@example.com");
     hidden(&run(&["usage", "--hide-email"]));
     let list = run(&["list"]);
-    assert_match(r"(?m)^default ★\s+me@example\.com \(Acme\)\s", &list);
+    assert_match(r"(?m)^\d+ default ★\s+me@example\.com \(Acme\)\s", &list);
     assert_eq!(json_account(&["list", "--json"]), "me@example.com");
     hidden(&run(&["list", "--hide-email"]));
     // Other commands keep the setting when they save the config.
@@ -162,7 +162,7 @@ fn usage_limits_output_to_one_profile() {
             .args(["usage", "work"]),
     );
     assert_match(
-        r"(?m)^work     unknown      unknown     █░░░░░░░░░ 7%  ",
+        r"(?m)^\d+ work     unknown      unknown     █░░░░░░░░░ 7%  ",
         &work,
     );
     assert!(work.contains("64%"), "{work}");
@@ -178,7 +178,7 @@ fn usage_limits_output_to_one_profile() {
                 .args(["usage", alias]),
         );
         assert_match(
-            r"(?m)^default ★  just now     unknown     ████░░░░░░ 42%  ",
+            r"(?m)^\d+ default ★  just now     unknown     ████░░░░░░ 42%  ",
             &out,
         );
         assert_eq!(out.lines().count(), 2, "{out}");
@@ -207,15 +207,15 @@ fn usage_unavailable_still_succeeds() {
     let sb = usage_sandbox();
     let out = stdout_of(sb.mcc().env("MCC_USAGE_URL", REFUSED_URL).arg("usage"));
     assert_match(
-        r"(?m)^default ★  just now     unknown     unavailable \(offline or the usage API timed out\)$",
+        r"(?m)^\d+ default ★  just now     unknown     unavailable \(offline or the usage API timed out\)$",
         &out,
     );
     assert_match(
-        r"(?m)^work       unknown      unknown     unavailable \(offline or the usage API timed out\)$",
+        r"(?m)^\d+ work       unknown      unknown     unavailable \(offline or the usage API timed out\)$",
         &out,
     );
     assert_match(
-        r"(?m)^lab        unknown      unknown     unavailable \(not logged in\)$",
+        r"(?m)^\d+ lab        unknown      unknown     unavailable \(not logged in\)$",
         &out,
     );
 
@@ -253,7 +253,8 @@ fn usage_json_has_the_same_information() {
         .keys()
         .map(String::as_str)
         .collect();
-    // Schema 1 only gains fields (#100 added four, #104 the last one).
+    // Schema 1 only gains fields (#100 added four, #104 one more, #124 the
+    // last one).
     assert_eq!(
         keys,
         [
@@ -266,7 +267,8 @@ fn usage_json_has_the_same_information() {
             "login_expires_at",
             "login_expires_source",
             "login_warning",
-            "is_global_default"
+            "is_global_default",
+            "provider"
         ]
     );
     let d = by_name(&arr, "default");
@@ -345,7 +347,7 @@ fn usage_drops_bars_in_narrow_terminals() {
     );
     // No bar and no absolute reset time; the time until the reset stays.
     assert_match(
-        r"(?m)^default ★  just now     unknown     42%     2h 14m     18%     3d 4h$",
+        r"(?m)^\d+ default ★  just now     unknown     42%     2h 14m     18%     3d 4h$",
         &out,
     );
     assert!(!out.contains('█') && !out.contains('░'), "{out}");
@@ -372,11 +374,11 @@ fn usage_keeps_bars_at_80_columns() {
     // 10-cell bar still fits (90 columns since LAST ACTIVE and LOGIN ENDS
     // joined the table, #100).
     assert_match(
-        r"(?m)^default ★  just now     unknown     ████░░░░░░ 42%  2h 14m     ██░░░░░░░░ 18%  3d 4h$",
+        r"(?m)^\d+ default ★  just now     unknown     ████░░░░░░ 42%  2h 14m     ██░░░░░░░░ 18%  3d 4h$",
         &out,
     );
     assert_match(
-        r"(?m)^work       unknown      unknown     █░░░░░░░░░ 7%   2h 14m     ██████░░░░ 64%  3d 4h$",
+        r"(?m)^\d+ work       unknown      unknown     █░░░░░░░░░ 7%   2h 14m     ██████░░░░ 64%  3d 4h$",
         &out,
     );
     for line in out.lines() {
@@ -390,7 +392,7 @@ fn usage_keeps_bars_at_80_columns() {
             .arg("usage"),
     );
     assert_match(
-        r"(?m)^default ★  just now     unknown     ██░░░ 42%  2h 14m     █░░░░ 18%  3d 4h$",
+        r"(?m)^\d+ default ★  just now     unknown     ██░░░ 42%  2h 14m     █░░░░ 18%  3d 4h$",
         &out,
     );
     for line in out.lines() {
@@ -490,22 +492,22 @@ fn usage_reads_the_statusline_cache_by_default() {
         .success();
     let out = String::from_utf8(o.get_output().stdout.clone()).unwrap();
     let err = String::from_utf8(o.get_output().stderr.clone()).unwrap();
-    assert_match(r"(?m)^PROFILE .* RESETS IN\s+UPDATED$", &out);
+    assert_match(r"(?m)^# PROFILE .* RESETS IN\s+UPDATED$", &out);
     assert_match(
         &format!(
-            r"(?m)^default ★  just now     unknown     ████░░░░░░ 42%  2h 14m {LOCAL_TIME}  ██░░░░░░░░ 18%  3d 4h {LOCAL_TIME}  12m ago$"
+            r"(?m)^\d+ default ★  just now     unknown     ████░░░░░░ 42%  2h 14m {LOCAL_TIME}  ██░░░░░░░░ 18%  3d 4h {LOCAL_TIME}  12m ago$"
         ),
         &out,
     );
     assert_match(
         &format!(
-            r"(?m)^work       unknown      unknown     —\s+██████░░░░ 64%  3d 4h {LOCAL_TIME}  1h ago$"
+            r"(?m)^\d+ work       unknown      unknown     —\s+██████░░░░ 64%  3d 4h {LOCAL_TIME}  1h ago$"
         ),
         &out,
     );
     // No cached data: a dash, and a hint to use /usage.
     assert_match(
-        r"(?m)^lab        unknown      unknown     — \(no usage cached; run /usage\)$",
+        r"(?m)^\d+ lab        unknown      unknown     — \(no usage cached; run /usage\)$",
         &out,
     );
     assert!(err.contains("no recent usage cached for `lab`"), "{err}");
@@ -551,7 +553,7 @@ fn cached_usage_fits_80_columns() {
             );
         }
         assert_match(
-            r"(?m)^lab        unknown      unknown     — \(no usage cached; run /usage\)$",
+            r"(?m)^\d+ lab        unknown      unknown     — \(no usage cached; run /usage\)$",
             &out,
         );
     }
@@ -562,7 +564,7 @@ fn cached_usage_fits_80_columns() {
             .arg("usage"),
     );
     assert_match(
-        r"(?m)^default ★  just now     unknown     ██░░░ 42%  2h 14m     █░░░░ 18%  3d 4h$",
+        r"(?m)^\d+ default ★  just now     unknown     ██░░░ 42%  2h 14m     █░░░░ 18%  3d 4h$",
         &out,
     );
     assert!(!out.contains("UPDATED"), "{out}");
@@ -588,7 +590,7 @@ fn cached_usage_past_its_reset_is_obsolete() {
     assert_eq!(by_name(&arr, "work")["usage"]["reason"], "no_data");
     let out = stdout_of(sb.mcc().arg("usage"));
     assert_match(
-        r"(?m)^work       unknown      unknown     — \(no usage cached; run /usage\)$",
+        r"(?m)^\d+ work       unknown      unknown     — \(no usage cached; run /usage\)$",
         &out,
     );
 }
@@ -606,12 +608,15 @@ fn list_reads_the_statusline_cache_and_shows_its_age() {
     let out = String::from_utf8(o.get_output().stdout.clone()).unwrap();
     let err = String::from_utf8(o.get_output().stderr.clone()).unwrap();
     // The table keeps to 120 columns; the age is in --long (issue #56).
-    assert_match(r"(?m)^NAME\s+ACCOUNT\s+5H\s+WEEK\s+LAST USED\s+SYNC$", &out);
     assert_match(
-        r"(?m)^default ★\s+Acme\s+████░░░░░░ 42% \(2h\)\s+██░░░░░░░░ 18% \(3d\)\s",
+        r"(?m)^# NAME\s+ACCOUNT\s+5H\s+WEEK\s+LAST USED\s+SYNC$",
         &out,
     );
-    assert_match(r"(?m)^lab\s+—\s+—\s+—\s", &out);
+    assert_match(
+        r"(?m)^\d+ default ★\s+Acme\s+████░░░░░░ 42% \(2h\)\s+██░░░░░░░░ 18% \(3d\)\s",
+        &out,
+    );
+    assert_match(r"(?m)^\d+ lab\s+—\s+—\s+—\s", &out);
     assert!(err.contains("no recent usage cached for `lab`"), "{err}");
 
     let long = stdout_of(sb.mcc().args(["list", "--long"]));
@@ -825,18 +830,18 @@ fn usage_all_looks_every_account_up_live_with_a_risk_notice() {
     assert!(!out.contains("UPDATED"), "{out}");
     assert_match(
         &format!(
-            r"(?m)^default ★  just now     unknown     ████░░░░░░ 42%  2h 14m {LOCAL_TIME}  ██░░░░░░░░ 18%  3d 4h {LOCAL_TIME}$"
+            r"(?m)^\d+ default ★  just now     unknown     ████░░░░░░ 42%  2h 14m {LOCAL_TIME}  ██░░░░░░░░ 18%  3d 4h {LOCAL_TIME}$"
         ),
         &out,
     );
     assert_match(
         &format!(
-            r"(?m)^work       unknown      unknown     █░░░░░░░░░ 7%   2h 14m {LOCAL_TIME}  ██████░░░░ 64%  3d 4h {LOCAL_TIME}$"
+            r"(?m)^\d+ work       unknown      unknown     █░░░░░░░░░ 7%   2h 14m {LOCAL_TIME}  ██████░░░░ 64%  3d 4h {LOCAL_TIME}$"
         ),
         &out,
     );
     assert_match(
-        r"(?m)^lab        unknown      unknown     unavailable \(not logged in\)$",
+        r"(?m)^\d+ lab        unknown      unknown     unavailable \(not logged in\)$",
         &out,
     );
 
@@ -870,22 +875,22 @@ fn usage_all_saves_what_it_finds_for_the_next_plain_usage() {
     let out = stdout_of(sb.mcc().env("MCC_USAGE_URL", &stub.url).arg("usage"));
     // The weekly resets are 1 and 3 days away, whose dates can differ in
     // width ("Sun Nov 8", "Tue Nov 10"), so the gap before UPDATED varies.
-    assert_match(r"(?m)^PROFILE .* RESETS IN\s+UPDATED$", &out);
+    assert_match(r"(?m)^# PROFILE .* RESETS IN\s+UPDATED$", &out);
     assert_match(
         &format!(
-            r"(?m)^default ★  just now     unknown     ████░░░░░░ 42%  2h 14m {LOCAL_TIME}  ██░░░░░░░░ 18%  3d 4h {LOCAL_TIME}\s{{2,}}just now$"
+            r"(?m)^\d+ default ★  just now     unknown     ████░░░░░░ 42%  2h 14m {LOCAL_TIME}  ██░░░░░░░░ 18%  3d 4h {LOCAL_TIME}\s{{2,}}just now$"
         ),
         &out,
     );
     assert_match(
         &format!(
-            r"(?m)^work       unknown      unknown     █░░░░░░░░░ 7%   2h 14m {LOCAL_TIME}  ██████░░░░ 64%  3d 4h {LOCAL_TIME}\s{{2,}}just now$"
+            r"(?m)^\d+ work       unknown      unknown     █░░░░░░░░░ 7%   2h 14m {LOCAL_TIME}  ██████░░░░ 64%  3d 4h {LOCAL_TIME}\s{{2,}}just now$"
         ),
         &out,
     );
     assert_match(
         &format!(
-            r"(?m)^lab        unknown      unknown     —\s+█░░░░░░░░░ 12%  1d 0h {LOCAL_TIME}\s{{2,}}10m ago$"
+            r"(?m)^\d+ lab        unknown      unknown     —\s+█░░░░░░░░░ 12%  1d 0h {LOCAL_TIME}\s{{2,}}10m ago$"
         ),
         &out,
     );
@@ -968,4 +973,24 @@ fn usage_help_documents_all_and_its_notice() {
     // clap wraps long lines; the note's words are all there, in order.
     let words = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(words(&help).contains(&words(ALL_NOTE)), "{help}");
+}
+
+#[test]
+fn usage_without_devin_has_no_devin_block() {
+    // #124: Devin shows only when its CLI's login exists; the sandbox has
+    // none, so the output is the profiles' alone.
+    let sb = usage_sandbox();
+    let stub = usage_stub();
+    let o = sb
+        .mcc()
+        .env("MCC_USAGE_URL", &stub.url)
+        .args(["usage", "--all"])
+        .assert()
+        .success();
+    let out = String::from_utf8(o.get_output().stdout.clone()).unwrap();
+    let err = String::from_utf8(o.get_output().stderr.clone()).unwrap();
+    assert!(!out.contains("PROVIDER") && !out.contains("devin"), "{out}");
+    assert!(!err.contains("Devin"), "{err}");
+    let arr = usage_json(&stdout_of(sb.mcc().args(["usage", "--json"])));
+    assert!(arr.iter().all(|p| p["provider"] == "claude"), "{arr:?}");
 }

@@ -122,7 +122,7 @@ fn list_shows_the_color_in_json_and_long_cards() {
     // Not a terminal (and NO_COLOR): the table has no escapes.
     let table = stdout_of(sb.mcc().args(["list", "--no-usage"]));
     assert!(!table.contains('\u{1b}'), "{table:?}");
-    assert!(table.lines().any(|l| l.starts_with("work ")), "{table}");
+    assert!(table.lines().any(|l| l.starts_with("2 work ")), "{table}");
     assert!(
         stdout_of(sb.mcc().args(["list", "--long", "--no-usage"]))
             .contains("Color:           blue")

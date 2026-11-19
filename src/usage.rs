@@ -80,6 +80,12 @@ pub enum Status {
     Unavailable,
 }
 
+/// Printed on stderr the first time `[usage] live = true` makes a command look
+/// Devin's usage up live (Devin detected: its CLI login file exists);
+/// `[usage] devin_disclosed_at` records that it was. `mcc usage --all` says
+/// the same in its own notice each time.
+pub const DEVIN_LIVE_DISCLOSURE: &str = "⚠ Live usage lookup is on for Devin too ([usage] live = true in ~/.mcc/config.toml): mcc reads the Devin CLI's login (its session token, from Devin's credentials.toml, which mcc never changes) and sends it to Devin's quota API (https://app.devin.ai/api) to show Devin's daily and weekly usage. The token is never stored or logged by mcc. Set live = false to show only the Devin usage last looked up (`mcc usage --all` still looks it up live, with its own notice). This note is shown once.";
+
 /// Why usage is unavailable. Serialized as snake_case in the `--json` output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -104,6 +110,20 @@ pub enum Reason {
     /// Enterprise seats, idle profiles, no `mcc statusline`), or every cached
     /// window has reset since.
     NoData,
+    /// Devin: nothing current from an earlier lookup, and none made now
+    /// (`[usage] live` off; `mcc usage --all` looks it up).
+    NotLookedUp,
+    /// Devin: the login has no organization (an empty `/organizations`, or
+    /// the API's "No organizations found" answer).
+    NoOrganizations,
+    /// Devin: its credentials file holds no session token.
+    MissingToken,
+    /// Devin: its credentials file can't be read (permission denied).
+    PermissionDenied,
+    /// Devin: its credentials file is not UTF-8 text.
+    DecodeFailed,
+    /// Devin: the quota response had neither a daily nor a weekly window.
+    MissingQuota,
 }
 
 impl Reason {
@@ -119,6 +139,12 @@ impl Reason {
             Reason::ParseError => "parse_error",
             Reason::Disabled => "disabled",
             Reason::NoData => "no_data",
+            Reason::NotLookedUp => "not_looked_up",
+            Reason::NoOrganizations => "no_organizations",
+            Reason::MissingToken => "missing_token",
+            Reason::PermissionDenied => "permission_denied",
+            Reason::DecodeFailed => "decode_failed",
+            Reason::MissingQuota => "missing_quota",
         }
     }
 
@@ -134,6 +160,14 @@ impl Reason {
             Reason::ParseError => "unrecognized response from the usage API",
             Reason::Disabled => "not fetched: --no-usage or MCC_NO_USAGE",
             Reason::NoData => "no recent usage cached; run /usage in Claude Code",
+            Reason::NotLookedUp => "not looked up; `mcc usage --all` looks it up",
+            Reason::NoOrganizations => "no organization for this login; pick one at app.devin.ai",
+            Reason::MissingToken => {
+                "no session token in the credentials file; run `devin auth login`"
+            }
+            Reason::PermissionDenied => "the credentials file can't be read (permission denied)",
+            Reason::DecodeFailed => "the credentials file is not text",
+            Reason::MissingQuota => "no daily or weekly quota reported",
         }
     }
 }
@@ -157,6 +191,14 @@ pub struct Usage {
     /// When these numbers were cached (`None` for live lookups).
     #[serde(serialize_with = "ser_time")]
     pub updated_at: Option<DateTime<Utc>>,
+    /// Devin's daily window. Never set for Claude Code profiles, and left
+    /// out of their JSON; never put in `five_hour`, which means 5 hours.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub daily: Option<Window>,
+    /// Devin's prepaid overage balance in US dollars, as reported. Never set
+    /// for Claude Code profiles, and left out of their JSON.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overage_usd: Option<f64>,
 }
 
 impl Usage {
@@ -168,6 +210,8 @@ impl Usage {
             weekly: None,
             source: None,
             updated_at: None,
+            daily: None,
+            overage_usd: None,
         }
     }
 
@@ -179,6 +223,8 @@ impl Usage {
             weekly,
             source: None,
             updated_at: None,
+            daily: None,
+            overage_usd: None,
         }
     }
 
@@ -648,7 +694,7 @@ fn endpoint() -> Option<String> {
     }
 }
 
-fn url_allowed(url: &str) -> bool {
+pub(crate) fn url_allowed(url: &str) -> bool {
     if url.starts_with("https://") {
         return true;
     }
@@ -1123,6 +1169,12 @@ mod tests {
             Reason::ParseError,
             Reason::Disabled,
             Reason::NoData,
+            Reason::NotLookedUp,
+            Reason::NoOrganizations,
+            Reason::MissingToken,
+            Reason::PermissionDenied,
+            Reason::DecodeFailed,
+            Reason::MissingQuota,
         ] {
             assert_eq!(serde_json::to_value(r).unwrap(), r.code());
         }

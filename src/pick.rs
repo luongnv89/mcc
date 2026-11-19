@@ -111,6 +111,8 @@ mod tests {
             weekly: w(week),
             source: None,
             updated_at: None,
+            daily: None,
+            overage_usd: None,
         }
     }
 

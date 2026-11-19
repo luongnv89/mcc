@@ -171,6 +171,7 @@
             <tr><td><a href="#cmd-link"><code>mcc link ALIAS [ITEMS]</code></a></td><td>Link read-mostly items to the default's copy instead of copying them; edits write through to the default (off by default)</td><td><code>--off</code></td></tr>
             <tr><td><a href="#cmd-project"><code>mcc project set PROFILE</code></a></td><td>Make PROFILE the one <code>mcc run</code> starts in this project; also <code>unset</code> and <code>list</code></td><td><code>--path</code>, <code>--allow</code>, <code>list --json</code></td></tr>
             <tr><td><a href="#cmd-here"><code>mcc here</code></a></td><td>Show which profile (account) <code>mcc run</code> starts in the current directory, and why: this folder's default, one inherited from a parent folder, or none (<code>~/.claude</code>); read-only</td><td></td></tr>
+            <tr><td><a href="#cmd-devin"><code>mcc devin [-- DEVIN_ARGS]</code></a></td><td>Start the Devin CLI as it is, with its default configuration and its own login; <code>mcc list</code> and <code>mcc usage</code> show Devin's usage</td><td><code>--dry-run</code></td></tr>
             <tr><td><a href="#cmd-run"><code>mcc run [-- CLAUDE_ARGS]</code></a></td><td>Start Claude Code with the current project's profile; at its limit, ask whether to wait (the default) or start it anyway</td><td><code>--profile</code>, <code>--dry-run</code></td></tr>
             <tr><td><a href="#cmd-env"><code>mcc env [PROFILE]</code></a></td><td>Print the shell line that points <code>CLAUDE_CONFIG_DIR</code> at the project's profile (or PROFILE), for <code>eval</code> or direnv</td><td><code>--shell</code></td></tr>
             <tr><td><a href="#cmd-exec"><code>mcc exec PROFILE -- CMD…</code></a></td><td>Run a command with a profile's <code>CLAUDE_CONFIG_DIR</code> and exit with its status; <code>--all</code> runs it once per profile</td><td><code>--all</code></td></tr>
@@ -190,9 +191,9 @@
         <div class="code"><pre><span class="p">$ </span>mcc
 Here: `work` (Acme) — the default for ~/code/app
 
-NAME       ACCOUNT  5H                  WEEK                LAST USED  SYNC
-default ★  personal ██░░░░░░░░ 18% (3h) █░░░░░░░░░ 9% (5d)  2h ago     —
-work       Acme     ████░░░░░░ 42% (2h) ██░░░░░░░░ 18% (4d) 3m ago     3 behind</pre></div>
+# NAME       ACCOUNT  5H                  WEEK                LAST USED  SYNC
+1 default ★  personal ██░░░░░░░░ 18% (3h) █░░░░░░░░░ 9% (5d)  2h ago     —
+2 work       Acme     ████░░░░░░ 42% (2h) ██░░░░░░░░ 18% (4d) 3m ago     3 behind</pre></div>
 
         <h3 id="cmd-init"><code>mcc init</code> <a class="anchor" href="#cmd-init" aria-label="Link to mcc init">#</a></h3>
         <p class="synopsis">mcc init [--force] [--shell zsh|bash|fish]</p>
@@ -259,10 +260,10 @@ work       Acme     ████░░░░░░ 42% (2h) ██░░░░�
           </tbody>
         </table></div>
         <div class="term" style="margin:0 0 1.2em"><pre><span class="p">$ </span><span class="c">mcc list</span>
-NAME       ACCOUNT   5H                     WEEK                   LAST USED  SYNC
-default ★  Acme      <span class="g">████</span><span class="d">░░░░░░</span> 42% (2h)    <span class="g">██</span><span class="d">░░░░░░░░</span> 18% (3d)    just now   —
-work       personal  <span class="y">█████████</span><span class="d">░</span> <span class="y">85%!</span> (35m)  <span class="r">██████████</span> <span class="r">96%!!</span> (3d)  2h ago     ✓
-lab        —         <span class="d">—                      —</span>                      1d ago     3 behind</pre></div>
+# NAME       ACCOUNT   5H                     WEEK                   LAST USED  SYNC
+1 default ★  Acme      <span class="g">████</span><span class="d">░░░░░░</span> 42% (2h)    <span class="g">██</span><span class="d">░░░░░░░░</span> 18% (3d)    just now   —
+2 work       personal  <span class="y">█████████</span><span class="d">░</span> <span class="y">85%!</span> (35m)  <span class="r">██████████</span> <span class="r">96%!!</span> (3d)  2h ago     ✓
+3 lab        —         <span class="d">—                      —</span>                      1d ago     3 behind</pre></div>
         <div class="code"><pre><span class="p">$ </span>mcc list --long
 <span class="p">$ </span>mcc list --no-usage            <span class="cm"># offline: skip the usage lookup</span>
 <span class="p">$ </span>mcc list --json --show-email | jq '.[] | {name, account, skills, plugins_installed}'
@@ -270,14 +271,15 @@ lab        —         <span class="d">—                      —</span>      
 
         <h3 id="cmd-usage"><code>mcc usage</code> <a class="anchor" href="#cmd-usage" aria-label="Link to mcc usage">#</a></h3>
         <p class="synopsis">mcc usage [PROFILE | --all] [--json | --json-v2] [--show-email | --hide-email]</p>
-        <p>Shows only usage, as a compact table with one row per profile: for each window a bar with the percent used, the time until it resets, and the reset time in your local time zone. Pass a profile name to see just one; use <code>default</code> or <code>claude</code> for <code>~/.claude</code>. An unknown name is a usage error (exit 2).</p>
+        <p>Shows only usage, as a compact table with one row per profile: for each window a bar with the percent used, the time until it resets, and the reset time in your local time zone. Pass a profile name to see just one; use <code>default</code> or <code>claude</code> for <code>~/.claude</code>, and <code>devin</code> for <a href="#cmd-devin">Devin</a> alone. An unknown name is a usage error (exit 2).</p>
+        <p>When the Devin CLI is signed in, a Devin block follows the table: Devin's <code>DAILY</code> and <code>WEEKLY</code> quota (never a 5-hour window) and its <code>OVERAGE</code> balance in dollars when positive. It is looked up live only with <code>[usage] live = true</code> (after a one-time note) or <code>--all</code>, and never with <code>MCC_NO_USAGE=1</code>; otherwise mcc shows what the last lookup saved. See <a href="#cmd-devin"><code>mcc devin</code></a>.</p>
         <p>Account emails are hidden by default, so the output is safe to share on screen. <code>--show-email</code> adds an <code>ACCOUNT</code> column; to show it every time, set <code>show_email = true</code> under <code>[privacy]</code> in <code>~/.mcc/config.toml</code>, which applies to <code>mcc list</code> too (see <a href="#configuration">Configuration</a>).</p>
         <div class="table-wrap"><table>
           <thead><tr><th>Option</th><th>Effect</th></tr></thead>
           <tbody>
             <tr><td><code>PROFILE</code></td><td>Only this profile (<code>default</code> or <code>claude</code> for the default)</td></tr>
             <tr><td><code>--all</code></td><td>Look every account's usage up live for this run, the default included, with each profile's login instead of the statusline cache, save what it finds to that cache, and print a risk notice on stderr each time (see <a href="#usage-limits">Usage limits</a>). Can't be combined with <code>PROFILE</code>; <code>MCC_NO_USAGE=1</code> still skips usage</td></tr>
-            <tr><td><code>--json</code></td><td>Print one JSON object per profile with <code>name</code>, <code>command</code>, <code>is_default</code>, <code>account</code>, <code>usage</code>, <code>last_activity</code>, <code>login_expires_at</code>, <code>login_expires_source</code>, <code>login_warning</code> and <code>is_global_default</code> (<code>account</code> is <code>null</code> while emails are hidden)</td></tr>
+            <tr><td><code>--json</code></td><td>Print one JSON object per profile with <code>name</code>, <code>command</code>, <code>is_default</code>, <code>account</code>, <code>usage</code>, <code>last_activity</code>, <code>login_expires_at</code>, <code>login_expires_source</code>, <code>login_warning</code>, <code>is_global_default</code> and <code>provider</code> (<code>claude</code>, or <code>devin</code> for Devin's row, whose <code>usage</code> has <code>daily</code> and <code>overage_usd</code>; <code>account</code> is <code>null</code> while emails are hidden)</td></tr>
             <tr><td><code>--json-v2</code></td><td>Print versioned JSON: <code>{"schema": 2, "profiles": [...]}</code>, the same objects as <code>--json</code>; <a href="https://github.com/luongnv89/mcc-herdr-plugin">mcc-herdr-plugin</a> reads it to show every account's usage in a <a href="https://herdr.dev">Herdr</a> pane</td></tr>
             <tr><td><code>--show-email</code></td><td>Show account emails for this run</td></tr>
             <tr><td><code>--hide-email</code></td><td>Hide account emails for this run, even with <code>show_email = true</code> in the config</td></tr>
@@ -414,6 +416,14 @@ Here: `work` (Acme) — inherited from parent folder ~/work
         <div class="code"><pre><span class="p">$ </span>mcc exec work -- claude mcp list
 <span class="p">$ </span>mcc exec default -- claude plugin list
 <span class="p">$ </span>mcc exec --all -- claude plugin marketplace update</pre></div>
+
+        <h3 id="cmd-devin"><code>mcc devin</code> <a class="anchor" href="#cmd-devin" aria-label="Link to mcc devin">#</a></h3>
+        <p class="synopsis">mcc devin [--dry-run] [-- DEVIN_ARGS…]</p>
+        <p>Starts the Devin CLI as it is: mcc runs the <code>devin</code> command (<code>MCC_DEVIN_BIN</code>, else the first on <code>PATH</code>, else <code>~/.local/bin/devin</code>) with your arguments as given, with no <code>--config</code> and no change to <code>HOME</code>, <code>XDG_*</code> or any other variable, so Devin uses its default configuration and the login its own <code>devin auth login</code> keeps in <code>$XDG_DATA_HOME/devin/credentials.toml</code> (else <code>~/.local/share/devin/credentials.toml</code>). mcc never signs Devin in, never writes that file, and never creates <code>~/.local/bin/devin</code>; <code>devin</code> is a reserved profile name. Put Devin's arguments after <code>--</code>. <code>--dry-run</code> prints the command instead.</p>
+        <p>Devin is a provider beside your profiles, not a profile. When its credentials file exists, <code>mcc list</code> and bare <code>mcc</code> add a <code>devin</code> row (ACCOUNT is its organization, 5H is <code>n/a</code>, WEEK its weekly quota; <code>--long</code> adds the daily window and the overage balance) and <code>mcc usage</code> a Devin block. Its usage is read the way custats-macos reads it: the top-level <code>windsurf_api_key</code> of <code>credentials.toml</code> is sent as a bearer token to <code>GET https://app.devin.ai/api/organizations</code> (the primary organization, else the first), then to <code>GET https://app.devin.ai/api/&lt;org&gt;/billing/quota/usage</code> with <code>x-cog-org-id</code>. That happens only with <code>[usage] live = true</code> (after a one-time note, recorded as <code>devin_disclosed_at</code>) or <code>mcc usage --all</code>, never with <code>MCC_NO_USAGE=1</code> and never for bare <code>mcc</code>; otherwise mcc shows what the last lookup saved in <code>~/.mcc/providers/devin/quota.json</code> (numbers and organization, never the token). In <code>--json</code>, Devin's row has <code>"provider": "devin"</code> and <code>null</code> Claude Code counts. <code>mcc doctor</code> checks Devin when its CLI or login is there, with warnings at most.</p>
+        <div class="code"><pre><span class="p">$ </span>mcc devin                       <span class="cm"># start Devin</span>
+<span class="p">$ </span>mcc devin -- auth login         <span class="cm"># sign the Devin CLI in (its own login)</span>
+<span class="p">$ </span>mcc usage devin                 <span class="cm"># Devin's daily and weekly quota</span></pre></div>
 
         <h3 id="cmd-statusline"><code>mcc statusline</code> <a class="anchor" href="#cmd-statusline" aria-label="Link to mcc statusline">#</a></h3>
         <p class="synopsis">mcc statusline install [--prefix] [--yes] · mcc statusline uninstall</p>
@@ -591,10 +601,10 @@ allow = ["lab"]                <span class="cm"># optional: offered when `work` 
         <h2>Usage limits <a class="anchor" href="#usage-limits" aria-label="Link to Usage limits">#</a></h2>
         <p><code>mcc list</code> shows 5-hour and weekly usage in its <code>5H</code> and <code>WEEK</code> columns (<code>--long</code> says how old those numbers are); <code>mcc usage</code> shows it in full.</p>
         <div class="term" style="margin:0 0 1.4em"><pre><span class="p">$ </span><span class="c">mcc usage</span>
-<span class="w">PROFILE    LAST ACTIVE  LOGIN ENDS  5-HOUR           RESETS IN                  WEEKLY            RESETS IN                 UPDATED</span>
-default ★  12m ago      27d 3h      <span class="g">████</span><span class="d">░░░░░░</span> 42%   2h 14m <span class="d">(Sat Oct 10 16:00)</span>  <span class="g">██</span><span class="d">░░░░░░░░</span> 18%    3d 4h <span class="d">(Wed Oct 14 00:00)</span>  12m ago
-lab        16d ago      1d 4h       <span class="d">— (no usage cached; run /usage)</span>
-work       just now     unknown     <span class="y">█████████</span><span class="d">░</span> <span class="y">85%!</span>  35m <span class="d">(Sat Oct 10 14:21)</span>     <span class="r">██████████</span> <span class="r">96%!!</span>  3d 4h <span class="d">(Wed Oct 14 00:00)</span>  just now
+<span class="w"># PROFILE    LAST ACTIVE  LOGIN ENDS  5-HOUR           RESETS IN                  WEEKLY            RESETS IN                 UPDATED</span>
+1 default ★  12m ago      27d 3h      <span class="g">████</span><span class="d">░░░░░░</span> 42%   2h 14m <span class="d">(Sat Oct 10 16:00)</span>  <span class="g">██</span><span class="d">░░░░░░░░</span> 18%    3d 4h <span class="d">(Wed Oct 14 00:00)</span>  12m ago
+2 lab        16d ago      1d 4h       <span class="d">— (no usage cached; run /usage)</span>
+3 work       just now     unknown     <span class="y">█████████</span><span class="d">░</span> <span class="y">85%!</span>  35m <span class="d">(Sat Oct 10 14:21)</span>     <span class="r">██████████</span> <span class="r">96%!!</span>  3d 4h <span class="d">(Wed Oct 14 00:00)</span>  just now
   <span class="y">⚠</span> Login for 'lab' expires in 1d 4h (Sun Oct 11 16:00) — run `mcc login lab` to renew it</pre></div>
 
         <h3>Reading the bars</h3>
@@ -662,7 +672,7 @@ work       just now     unknown     <span class="y">█████████<
         <h2>Alias rules <a class="anchor" href="#aliases" aria-label="Link to Alias rules">#</a></h2>
         <p>An alias must be 1–32 characters: lowercase letters, digits, <code>-</code> or <code>_</code>, starting with a letter. It is rejected if any of these already uses the name:</p>
         <ul>
-          <li>mcc's reserved names: <code>claude</code>, <code>mcc</code>, <code>default</code>, <code>help</code>, <code>all</code>, <code>path</code>, <code>share</code>, <code>link</code>, <code>refresh-launchers</code>, <code>project</code>, <code>run</code>, <code>env</code>, <code>exec</code>, <code>statusline</code>, <code>doctor</code></li>
+          <li>mcc's reserved names: <code>claude</code>, <code>mcc</code>, <code>default</code>, <code>help</code>, <code>all</code>, <code>path</code>, <code>share</code>, <code>link</code>, <code>refresh-launchers</code>, <code>project</code>, <code>run</code>, <code>env</code>, <code>exec</code>, <code>statusline</code>, <code>doctor</code>, <code>devin</code></li>
           <li>shell keywords and builtins</li>
           <li>existing mcc profiles</li>
           <li>executables on <code>$PATH</code></li>
@@ -709,6 +719,8 @@ work       just now     unknown     <span class="y">█████████<
             <tr><td><code>MCC_NO_AUTO_SYNC</code></td><td>Any value except empty or <code>0</code>: no <a href="#auto-sync">auto sync</a> for that run (<code>mcc doctor</code> sets it when it runs a launcher)</td></tr>
             <tr><td><code>MCC_NO_USAGE</code></td><td>Any value except empty or <code>0</code>: same as <code>mcc list --no-usage</code>; <code>mcc usage</code> shows usage as not fetched</td></tr>
             <tr><td><code>COLUMNS</code></td><td>Terminal width used to size usage bars (default: detected width; unlimited when piped)</td></tr>
+            <tr><td><code>MCC_DEVIN_BIN</code></td><td>Path to the <code>devin</code> binary <code>mcc devin</code> starts (default: the first on <code>PATH</code>, else <code>~/.local/bin/devin</code>)</td></tr>
+            <tr><td><code>MCC_DEVIN_API_URL</code></td><td>Test/debug override for Devin's API base (<code>https://app.devin.ai/api</code>); only <code>https://</code> and loopback <code>http://</code> are accepted, else Devin's usage is not fetched</td></tr>
             <tr><td><code>MCC_USAGE_URL</code></td><td>Test/debug override for the usage endpoint. It receives bearer tokens, so only <code>https://</code> URLs and <code>http://</code> on loopback (<code>127.0.0.1</code>, <code>localhost</code>, <code>[::1]</code>) are accepted; any other value is refused and usage is not fetched at all</td></tr>
             <tr><td><code>MCC_SECURITY_BIN</code></td><td>Test/debug override for the macOS <code>security</code> binary used to read Keychain logins (default <code>/usr/bin/security</code>)</td></tr>
             <tr><td><code>NO_COLOR</code></td><td>Disable colors</td></tr>

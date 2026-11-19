@@ -1,7 +1,8 @@
 //! `mcc list` — all profiles with their metrics (table, cards, or JSON).
 //!
-//! The table keeps to the columns that fit 120 columns (NAME, ACCOUNT, 5H,
-//! WEEK, LAST USED, SYNC); `--long` cards and JSON have every metric.
+//! The table keeps to the columns that fit 120 columns (# and NAME,
+//! ACCOUNT, 5H, WEEK, LAST USED, SYNC); `--long` cards and JSON have every
+//! metric.
 //! Account emails are hidden unless `[privacy] show_email` or
 //! `--show-email` says otherwise, as in `mcc usage`.
 
@@ -14,7 +15,8 @@ use console::{measure_text_width, style};
 
 use crate::cli::ListArgs;
 use crate::config::Config;
-use crate::metrics::{self, ProfileMetrics};
+use crate::devin;
+use crate::metrics::{self, ProfileMetrics, Provider};
 use crate::paths::Paths;
 use crate::ui;
 use crate::usage::{self, Reason, Status, Usage, Window};
@@ -24,18 +26,33 @@ pub fn run(paths: &Paths, cfg: &Config, args: &ListArgs) -> Result<()> {
     let mut all = profiles(paths, cfg, true, usage);
     let show_email = (cfg.show_email() || args.show_email) && !args.hide_email;
     let known = redact(&mut all, show_email);
+    // Devin, after the profiles: the same live-or-cached choice for its usage.
+    let how = match usage {
+        None => devin::Lookup::Disabled,
+        Some(live) => devin::Lookup::of(live),
+    };
+    let devin = devin_row(paths, how, show_email);
+    let shown: Vec<ProfileMetrics> = all.iter().cloned().chain(devin.clone()).collect();
 
     let mut out = std::io::stdout().lock();
     if args.json || args.json_v2 {
-        super::write_json(&mut out, "profiles", &all, args.json_v2)?;
+        super::write_json(
+            &mut out,
+            "profiles",
+            &metrics::json_rows(&shown)?,
+            args.json_v2,
+        )?;
     } else if args.long {
         let now = Utc::now();
         let bar = card_bar(&all, now);
         for (m, known) in all.iter().zip(known) {
             card(&mut out, m, known && !show_email, bar, now, paths)?;
         }
+        if let Some(d) = &devin {
+            devin_card(&mut out, d, now, paths)?;
+        }
     } else {
-        table(&mut out, &all)?;
+        table(&mut out, &shown)?;
         if !cfg.projects.is_empty() {
             writeln!(out)?;
             for line in project_lines(paths, cfg, &all) {
@@ -63,6 +80,12 @@ pub fn run(paths: &Paths, cfg: &Config, args: &ListArgs) -> Result<()> {
         let usages: Vec<&Usage> = all.iter().map(|m| &m.usage).collect();
         if let Some(hint) = usage::no_data_hint(&names, &usages) {
             ui::hint(&hint);
+        }
+        if let Some(hint) = devin
+            .as_ref()
+            .and_then(|d| devin::not_looked_up_hint(&d.usage, true))
+        {
+            ui::hint(hint);
         }
     }
     Ok(())
@@ -105,6 +128,22 @@ pub(super) fn profiles(
         attach_usage(paths, live, &mut all);
     }
     all
+}
+
+/// Devin's row when Devin is set up here (its CLI's credentials file
+/// exists), with its usage as `how` says, emails hidden as for profiles;
+/// `None` otherwise.
+pub(super) fn devin_row(
+    paths: &Paths,
+    how: devin::Lookup,
+    show_email: bool,
+) -> Option<ProfileMetrics> {
+    if !devin::detected(paths) {
+        return None;
+    }
+    let mut row = metrics::devin_row(paths, &devin::lookup(paths, how));
+    redact(std::slice::from_mut(&mut row), show_email);
+    Some(row)
 }
 
 /// Hide account emails unless `show_email` ([`hide_email`]), and drop labels
@@ -231,7 +270,13 @@ fn usage_cell(u: &Usage, w: Option<&Window>, bar: usize, now: DateTime<Utc>) -> 
             None => ui::gauge(w.percent, bar),
         },
         (Status::Ok, None) => "—".into(),
-        _ if matches!(u.reason, Some(Reason::Disabled | Reason::NoData)) => "—".into(),
+        _ if matches!(
+            u.reason,
+            Some(Reason::Disabled | Reason::NoData | Reason::NotLookedUp)
+        ) =>
+        {
+            "—".into()
+        }
         _ => "unavailable".into(),
     }
 }
@@ -265,7 +310,7 @@ fn usage_rows(u: &Usage, bar: usize, now: DateTime<Utc>) -> Vec<(&'static str, S
             }
             rows
         }
-        (_, Some(r @ (Reason::Disabled | Reason::NoData))) => {
+        (_, Some(r @ (Reason::Disabled | Reason::NoData | Reason::NotLookedUp))) => {
             vec![("Usage", format!("— ({})", r.describe()))]
         }
         (_, reason) => vec![(
@@ -276,6 +321,82 @@ fn usage_rows(u: &Usage, bar: usize, now: DateTime<Utc>) -> Vec<(&'static str, S
             ),
         )],
     }
+}
+
+/// Devin's card usage rows: its daily window (when its plan shows one) and
+/// weekly window, a positive overage balance, how old cached numbers are;
+/// or a single "Usage" row saying why there is none.
+fn devin_usage_rows(u: &Usage, bar: usize, now: DateTime<Utc>) -> Vec<(&'static str, String)> {
+    match (u.status, u.reason) {
+        (Status::Ok, _) => {
+            let mut rows = Vec::new();
+            if let Some(d) = &u.daily {
+                rows.push(("Daily usage", usage_line(Some(d), bar, now)));
+            }
+            rows.push(("Weekly usage", usage_line(u.weekly.as_ref(), bar, now)));
+            if let Some(o) = u.overage_usd.filter(|o| *o > 0.0) {
+                rows.push(("Overage balance", devin::dollars(o)));
+            }
+            if let Some(age) = u.age(now) {
+                rows.push(("Usage updated", format!("{age} (last lookup)")));
+            }
+            rows
+        }
+        (_, Some(r @ (Reason::Disabled | Reason::NotLookedUp))) => {
+            vec![("Usage", format!("— ({})", devin::describe(r)))]
+        }
+        (_, reason) => vec![(
+            "Usage",
+            format!(
+                "unavailable ({})",
+                reason.map_or("unknown", devin::describe)
+            ),
+        )],
+    }
+}
+
+/// Devin's `--long` card: its command, where its login is, its
+/// organization and usage. It has no Claude Code counts.
+fn devin_card(
+    out: &mut impl Write,
+    m: &ProfileMetrics,
+    now: DateTime<Utc>,
+    paths: &Paths,
+) -> Result<()> {
+    let bar = ui::fit_bar(&CARD_BARS, |bar| {
+        devin_usage_rows(&m.usage, bar, now)
+            .iter()
+            .map(|(_, v)| CARD_KEY_WIDTH + measure_text_width(v))
+            .max()
+            .unwrap_or(0)
+    });
+    writeln!(
+        out,
+        "{} {}",
+        style("◆").cyan().bold(),
+        style(format!("{} (Devin CLI)", m.name)).bold()
+    )?;
+    let row =
+        |out: &mut dyn Write, k: &str, v: String| writeln!(out, "    {:<16} {v}", format!("{k}:"));
+    row(out, "Command", format!("{} (or `mcc devin`)", m.command))?;
+    row(
+        out,
+        "Login",
+        format!(
+            "{} (the Devin CLI's own; `devin auth login`)",
+            paths.display(&paths.devin_credentials)
+        ),
+    )?;
+    row(
+        out,
+        "Organization",
+        m.organization.clone().unwrap_or_else(|| "—".into()),
+    )?;
+    for (k, v) in devin_usage_rows(&m.usage, bar, now) {
+        row(out, k, v)?;
+    }
+    writeln!(out)?;
+    Ok(())
 }
 
 /// The widest bar that keeps every card's usage rows within the terminal.
@@ -373,10 +494,19 @@ fn auto_sync_rows(m: &ProfileMetrics) -> Vec<(&'static str, String)> {
 /// Header and rows, with usage bars `bar` cells wide. Counts, size, the
 /// command and the organization are in the `--long` cards and JSON.
 fn table_lines(all: &[ProfileMetrics], bar: usize, now: DateTime<Utc>) -> Vec<String> {
-    let headers = ["NAME", "ACCOUNT", "5H", "WEEK", "LAST USED", "SYNC"];
+    let name_head = indexed("NAME", None, all.len());
+    let headers = [
+        name_head.as_str(),
+        "ACCOUNT",
+        "5H",
+        "WEEK",
+        "LAST USED",
+        "SYNC",
+    ];
     let rows: Vec<Vec<String>> = all
         .iter()
-        .map(|m| {
+        .enumerate()
+        .map(|(i, m)| {
             // In the profile's color (stdout to a terminal only); the
             // widths below measure without the escapes.
             let name = ui::paint(&m.name, m.color.as_deref());
@@ -395,12 +525,21 @@ fn table_lines(all: &[ProfileMetrics], bar: usize, now: DateTime<Utc>) -> Vec<St
             } else {
                 format!("{name} (missing)")
             };
+            // Devin has no 5-hour window (its daily one is in `--long`),
+            // and mcc can't tell when it was last used.
+            let (five_hour, last_used) = match m.provider {
+                Provider::Devin => ("n/a".into(), "—".into()),
+                Provider::Claude => (
+                    usage_cell(&m.usage, m.usage.five_hour.as_ref(), bar, now),
+                    metrics::ago(m.last_used_time),
+                ),
+            };
             vec![
-                name,
+                indexed(&name, Some(i), all.len()),
                 account_cell(m),
-                usage_cell(&m.usage, m.usage.five_hour.as_ref(), bar, now),
+                five_hour,
                 usage_cell(&m.usage, m.usage.weekly.as_ref(), bar, now),
-                metrics::ago(m.last_used_time),
+                last_used,
                 sync_cell(m),
             ]
         })
@@ -428,6 +567,19 @@ fn table_lines(all: &[ProfileMetrics], bar: usize, now: DateTime<Utc>) -> Vec<St
     std::iter::once(style(head).bold().to_string())
         .chain(rows.into_iter().map(fmt_row))
         .collect()
+}
+
+/// The first cell with its row number in front: "3 work" for row `i` = 2,
+/// right-aligned to the widest number of `total` rows (" 7" next to
+/// "12"), so the last row's number is how many accounts the table lists.
+/// The header (`i` = None) gets "#" there instead. One space, not the
+/// two between columns, keeps every table within the widths it fit before.
+pub(super) fn indexed(cell: &str, i: Option<usize>, total: usize) -> String {
+    let w = total.to_string().len();
+    match i {
+        Some(i) => format!("{:>w$} {cell}", i + 1),
+        None => format!("{:<w$} {cell}", "#"),
+    }
 }
 
 /// Under the table: which profile `mcc run` starts in each project, with
@@ -608,4 +760,21 @@ fn card(
     }
     writeln!(out)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::indexed;
+
+    #[test]
+    fn rows_are_numbered_from_one_and_right_aligned() {
+        assert_eq!(indexed("NAME", None, 3), "# NAME");
+        assert_eq!(indexed("work", Some(0), 3), "1 work");
+        assert_eq!(indexed("lab", Some(2), 3), "3 lab");
+        // Ten rows and up: the numbers line up on the right, the names on
+        // the left, under a left-aligned "#".
+        assert_eq!(indexed("NAME", None, 12), "#  NAME");
+        assert_eq!(indexed("work", Some(6), 12), " 7 work");
+        assert_eq!(indexed("lab", Some(11), 12), "12 lab");
+    }
 }

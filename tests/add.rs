@@ -355,6 +355,7 @@ fn rejects_invalid_and_conflicting_aliases() {
     reject("1abc", "not a valid alias");
     reject("claude", "reserved by mcc");
     reject("doctor", "reserved by mcc");
+    reject("devin", "reserved by mcc");
     reject("export", "shell keyword or builtin");
     reject("ls", "a command named \"ls\" exists");
     reject("cus_luong", "alias \"cus_luong\" is defined in ~/.zshrc");
@@ -570,14 +571,15 @@ fn records_account_organization_and_label() {
         .args(["list", "--no-usage"])
         .assert()
         .success()
-        .stdout(predicate::str::is_match(r"(?m)^work\s+Acme \(work\)\s").unwrap())
+        .stdout(predicate::str::is_match(r"(?m)^\d+ work\s+Acme \(work\)\s").unwrap())
         .stdout(predicate::str::contains("dev@acme.test").not());
     sb.mcc()
         .args(["list", "--no-usage", "--show-email"])
         .assert()
         .success()
         .stdout(
-            predicate::str::is_match(r"(?m)^work\s+dev@acme\.test \(Acme \(work\)\)\s").unwrap(),
+            predicate::str::is_match(r"(?m)^\d+ work\s+dev@acme\.test \(Acme \(work\)\)\s")
+                .unwrap(),
         );
     sb.mcc()
         .args(["list", "--long", "--no-usage"])

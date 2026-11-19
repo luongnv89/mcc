@@ -105,13 +105,14 @@ fn ac1_last_activity_from_history_and_transcripts() {
     assert_eq!(o.code, 0, "{}", o.stderr);
     let header = o.stdout.lines().next().unwrap();
     assert!(
-        header.starts_with("PROFILE    LAST ACTIVE  LOGIN ENDS  5-HOUR"),
+        header.starts_with("# PROFILE    LAST ACTIVE  LOGIN ENDS  5-HOUR"),
         "{}",
         o.stdout
     );
     let row = |name: &str| {
         o.stdout
             .lines()
+            .map(common::unnumbered)
             .find(|l| l.starts_with(name))
             .unwrap_or_else(|| panic!("no {name} row\n{}", o.stdout))
             .to_string()
@@ -152,7 +153,7 @@ fn ac1_last_activity_from_history_and_transcripts() {
         5 * 3600 + 60,
     );
     let o = run(sb.mcc().arg("usage"));
-    assert!(o.stdout.contains("\nwork       5h ago "), "{}", o.stdout);
+    assert!(o.stdout.contains("\n3 work       5h ago "), "{}", o.stdout);
 }
 
 #[test]
@@ -170,7 +171,7 @@ fn ac1_shared_transcripts_are_not_the_profiles_activity() {
         serde_json::Value::Null
     );
     let o = run(sb.mcc().arg("usage"));
-    assert!(o.stdout.contains("\nlab        unknown "), "{}", o.stdout);
+    assert!(o.stdout.contains("\n2 lab        unknown "), "{}", o.stdout);
 }
 
 // ---- AC2 / AC3: the warning --------------------------------------------------
@@ -215,11 +216,11 @@ fn ac2_warning_names_the_profile_inside_the_window() {
         "{}",
         o.stderr
     );
-    assert!(o.stdout.contains("\nwork       "), "{}", o.stdout);
+    assert!(o.stdout.contains("\n3 work       "), "{}", o.stdout);
     assert!(
         o.stdout
             .lines()
-            .any(|l| l.starts_with("work") && l.contains(" expired ")),
+            .any(|l| l.starts_with("3 work") && l.contains(" expired ")),
         "{}",
         o.stdout
     );

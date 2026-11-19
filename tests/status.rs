@@ -78,19 +78,19 @@ fn shows_the_profile_here_and_every_profile() {
         "{out}"
     );
     assert!(
-        predicate::str::is_match(r"(?m)^NAME\s+ACCOUNT\s+5H\s+WEEK\s+LAST USED\s+SYNC$")
+        predicate::str::is_match(r"(?m)^# NAME\s+ACCOUNT\s+5H\s+WEEK\s+LAST USED\s+SYNC$")
             .unwrap()
             .eval(&out),
         "{out}"
     );
     assert!(
-        predicate::str::is_match(r"(?m)^default ★\s+Acme\s")
+        predicate::str::is_match(r"(?m)^\d+ default ★\s+Acme\s")
             .unwrap()
             .eval(&out),
         "{out}"
     );
     assert!(
-        predicate::str::is_match(r"(?m)^work\s.*42%.*18%")
+        predicate::str::is_match(r"(?m)^\d+ work\s.*42%.*18%")
             .unwrap()
             .eval(&out),
         "{out}"

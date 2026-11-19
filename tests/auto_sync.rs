@@ -59,7 +59,7 @@ fn sync_cell(sb: &Sandbox, alias: &str) -> String {
     let out = stdout_of(sb.mcc().args(["list", "--no-usage"]));
     // The columns before SYNC hold no "behind", "✓" or "(held)".
     out.lines()
-        .find(|l| l.starts_with(&format!("{alias} ")))
+        .find(|l| common::unnumbered(l).starts_with(&format!("{alias} ")))
         .unwrap_or_else(|| panic!("no row for {alias}: {out}"))
         .to_string()
 }

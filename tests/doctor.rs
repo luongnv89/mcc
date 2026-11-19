@@ -834,3 +834,70 @@ fn launchers_from_before_sharing_or_the_banner_are_out_of_date() {
         .success();
     assert_eq!(sb.read(".local/bin/work"), current);
 }
+
+#[test]
+fn doctor_says_nothing_about_devin_without_it() {
+    let sb = healthy();
+    let all = findings(&sb, &[]);
+    assert!(
+        all.iter()
+            .all(|f| !f["check"].as_str().unwrap().starts_with("devin_")),
+        "{all:#?}"
+    );
+}
+
+#[test]
+fn doctor_checks_devin_without_showing_its_token() {
+    // #124: the CLI `mcc devin` starts, the CLI's own login, and how its
+    // usage is looked up; at most warnings, never a problem.
+    let sb = healthy();
+    sb.install_fake_devin();
+    sb.seed_devin_login(common::DEVIN_TOKEN);
+    let all = findings(&sb, &[]);
+    for check in ["devin_cli", "devin_auth", "devin_usage"] {
+        assert_eq!(one(&all, Some("devin"), check)["status"], "ok", "{check}");
+    }
+    let err = passing(&sb);
+    assert!(
+        err.contains("Devin (~/.local/share/devin/credentials.toml)"),
+        "{err}"
+    );
+
+    // With the live lookup on, the login is read to see that it holds a
+    // token; an empty one is a warning with its fix.
+    enable_live_usage(&sb);
+    let all = findings(&sb, &[]);
+    assert_eq!(one(&all, Some("devin"), "devin_auth")["status"], "ok");
+    let usage = one(&all, Some("devin"), "devin_usage");
+    assert!(
+        usage["message"].as_str().unwrap().contains("app.devin.ai"),
+        "{usage}"
+    );
+    sb.write(common::DEVIN_CREDENTIALS, "windsurf_api_key = \"\"\n");
+    let all = findings(&sb, &["devin"]);
+    let auth = one(&all, Some("devin"), "devin_auth");
+    assert_eq!(auth["status"], "warn", "{auth}");
+    assert_eq!(auth["fix"], "devin auth login");
+    // `mcc doctor devin` checks Devin, not the profiles.
+    assert!(of(&all, Some("work"), "launcher").is_empty());
+    let o = doctor(&sb, &[]);
+    assert!(o.status.success());
+
+    // The token never appears, whatever doctor reads.
+    sb.seed_devin_login(common::DEVIN_TOKEN);
+    for args in [&[][..], &["--json"]] {
+        let o = doctor(&sb, args);
+        assert!(!out(&o.stdout).contains(common::DEVIN_TOKEN));
+        assert!(!out(&o.stderr).contains(common::DEVIN_TOKEN));
+    }
+
+    // No CLI: a warning that says how to get it.
+    std::fs::remove_file(sb.path("fakebin/devin")).unwrap();
+    let all = findings(&sb, &[]);
+    let cli = one(&all, Some("devin"), "devin_cli");
+    assert_eq!(cli["status"], "warn", "{cli}");
+    assert!(
+        cli["fix"].as_str().unwrap().contains("MCC_DEVIN_BIN"),
+        "{cli}"
+    );
+}

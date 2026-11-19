@@ -46,6 +46,15 @@ macro_rules! usage_all_note {
 }
 pub(crate) use usage_all_note;
 
+/// The line `mcc usage --all` adds to its notice when Devin is set up
+/// (#124). A macro so the help text below can include it verbatim.
+macro_rules! usage_all_devin_note {
+    () => {
+        "⚠ Devin is set up here, so --all also looks Devin's usage up live: mcc reads the Devin CLI's login (its session token, from Devin's credentials.toml, never changed or stored by mcc) and sends it to Devin's quota API (https://app.devin.ai/api)."
+    };
+}
+pub(crate) use usage_all_devin_note;
+
 const ABOUT: &str = "mcc — run several Claude Code accounts side by side.
 
 Each profile is a separate Claude Code config directory (CLAUDE_CONFIG_DIR)
@@ -63,6 +72,7 @@ Examples:
   mcc list --json | jq '.[].name'
   mcc usage                      5-hour and weekly usage of every profile, in detail
   mcc usage work --json          The same for `work`, as JSON
+  mcc devin                      Start the Devin CLI with its own login and configuration
   mcc login work                 Sign `work` in again before its login runs out
   mcc sync work --dry-run        Preview copying the default's setup into `work`
   mcc sync --all                 Bring every profile up to date with the default
@@ -145,6 +155,7 @@ pub enum Command {
         "  mcc usage default             Only the default profile (~/.claude)\n",
         "  mcc usage --all               Every account looked up live, the default included (risk notice)\n",
         "  mcc usage --show-email        Also show each profile's account email\n",
+        "  mcc usage devin               Only Devin (when the Devin CLI is signed in)\n",
         "  mcc usage --json | jq '.[] | {name, weekly: .usage.weekly.percent}'\n",
         "  mcc usage --json-v2 | jq '.profiles[].name'   Versioned: {\"schema\": 2, \"profiles\": [...]}\n",
         "\n",
@@ -190,7 +201,18 @@ pub enum Command {
         "else in a new empty folder (said on stderr first), then looks it up\n",
         "again. Each time it looks usage up, it prints this note on stderr:\n",
         "\n",
-        usage_all_note!()
+        usage_all_note!(),
+        "\n\n",
+        "Devin: when the Devin CLI is signed in (its credentials.toml exists in\n",
+        "$XDG_DATA_HOME/devin, else ~/.local/share/devin), a Devin block follows the\n",
+        "table, with Devin's DAILY and WEEKLY quota (never a 5-hour window) and its\n",
+        "overage balance when positive (`provider: \"devin\"` in --json). mcc uses\n",
+        "the Devin CLI's own login and never writes it. Devin's usage is looked up\n",
+        "live only as above (`[usage] live = true`, after a one-time note, or\n",
+        "--all) and never with MCC_NO_USAGE=1; otherwise the last lookup is shown.\n",
+        "--all then adds this line to its note:\n",
+        "\n",
+        usage_all_devin_note!()
     ))]
     Usage(UsageArgs),
 
@@ -420,6 +442,25 @@ pub enum Command {
         "share sessions (`mcc help share`)."
     ))]
     Run(RunArgs),
+
+    /// Start the Devin CLI with its default configuration and its own login
+    #[command(after_help = concat!(
+        "Examples:\n",
+        "  mcc devin                     Start Devin\n",
+        "  mcc devin -- auth status      Run `devin auth status`\n",
+        "  mcc devin -- auth login       Sign the Devin CLI in (its own login)\n",
+        "  mcc devin --dry-run           Print the command that would run\n",
+        "\n",
+        "mcc runs the `devin` command (MCC_DEVIN_BIN, else the first on PATH, else\n",
+        "~/.local/bin/devin) with your arguments as given: no --config, and no\n",
+        "change to HOME, XDG_* or any other variable, so Devin starts with its\n",
+        "default configuration and the login it keeps in its credentials.toml\n",
+        "($XDG_DATA_HOME/devin, else ~/.local/share/devin). mcc never signs Devin\n",
+        "in, never moves or writes its login, and never creates ~/.local/bin/devin.\n",
+        "Put Devin's arguments after `--`: mcc reads --help, --version, -v and -q\n",
+        "before them. `mcc list` and `mcc usage` show Devin's usage (`mcc help usage`)."
+    ))]
+    Devin(DevinArgs),
 
     /// Print the shell code that sets CLAUDE_CONFIG_DIR for a profile (for eval or direnv)
     #[command(after_help = concat!(
@@ -667,7 +708,7 @@ pub struct DoctorArgs {
 
 #[derive(Debug, Args)]
 pub struct UsageArgs {
-    /// Only this profile (`default` or `claude` for ~/.claude)
+    /// Only this profile (`default` or `claude` for ~/.claude; `devin` for Devin)
     pub profile: Option<String>,
 
     /// Look up every account's usage live with its login, the default included, and save it to the statusline cache (prints a risk notice); an expired token is refreshed by a one-turn Claude Code session first
@@ -885,6 +926,21 @@ pub struct RunArgs {
         trailing_var_arg = true,
         allow_hyphen_values = true,
         value_name = "CLAUDE_ARGS"
+    )]
+    pub args: Vec<OsString>,
+}
+
+#[derive(Debug, Args)]
+pub struct DevinArgs {
+    /// Print the command that would run (on stdout), without running it
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Arguments for devin; put them after `--` (e.g. `mcc devin -- auth status`)
+    #[arg(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        value_name = "DEVIN_ARGS"
     )]
     pub args: Vec<OsString>,
 }
