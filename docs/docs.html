@@ -191,9 +191,9 @@
         <div class="code"><pre><span class="p">$ </span>mcc
 Here: `work` (Acme) — the default for ~/code/app
 
-NAME       ACCOUNT  5H                  WEEK                LAST USED  SYNC
-default ★  personal ██░░░░░░░░ 18% (3h) █░░░░░░░░░ 9% (5d)  2h ago     —
-work       Acme     ████░░░░░░ 42% (2h) ██░░░░░░░░ 18% (4d) 3m ago     3 behind</pre></div>
+# NAME       ACCOUNT  5H                  WEEK                LAST USED  SYNC
+1 default ★  personal ██░░░░░░░░ 18% (3h) █░░░░░░░░░ 9% (5d)  2h ago     —
+2 work       Acme     ████░░░░░░ 42% (2h) ██░░░░░░░░ 18% (4d) 3m ago     3 behind</pre></div>
 
         <h3 id="cmd-init"><code>mcc init</code> <a class="anchor" href="#cmd-init" aria-label="Link to mcc init">#</a></h3>
         <p class="synopsis">mcc init [--force] [--shell zsh|bash|fish]</p>
@@ -260,10 +260,10 @@ work       Acme     ████░░░░░░ 42% (2h) ██░░░░�
           </tbody>
         </table></div>
         <div class="term" style="margin:0 0 1.2em"><pre><span class="p">$ </span><span class="c">mcc list</span>
-NAME       ACCOUNT   5H                     WEEK                   LAST USED  SYNC
-default ★  Acme      <span class="g">████</span><span class="d">░░░░░░</span> 42% (2h)    <span class="g">██</span><span class="d">░░░░░░░░</span> 18% (3d)    just now   —
-work       personal  <span class="y">█████████</span><span class="d">░</span> <span class="y">85%!</span> (35m)  <span class="r">██████████</span> <span class="r">96%!!</span> (3d)  2h ago     ✓
-lab        —         <span class="d">—                      —</span>                      1d ago     3 behind</pre></div>
+# NAME       ACCOUNT   5H                     WEEK                   LAST USED  SYNC
+1 default ★  Acme      <span class="g">████</span><span class="d">░░░░░░</span> 42% (2h)    <span class="g">██</span><span class="d">░░░░░░░░</span> 18% (3d)    just now   —
+2 work       personal  <span class="y">█████████</span><span class="d">░</span> <span class="y">85%!</span> (35m)  <span class="r">██████████</span> <span class="r">96%!!</span> (3d)  2h ago     ✓
+3 lab        —         <span class="d">—                      —</span>                      1d ago     3 behind</pre></div>
         <div class="code"><pre><span class="p">$ </span>mcc list --long
 <span class="p">$ </span>mcc list --no-usage            <span class="cm"># offline: skip the usage lookup</span>
 <span class="p">$ </span>mcc list --json --show-email | jq '.[] | {name, account, skills, plugins_installed}'
@@ -601,10 +601,10 @@ allow = ["lab"]                <span class="cm"># optional: offered when `work` 
         <h2>Usage limits <a class="anchor" href="#usage-limits" aria-label="Link to Usage limits">#</a></h2>
         <p><code>mcc list</code> shows 5-hour and weekly usage in its <code>5H</code> and <code>WEEK</code> columns (<code>--long</code> says how old those numbers are); <code>mcc usage</code> shows it in full.</p>
         <div class="term" style="margin:0 0 1.4em"><pre><span class="p">$ </span><span class="c">mcc usage</span>
-<span class="w">PROFILE    LAST ACTIVE  LOGIN ENDS  5-HOUR           RESETS IN                  WEEKLY            RESETS IN                 UPDATED</span>
-default ★  12m ago      27d 3h      <span class="g">████</span><span class="d">░░░░░░</span> 42%   2h 14m <span class="d">(Sat Oct 10 16:00)</span>  <span class="g">██</span><span class="d">░░░░░░░░</span> 18%    3d 4h <span class="d">(Wed Oct 14 00:00)</span>  12m ago
-lab        16d ago      1d 4h       <span class="d">— (no usage cached; run /usage)</span>
-work       just now     unknown     <span class="y">█████████</span><span class="d">░</span> <span class="y">85%!</span>  35m <span class="d">(Sat Oct 10 14:21)</span>     <span class="r">██████████</span> <span class="r">96%!!</span>  3d 4h <span class="d">(Wed Oct 14 00:00)</span>  just now
+<span class="w"># PROFILE    LAST ACTIVE  LOGIN ENDS  5-HOUR           RESETS IN                  WEEKLY            RESETS IN                 UPDATED</span>
+1 default ★  12m ago      27d 3h      <span class="g">████</span><span class="d">░░░░░░</span> 42%   2h 14m <span class="d">(Sat Oct 10 16:00)</span>  <span class="g">██</span><span class="d">░░░░░░░░</span> 18%    3d 4h <span class="d">(Wed Oct 14 00:00)</span>  12m ago
+2 lab        16d ago      1d 4h       <span class="d">— (no usage cached; run /usage)</span>
+3 work       just now     unknown     <span class="y">█████████</span><span class="d">░</span> <span class="y">85%!</span>  35m <span class="d">(Sat Oct 10 14:21)</span>     <span class="r">██████████</span> <span class="r">96%!!</span>  3d 4h <span class="d">(Wed Oct 14 00:00)</span>  just now
   <span class="y">⚠</span> Login for 'lab' expires in 1d 4h (Sun Oct 11 16:00) — run `mcc login lab` to renew it</pre></div>
 
         <h3>Reading the bars</h3>

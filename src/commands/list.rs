@@ -1,7 +1,8 @@
 //! `mcc list` — all profiles with their metrics (table, cards, or JSON).
 //!
-//! The table keeps to the columns that fit 120 columns (NAME, ACCOUNT, 5H,
-//! WEEK, LAST USED, SYNC); `--long` cards and JSON have every metric.
+//! The table keeps to the columns that fit 120 columns (# and NAME,
+//! ACCOUNT, 5H, WEEK, LAST USED, SYNC); `--long` cards and JSON have every
+//! metric.
 //! Account emails are hidden unless `[privacy] show_email` or
 //! `--show-email` says otherwise, as in `mcc usage`.
 
@@ -493,10 +494,19 @@ fn auto_sync_rows(m: &ProfileMetrics) -> Vec<(&'static str, String)> {
 /// Header and rows, with usage bars `bar` cells wide. Counts, size, the
 /// command and the organization are in the `--long` cards and JSON.
 fn table_lines(all: &[ProfileMetrics], bar: usize, now: DateTime<Utc>) -> Vec<String> {
-    let headers = ["NAME", "ACCOUNT", "5H", "WEEK", "LAST USED", "SYNC"];
+    let name_head = indexed("NAME", None, all.len());
+    let headers = [
+        name_head.as_str(),
+        "ACCOUNT",
+        "5H",
+        "WEEK",
+        "LAST USED",
+        "SYNC",
+    ];
     let rows: Vec<Vec<String>> = all
         .iter()
-        .map(|m| {
+        .enumerate()
+        .map(|(i, m)| {
             // In the profile's color (stdout to a terminal only); the
             // widths below measure without the escapes.
             let name = ui::paint(&m.name, m.color.as_deref());
@@ -525,7 +535,7 @@ fn table_lines(all: &[ProfileMetrics], bar: usize, now: DateTime<Utc>) -> Vec<St
                 ),
             };
             vec![
-                name,
+                indexed(&name, Some(i), all.len()),
                 account_cell(m),
                 five_hour,
                 usage_cell(&m.usage, m.usage.weekly.as_ref(), bar, now),
@@ -557,6 +567,19 @@ fn table_lines(all: &[ProfileMetrics], bar: usize, now: DateTime<Utc>) -> Vec<St
     std::iter::once(style(head).bold().to_string())
         .chain(rows.into_iter().map(fmt_row))
         .collect()
+}
+
+/// The first cell with its row number in front: "3 work" for row `i` = 2,
+/// right-aligned to the widest number of `total` rows (" 7" next to
+/// "12"), so the last row's number is how many accounts the table lists.
+/// The header (`i` = None) gets "#" there instead. One space, not the
+/// two between columns, keeps every table within the widths it fit before.
+pub(super) fn indexed(cell: &str, i: Option<usize>, total: usize) -> String {
+    let w = total.to_string().len();
+    match i {
+        Some(i) => format!("{:>w$} {cell}", i + 1),
+        None => format!("{:<w$} {cell}", "#"),
+    }
 }
 
 /// Under the table: which profile `mcc run` starts in each project, with
@@ -737,4 +760,21 @@ fn card(
     }
     writeln!(out)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::indexed;
+
+    #[test]
+    fn rows_are_numbered_from_one_and_right_aligned() {
+        assert_eq!(indexed("NAME", None, 3), "# NAME");
+        assert_eq!(indexed("work", Some(0), 3), "1 work");
+        assert_eq!(indexed("lab", Some(2), 3), "3 lab");
+        // Ten rows and up: the numbers line up on the right, the names on
+        // the left, under a left-aligned "#".
+        assert_eq!(indexed("NAME", None, 12), "#  NAME");
+        assert_eq!(indexed("work", Some(6), 12), " 7 work");
+        assert_eq!(indexed("lab", Some(11), 12), "12 lab");
+    }
 }

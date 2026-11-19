@@ -571,14 +571,15 @@ fn records_account_organization_and_label() {
         .args(["list", "--no-usage"])
         .assert()
         .success()
-        .stdout(predicate::str::is_match(r"(?m)^work\s+Acme \(work\)\s").unwrap())
+        .stdout(predicate::str::is_match(r"(?m)^\d+ work\s+Acme \(work\)\s").unwrap())
         .stdout(predicate::str::contains("dev@acme.test").not());
     sb.mcc()
         .args(["list", "--no-usage", "--show-email"])
         .assert()
         .success()
         .stdout(
-            predicate::str::is_match(r"(?m)^work\s+dev@acme\.test \(Acme \(work\)\)\s").unwrap(),
+            predicate::str::is_match(r"(?m)^\d+ work\s+dev@acme\.test \(Acme \(work\)\)\s")
+                .unwrap(),
         );
     sb.mcc()
         .args(["list", "--long", "--no-usage"])

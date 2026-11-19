@@ -160,18 +160,21 @@ fn devin_shows_without_a_lookup_until_one_is_made() {
     let stub = devin_stub();
     let (out, err) = run(&sb, &stub, &["usage"]);
     assert!(
-        out.contains("PROVIDER  DAILY  RESETS IN  WEEKLY  RESETS IN"),
+        out.contains("# PROVIDER  DAILY  RESETS IN  WEEKLY  RESETS IN"),
         "{out}"
     );
     assert!(
         out.lines()
-            .any(|l| l == "devin     — (not looked up; `mcc usage --all` looks it up)"),
+            .any(|l| l == "2 devin     — (not looked up; `mcc usage --all` looks it up)"),
         "{out}"
     );
     assert!(!err.contains("Devin"), "{err}");
 
     let (out, _) = run(&sb, &stub, &["list"]);
-    let line = out.lines().find(|l| l.starts_with("devin")).expect(&out);
+    let line = out
+        .lines()
+        .find(|l| common::unnumbered(l).starts_with("devin"))
+        .expect(&out);
     assert!(line.contains("n/a"), "{line}");
     // The footer counts Claude Code profiles only.
     let (_, err) = run(&sb, &stub, &["list"]);
@@ -277,13 +280,19 @@ fn usage_all_looks_devin_up_with_its_cli_login_and_saves_it() {
     assert_eq!(reqs[1].org.as_deref(), Some("org-main"));
 
     // Daily and weekly, never a 5-hour window; the overage in dollars.
-    let devin_line = out.lines().find(|l| l.starts_with("devin ")).expect(&out);
+    let devin_line = out
+        .lines()
+        .find(|l| common::unnumbered(l).starts_with("devin "))
+        .expect(&out);
     assert!(
         devin_line.contains("12%") && devin_line.contains("54%"),
         "{devin_line}"
     );
     assert!(devin_line.contains("$3.50"), "{devin_line}");
-    let head = out.lines().find(|l| l.starts_with("PROVIDER")).expect(&out);
+    let head = out
+        .lines()
+        .find(|l| l.starts_with("# PROVIDER"))
+        .expect(&out);
     assert!(
         head.contains("DAILY") && head.contains("WEEKLY") && head.contains("OVERAGE"),
         "{head}"
@@ -300,7 +309,10 @@ fn usage_all_looks_devin_up_with_its_cli_login_and_saves_it() {
     // Plain `mcc usage` shows it from the cache, with its age, and sends
     // nothing.
     let (out, _) = run(&sb, &stub, &["usage", "devin"]);
-    let devin_line = out.lines().find(|l| l.starts_with("devin ")).expect(&out);
+    let devin_line = out
+        .lines()
+        .find(|l| common::unnumbered(l).starts_with("devin "))
+        .expect(&out);
     assert!(
         devin_line.contains("54%") && devin_line.ends_with("just now"),
         "{out}"
@@ -349,7 +361,10 @@ fn live_usage_looks_devin_up_after_a_one_time_note() {
         "{err}"
     );
     assert!(err.contains("https://app.devin.ai/api"), "{err}");
-    let line = out.lines().find(|l| l.starts_with("devin")).expect(&out);
+    let line = out
+        .lines()
+        .find(|l| common::unnumbered(l).starts_with("devin"))
+        .expect(&out);
     assert!(line.contains("Main team") && line.contains("54%"), "{line}");
     let cfg = sb.read(".mcc/config.toml");
     assert!(
@@ -365,7 +380,10 @@ fn live_usage_looks_devin_up_after_a_one_time_note() {
 
     // Bare `mcc` reads the cache only, even with live on.
     let (out, _) = run(&sb, &stub, &[]);
-    let line = out.lines().find(|l| l.starts_with("devin")).expect(&out);
+    let line = out
+        .lines()
+        .find(|l| common::unnumbered(l).starts_with("devin"))
+        .expect(&out);
     assert!(line.contains("54%"), "{line}");
     assert_eq!(stub.requests().len(), 3);
 }

@@ -281,7 +281,7 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
                 if !lines.is_empty() {
                     lines.push(String::new());
                 }
-                lines.extend(render_devin(d, l, now));
+                lines.extend(render_devin(d, entries.len(), l, now));
             }
             lines
         };
@@ -367,12 +367,12 @@ fn login_cell(e: &Entry, now: DateTime<Utc>) -> String {
     }
 }
 
-/// One row per profile under a header, laid out as `layout`:
+/// One numbered row per profile under a header, laid out as `layout`:
 ///
 /// ```text
-/// PROFILE    LAST ACTIVE  LOGIN ENDS  5-HOUR          RESETS IN                  WEEKLY          RESETS IN                 UPDATED
-/// default ★  2h ago       27d 3h      ████░░░░░░ 42%  2h 14m (Sat Oct 10 16:00)  ██░░░░░░░░ 18%  3d 4h (Wed Oct 14 00:00)  12m ago
-/// lab        unknown      unknown     — (no usage cached; run /usage)
+/// # PROFILE    LAST ACTIVE  LOGIN ENDS  5-HOUR          RESETS IN                  WEEKLY          RESETS IN                 UPDATED
+/// 1 default ★  2h ago       27d 3h      ████░░░░░░ 42%  2h 14m (Sat Oct 10 16:00)  ██░░░░░░░░ 18%  3d 4h (Wed Oct 14 00:00)  12m ago
+/// 2 lab        unknown      unknown     — (no usage cached; run /usage)
 /// ```
 ///
 /// An ACCOUNT column follows PROFILE when `show_email` is set. LAST ACTIVE
@@ -382,7 +382,8 @@ fn login_cell(e: &Entry, now: DateTime<Utc>) -> String {
 /// keeps it. A profile without usage has its reason in place of the usage
 /// columns.
 fn render(entries: &[Entry], layout: Layout, show_email: bool, now: DateTime<Utc>) -> Vec<String> {
-    let mut headers = vec!["PROFILE"];
+    let profile_head = super::list::indexed("PROFILE", None, entries.len());
+    let mut headers = vec![profile_head.as_str()];
     if show_email {
         headers.push("ACCOUNT");
     }
@@ -396,12 +397,14 @@ fn render(entries: &[Entry], layout: Layout, show_email: bool, now: DateTime<Utc
     // reason that spans them.
     let rows: Vec<Vec<String>> = entries
         .iter()
-        .map(|e| {
-            let mut cells = vec![if e.is_global_default {
+        .enumerate()
+        .map(|(i, e)| {
+            let name = if e.is_global_default {
                 format!("{} ★", e.name)
             } else {
                 e.name.clone()
-            }];
+            };
+            let mut cells = vec![super::list::indexed(&name, Some(i), entries.len())];
             if show_email {
                 cells.push(e.account.clone().unwrap_or_else(|| "—".into()));
             }
@@ -435,16 +438,24 @@ fn render(entries: &[Entry], layout: Layout, show_email: bool, now: DateTime<Utc
 /// Devin's block under the profiles' table (#124), laid out as `layout`:
 ///
 /// ```text
-/// PROVIDER  DAILY           RESETS IN  WEEKLY          RESETS IN  OVERAGE  UPDATED
-/// devin     █░░░░░░░░░ 12%  8h 0m      █████░░░░░ 54%  3d 4h      $3.50    12m ago
+/// # PROVIDER  DAILY           RESETS IN  WEEKLY          RESETS IN  OVERAGE  UPDATED
+/// 3 devin     █░░░░░░░░░ 12%  8h 0m      █████░░░░░ 54%  3d 4h      $3.50    12m ago
 /// ```
 ///
 /// Devin has a daily window, not a 5-hour one ("—" when its plan hides
 /// it), and an overage balance (shown when positive). Without usage, the
-/// reason spans the usage columns.
-fn render_devin(e: &Entry, layout: Layout, now: DateTime<Utc>) -> Vec<String> {
+/// reason spans the usage columns. Its `#` carries on from the `after`
+/// profile rows above it.
+fn render_devin(e: &Entry, after: usize, layout: Layout, now: DateTime<Utc>) -> Vec<String> {
     let u = &e.usage;
-    let mut headers = vec!["PROVIDER", "DAILY", "RESETS IN", "WEEKLY", "RESETS IN"];
+    let provider_head = super::list::indexed("PROVIDER", None, after + 1);
+    let mut headers = vec![
+        provider_head.as_str(),
+        "DAILY",
+        "RESETS IN",
+        "WEEKLY",
+        "RESETS IN",
+    ];
     let overage = u.overage_usd.filter(|o| *o > 0.0);
     if overage.is_some() {
         headers.push("OVERAGE");
@@ -453,7 +464,7 @@ fn render_devin(e: &Entry, layout: Layout, now: DateTime<Utc>) -> Vec<String> {
     if cached {
         headers.push("UPDATED");
     }
-    let mut cells = vec![e.name.clone()];
+    let mut cells = vec![super::list::indexed(&e.name, Some(after), after + 1)];
     match (u.status, u.reason) {
         (Status::Ok, _) => {
             for w in [u.daily.as_ref(), u.weekly.as_ref()] {
@@ -625,17 +636,17 @@ mod tests {
         assert_eq!(
             lines(false),
             [
-                "PROFILE    LAST ACTIVE  LOGIN ENDS  5-HOUR          RESETS IN  WEEKLY          RESETS IN  UPDATED",
-                "default ★  2h ago       27d 3h      ████░░░░░░ 42%  2h 14m     ██░░░░░░░░ 18%             12m ago",
-                "lab        unknown      unknown     unavailable (not logged in)",
+                "# PROFILE    LAST ACTIVE  LOGIN ENDS  5-HOUR          RESETS IN  WEEKLY          RESETS IN  UPDATED",
+                "1 default ★  2h ago       27d 3h      ████░░░░░░ 42%  2h 14m     ██░░░░░░░░ 18%             12m ago",
+                "2 lab        unknown      unknown     unavailable (not logged in)",
             ]
         );
         assert_eq!(
             lines(true),
             [
-                "PROFILE    ACCOUNT         LAST ACTIVE  LOGIN ENDS  5-HOUR          RESETS IN  WEEKLY          RESETS IN  UPDATED",
-                "default ★  me@example.com  2h ago       27d 3h      ████░░░░░░ 42%  2h 14m     ██░░░░░░░░ 18%             12m ago",
-                "lab        —               unknown      unknown     unavailable (not logged in)",
+                "# PROFILE    ACCOUNT         LAST ACTIVE  LOGIN ENDS  5-HOUR          RESETS IN  WEEKLY          RESETS IN  UPDATED",
+                "1 default ★  me@example.com  2h ago       27d 3h      ████░░░░░░ 42%  2h 14m     ██░░░░░░░░ 18%             12m ago",
+                "2 lab        —               unknown      unknown     unavailable (not logged in)",
             ]
         );
         // With no usage at all, the leading columns still line up.
@@ -646,8 +657,8 @@ mod tests {
         assert_eq!(
             lines,
             [
-                "PROFILE  ACCOUNT  LAST ACTIVE  LOGIN ENDS  5-HOUR  RESETS IN  WEEKLY  RESETS IN",
-                "lab      —        unknown      unknown     unavailable (not logged in)",
+                "# PROFILE  ACCOUNT  LAST ACTIVE  LOGIN ENDS  5-HOUR  RESETS IN  WEEKLY  RESETS IN",
+                "1 lab      —        unknown      unknown     unavailable (not logged in)",
             ]
         );
         let mut both = vec![entry("default", Some("me@example.com"), Usage::default())];
@@ -661,9 +672,9 @@ mod tests {
         assert_eq!(
             lines,
             [
-                "PROFILE    LAST ACTIVE  LOGIN ENDS  5-HOUR  RESETS IN  WEEKLY  RESETS IN",
-                "default ★  unknown      expired     — (not fetched: --no-usage or MCC_NO_USAGE)",
-                "lab        unknown      unknown     unavailable (not logged in)",
+                "# PROFILE    LAST ACTIVE  LOGIN ENDS  5-HOUR  RESETS IN  WEEKLY  RESETS IN",
+                "1 default ★  unknown      expired     — (not fetched: --no-usage or MCC_NO_USAGE)",
+                "2 lab        unknown      unknown     unavailable (not logged in)",
             ]
         );
         // No cached usage: a dash and how to get some, in place of the usage.
@@ -678,7 +689,7 @@ mod tests {
             .collect();
         assert_eq!(
             lines[1],
-            "idle     unknown      unknown     — (no usage cached; run /usage)"
+            "1 idle     unknown      unknown     — (no usage cached; run /usage)"
         );
     }
 

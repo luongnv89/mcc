@@ -671,8 +671,8 @@ Devin is a provider mcc shows beside your Claude Code profiles. It is not a prof
 **Usage.** When the Devin CLI is signed in (its credentials file exists; nothing else is checked), `mcc list` and bare `mcc` add a `devin` row after the profiles (ACCOUNT is Devin's organization, 5H is `n/a`, WEEK its weekly quota; `--long` adds the daily window and the overage balance), and `mcc usage` adds a block under its table:
 
 ```text
-PROVIDER  DAILY           RESETS IN  WEEKLY          RESETS IN  OVERAGE  UPDATED
-devin     █░░░░░░░░░ 12%  8h 0m      █████░░░░░ 54%  3d 4h      $3.50    12m ago
+# PROVIDER  DAILY           RESETS IN  WEEKLY          RESETS IN  OVERAGE  UPDATED
+4 devin     █░░░░░░░░░ 12%  8h 0m      █████░░░░░ 54%  3d 4h      $3.50    12m ago
 ```
 
 Devin has a daily and a weekly quota, never a 5-hour window (`DAILY` is `—` when the plan hides it), plus an overage balance in dollars, shown when it is positive. `mcc usage devin` shows Devin alone.
@@ -927,10 +927,10 @@ With `[launch] banner = true` (`mcc config set launch.banner true`), starting a 
 The `5H` and `WEEK` columns of `mcc list` show how much of each account's 5-hour and weekly limit is used, and how long until it resets, for every profile including the default. The table keeps to what fits 120 columns: `NAME`, `ACCOUNT` (the profile's label, else its organization; the email comes first only when [emails are shown](#showing-account-emails), and a long cell is cut with `…`), `5H`, `WEEK`, `LAST USED` and `SYNC`. Bars shrink when the terminal is narrower than the table:
 
 ```console
-NAME       ACCOUNT   5H                     WEEK                   LAST USED  SYNC
-default ★  Acme      ████░░░░░░ 42% (2h)    ██░░░░░░░░ 18% (3d)    just now   —
-work       personal  █████████░ 85%! (35m)  ██████████ 96%!! (3d)  2h ago     ✓
-lab        —         —                      —                      1d ago     3 behind
+# NAME       ACCOUNT   5H                     WEEK                   LAST USED  SYNC
+1 default ★  Acme      ████░░░░░░ 42% (2h)    ██░░░░░░░░ 18% (3d)    just now   —
+2 work       personal  █████████░ 85%! (35m)  ██████████ 96%!! (3d)  2h ago     ✓
+3 lab        —         —                      —                      1d ago     3 behind
 ```
 
 `mcc list --long` has the rest: the command, the organization, the counts of skills, agents, commands, plugins, MCP servers and hooks, the size, and how old cached usage is. It spells usage out (`5h usage: ████████░░░░░░░░░░░░ 42% (resets in 2h 14m)`, `Usage updated: 12m ago (statusline cache)`), or says why there is none (`Usage: — (no recent usage cached; run /usage in Claude Code)`).
@@ -939,10 +939,10 @@ lab        —         —                      —                      1d ago 
 
 ```console
 $ mcc usage
-PROFILE    LAST ACTIVE  LOGIN ENDS  5-HOUR           RESETS IN                  WEEKLY            RESETS IN                 UPDATED
-default ★  12m ago      27d 3h      ████░░░░░░ 42%   2h 14m (Sat Oct 10 16:00)  ██░░░░░░░░ 18%    3d 4h (Wed Oct 14 00:00)  12m ago
-lab        16d ago      1d 4h       — (no usage cached; run /usage)
-work       just now     unknown     █████████░ 85%!  35m (Sat Oct 10 14:21)     ██████████ 96%!!  3d 4h (Wed Oct 14 00:00)  just now
+# PROFILE    LAST ACTIVE  LOGIN ENDS  5-HOUR           RESETS IN                  WEEKLY            RESETS IN                 UPDATED
+1 default ★  12m ago      27d 3h      ████░░░░░░ 42%   2h 14m (Sat Oct 10 16:00)  ██░░░░░░░░ 18%    3d 4h (Wed Oct 14 00:00)  12m ago
+2 lab        16d ago      1d 4h       — (no usage cached; run /usage)
+3 work       just now     unknown     █████████░ 85%!  35m (Sat Oct 10 14:21)     ██████████ 96%!!  3d 4h (Wed Oct 14 00:00)  just now
   ⚠ Login for 'lab' expires in 1d 4h (Sun Oct 11 16:00) — run `mcc login lab` to renew it
 ```
 
@@ -1076,9 +1076,9 @@ Once mcc is set up, `mcc` with no command shows one screen:
 ```text
 Here: `work` (Acme) — the default for ~/code/app
 
-NAME       ACCOUNT   5H                   WEEK                 LAST USED  SYNC
-default ★  personal  ██░░░░░░░░ 18% (3h)  █░░░░░░░░░ 9% (5d)   2h ago     —
-work       Acme      ████░░░░░░ 42% (2h)  ██░░░░░░░░ 18% (4d)  3m ago     3 behind
+# NAME       ACCOUNT   5H                   WEEK                 LAST USED  SYNC
+1 default ★  personal  ██░░░░░░░░ 18% (3h)  █░░░░░░░░░ 9% (5d)   2h ago     —
+2 work       Acme      ████░░░░░░ 42% (2h)  ██░░░░░░░░ 18% (4d)  3m ago     3 behind
   ⚠ drift against the default: `work` (3 behind) — review with `mcc diff <alias>`, update with `mcc sync <alias>`
     → run `mcc doctor` for a full check of every profile, with a fix for each problem
 ```

@@ -655,3 +655,13 @@ pub fn devin_stub_except(
         }
     })
 }
+
+/// A table line without its row number: "work  …" for "2 work  …" (and
+/// " 2 work  …" in a table of ten or more). Other lines come back as they are.
+pub fn unnumbered(line: &str) -> &str {
+    let t = line.trim_start();
+    match t.split_once(' ') {
+        Some((n, rest)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => rest,
+        _ => line,
+    }
+}

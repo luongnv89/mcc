@@ -69,12 +69,12 @@ fn list_table_and_long() {
         .assert()
         .success()
         .stdout(
-            predicate::str::is_match(r"(?m)^NAME\s+ACCOUNT\s+5H\s+WEEK\s+LAST USED\s+SYNC$")
+            predicate::str::is_match(r"(?m)^# NAME\s+ACCOUNT\s+5H\s+WEEK\s+LAST USED\s+SYNC$")
                 .unwrap(),
         )
-        .stdout(predicate::str::is_match(r"(?m)^default ★\s+Acme\s").unwrap())
+        .stdout(predicate::str::is_match(r"(?m)^\d+ default ★\s+Acme\s").unwrap())
         .stdout(predicate::str::contains("me@example.com").not())
-        .stdout(predicate::str::is_match(r"(?m)^work\s+").unwrap())
+        .stdout(predicate::str::is_match(r"(?m)^\d+ work\s+").unwrap())
         .stderr(predicate::str::contains("2 profiles"));
     sb.mcc()
         .args(["list", "--long"])
@@ -120,13 +120,13 @@ fn list_hides_emails_unless_asked() {
     let table = list(&[]);
     assert!(!table.contains('@'), "{table}");
     assert!(
-        regex::Regex::new(r"(?m)^default ★\s+Acme\s")
+        regex::Regex::new(r"(?m)^\d+ default ★\s+Acme\s")
             .unwrap()
             .is_match(&table),
         "{table}"
     );
     assert!(
-        regex::Regex::new(r"(?m)^solo\s+—\s")
+        regex::Regex::new(r"(?m)^\d+ solo\s+—\s")
             .unwrap()
             .is_match(&table),
         "{table}"
@@ -213,10 +213,13 @@ fn list_default_table_fits_120_columns() {
         let lines: Vec<&str> = table.lines().collect();
         assert_eq!(
             lines[0].split_whitespace().collect::<Vec<_>>(),
-            ["NAME", "ACCOUNT", "5H", "WEEK", "LAST", "USED", "SYNC"],
+            ["#", "NAME", "ACCOUNT", "5H", "WEEK", "LAST", "USED", "SYNC"],
             "{table}"
         );
-        let row = lines.iter().find(|l| l.starts_with(alias)).expect(&table);
+        let row = lines
+            .iter()
+            .find(|l| common::unnumbered(l).starts_with(alias))
+            .expect(&table);
         assert!(
             row.contains("96%!!") && row.contains("3 behind, "),
             "{table}"
@@ -293,10 +296,10 @@ fn list_shows_usage_for_every_profile() {
             "{re}\n{table}"
         )
     };
-    has(r"(?m)^NAME\s+ACCOUNT\s+5H\s+WEEK\s+LAST USED\s+SYNC$");
-    has(r"(?m)^default ★\s+Acme\s+████░░░░░░ 42% \(2h\)\s+██░░░░░░░░ 18% \(3d\)\s");
-    has(r"(?m)^work\s+—\s+█░░░░░░░░░ 7% \(2h\)\s+██████░░░░ 64% \(3d\)\s");
-    has(r"(?m)^lab\s+—\s+unavailable\s+unavailable\s");
+    has(r"(?m)^# NAME\s+ACCOUNT\s+5H\s+WEEK\s+LAST USED\s+SYNC$");
+    has(r"(?m)^\d+ default ★\s+Acme\s+████░░░░░░ 42% \(2h\)\s+██░░░░░░░░ 18% \(3d\)\s");
+    has(r"(?m)^\d+ work\s+—\s+█░░░░░░░░░ 7% \(2h\)\s+██████░░░░ 64% \(3d\)\s");
+    has(r"(?m)^\d+ lab\s+—\s+unavailable\s+unavailable\s");
 
     let long = stdout_of(
         sb.mcc()
@@ -338,7 +341,7 @@ fn list_usage_unavailable_offline_still_succeeds() {
         .assert()
         .success()
         .stdout(
-            predicate::str::is_match(r"(?m)^default ★\s+Acme\s+unavailable\s+unavailable\s")
+            predicate::str::is_match(r"(?m)^\d+ default ★\s+Acme\s+unavailable\s+unavailable\s")
                 .unwrap(),
         )
         .stderr(predicate::str::contains("unavailable").not())
@@ -448,7 +451,7 @@ fn list_no_usage_skips_the_fetch() {
         .arg("list")
         .assert()
         .success()
-        .stdout(predicate::str::is_match(r"(?m)^default ★\s+Acme\s+—\s+—\s").unwrap())
+        .stdout(predicate::str::is_match(r"(?m)^\d+ default ★\s+Acme\s+—\s+—\s").unwrap())
         .stdout(predicate::str::contains("unavailable").not());
     sb.mcc()
         .env("MCC_USAGE_URL", &stub.url)
@@ -608,7 +611,7 @@ fn list_marks_near_limit_usage() {
     let table = stdout_of(sb.mcc().env("MCC_USAGE_URL", &stub.url).arg("list"));
     assert!(
         regex::Regex::new(
-            r"(?m)^default ★\s+Acme\s+█████████░ 85%! \(2h\)\s+██████████ 96%!! \(3d\)\s"
+            r"(?m)^\d+ default ★\s+Acme\s+█████████░ 85%! \(2h\)\s+██████████ 96%!! \(3d\)\s"
         )
         .unwrap()
         .is_match(&table),
@@ -643,7 +646,7 @@ fn list_drops_bars_in_narrow_terminals() {
     };
     let narrow = list("40", &["list"]);
     assert!(
-        regex::Regex::new(r"(?m)^default ★\s+Acme\s+42% \(2h\)\s+18% \(3d\)\s")
+        regex::Regex::new(r"(?m)^\d+ default ★\s+Acme\s+42% \(2h\)\s+18% \(3d\)\s")
             .unwrap()
             .is_match(&narrow),
         "{narrow}"
@@ -660,7 +663,7 @@ fn list_drops_bars_in_narrow_terminals() {
     let medium = list("120", &["list"]);
     assert!(
         regex::Regex::new(
-            r"(?m)^default ★\s+Acme\s+████░░░░░░ 42% \(2h\)\s+██░░░░░░░░ 18% \(3d\)\s"
+            r"(?m)^\d+ default ★\s+Acme\s+████░░░░░░ 42% \(2h\)\s+██░░░░░░░░ 18% \(3d\)\s"
         )
         .unwrap()
         .is_match(&medium),
@@ -1716,7 +1719,7 @@ fn list_has_a_sync_column() {
     let row = |name: &str| {
         table
             .lines()
-            .find(|l| l.starts_with(name))
+            .find(|l| common::unnumbered(l).starts_with(name))
             .unwrap()
             .to_string()
     };
