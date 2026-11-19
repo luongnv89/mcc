@@ -625,8 +625,18 @@ pub const DEVIN_TOKEN: &str = "test-devin-token";
 /// hours) and $3.50 of overage balance — for [`DEVIN_TOKEN`] only; any
 /// other token gets a 401.
 pub fn devin_stub() -> UsageStub {
+    devin_stub_except(|_| None)
+}
+
+/// [`devin_stub`], except for the requests `answer` answers itself.
+pub fn devin_stub_except(
+    answer: impl Fn(&StubRequest) -> Option<(u16, String)> + Send + 'static,
+) -> UsageStub {
     let (day, week) = (rfc3339_in(8 * 3600), rfc3339_in(3 * 86400 + 4 * 3600));
     UsageStub::start(move |req| {
+        if let Some(a) = answer(req) {
+            return a;
+        }
         if req.authorization.as_deref() != Some(&format!("Bearer {DEVIN_TOKEN}")) {
             return (401, r#"{"detail":"Unauthorized"}"#.into());
         }

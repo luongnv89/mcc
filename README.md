@@ -334,7 +334,6 @@ mcc list --no-usage                   # offline: skip the usage lookup
 mcc usage                             # every profile's limits, the default included
 mcc usage work                        # only the `work` profile
 mcc usage --all                       # every account looked up live for this run (prints a risk notice)
-mcc devin -- auth status               # run the Devin CLI as is (its own login and default config)
 mcc usage --show-email                # with each profile's account email
 mcc usage --json | jq '.[] | {name, weekly: .usage.weekly.percent}'
 mcc usage --json | jq '.[] | select(.login_warning) | .name'   # logins about to run out
@@ -361,6 +360,7 @@ mcc run --dry-run                     # print the profile `mcc run` would start,
 mcc here                              # which profile (account) `mcc run` starts here, and why
 eval "$(mcc env)"                     # point CLAUDE_CONFIG_DIR at this project's profile (also in .envrc)
 mcc exec --all -- claude plugin list  # run a command once per profile
+mcc devin -- auth status              # run the Devin CLI as is (its own login and default config)
 mcc refresh-launchers                 # update launchers made by an older mcc
 mcc doctor                            # check every profile's setup; prints a fix for each problem
 mcc delete sandbox --yes
@@ -417,7 +417,7 @@ mcc completions fish > ~/.config/fish/completions/mcc.fish
 | Shared sessions | `~/.mcc/shared/projects` (the `default` group) and `~/.mcc/shared/groups/<name>/projects` (`--group <name>`), only for profiles that opted in with `mcc share` (their `projects/` links there) |
 | Project defaults | `[projects."<dir>"]` tables in `~/.mcc/config.toml`, written by `mcc project set` |
 | Statusline state | `~/.mcc/state/<profile>/usage.json` (rate limits cached by `mcc statusline`, or saved by `mcc usage --all`) and `statusline.json` (the `statusLine` it replaced, only after `mcc statusline install`) |
-| Devin | the Devin CLI's own login, `$XDG_DATA_HOME/devin/credentials.toml` (else `~/.local/share/devin/credentials.toml`), only ever read; `~/.mcc/state/devin/quota.json` keeps Devin's last looked-up quota and organization (never its token) |
+| Devin | the Devin CLI's own login, `$XDG_DATA_HOME/devin/credentials.toml` (else `~/.local/share/devin/credentials.toml`), only ever read; `~/.mcc/providers/devin/quota.json` keeps Devin's last looked-up quota and organization (never its token) |
 | Token refresh state | `~/.mcc/state/<profile>/refresh.lock` (held while `mcc usage --all` or `mcc login --refresh-only` has Claude Code refresh the profile's token, and while `mcc default` signs the profile out and in) and `refresh-failed-at` (when `mcc usage --all` last failed to, so it waits 30 minutes before trying again) |
 | mcc state | `~/.mcc/config.toml` (environment + registry; safe to edit by hand, mcc keeps your comments and formatting), `~/.mcc/.lock` (held while a command writes the config), `~/.mcc/logs/mcc.log` (rotated to `mcc.log.1` at about 1 MB), `~/.mcc/backups/` (rc file backups, session-merge conflicts, `settings.json` backups from `mcc statusline`) |
 
@@ -677,9 +677,9 @@ devin     █░░░░░░░░░ 12%  8h 0m      █████░░�
 
 Devin has a daily and a weekly quota, never a 5-hour window (`DAILY` is `—` when the plan hides it), plus an overage balance in dollars, shown when it is positive. `mcc usage devin` shows Devin alone.
 
-mcc reads it the way custats-macos's Devin provider does: it takes the session token from the top-level `windsurf_api_key` of `credentials.toml` (re-read each time, sent whole as a bearer token), asks `GET https://app.devin.ai/api/organizations` for the primary organization (else the first), then `GET https://app.devin.ai/api/<org>/billing/quota/usage` with that organization in `x-cog-org-id`, with mcc's own `User-Agent`, no redirects and a 4-second limit. A rejected token (HTTP 401/403) shows "Devin rejected the session token; run `devin auth login`", unless Devin answers that the login has no organization (`no_organizations`).
+mcc reads it the way custats-macos's Devin provider does: it takes the session token from the top-level `windsurf_api_key` of `credentials.toml` (re-read each time, sent whole as a bearer token), asks `GET https://app.devin.ai/api/organizations` for the primary organization (else the first), then `GET https://app.devin.ai/api/<org>/billing/quota/usage` with that organization in `x-cog-org-id`, with mcc's own `User-Agent`, no redirects and a 4-second limit. A rejected token (HTTP 401/403) shows "Devin rejected the session token; run `devin auth login`", unless Devin answers that the login has no organization (`no_organizations`). A live lookup reuses the organization the last one saved; when Devin refuses that one (the Devin CLI signed in to another account, say), mcc asks for the organization again, once, and saves the new one.
 
-That lookup sends Devin's token over the network, so it follows the [live usage](#live-usage-lookup-opt-in) settings: it runs only with `[usage] live = true` (after a one-time note) or for `mcc usage --all`, and never with `MCC_NO_USAGE=1`. Otherwise mcc shows what the last lookup saved in `~/.mcc/state/devin/quota.json` (the numbers and the organization, never the token) with its age, or `— (not looked up; mcc usage --all looks it up)`, and reads no token at all. Bare `mcc` never looks it up live. A failed lookup leaves the saved numbers as they were.
+That lookup sends Devin's token over the network, so it follows the [live usage](#live-usage-lookup-opt-in) settings: it runs only with `[usage] live = true` (after a one-time note) or for `mcc usage --all`, and never with `MCC_NO_USAGE=1`. Otherwise mcc shows what the last lookup saved in `~/.mcc/providers/devin/quota.json` (the numbers and the organization, never the token) with its age, or `— (not looked up; mcc usage --all looks it up)` (`mcc list` and bare `mcc` add a hint saying so after the table), and reads no token at all. Bare `mcc` never looks it up live. A failed lookup leaves the saved numbers as they were.
 
 `mcc doctor` (or `mcc doctor devin`) checks Devin when its CLI or its login is there: the `devin` command, the login (whether it holds a token is read only with `[usage] live = true`, and the token is never shown) and how its usage is looked up. Devin's findings are warnings at most, never problems.
 

@@ -80,6 +80,12 @@ pub fn run(paths: &Paths, cfg: &Config, args: &ListArgs) -> Result<()> {
         if let Some(hint) = usage::no_data_hint(&names, &usages) {
             ui::hint(&hint);
         }
+        if let Some(hint) = devin
+            .as_ref()
+            .and_then(|d| devin::not_looked_up_hint(&d.usage, true))
+        {
+            ui::hint(hint);
+        }
     }
     Ok(())
 }

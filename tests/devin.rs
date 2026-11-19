@@ -7,8 +7,8 @@
 mod common;
 
 use common::{
-    DEVIN_CREDENTIALS, DEVIN_TOKEN, Sandbox, by_name, devin_stub, enable_live_usage, json,
-    stdout_of,
+    DEVIN_CREDENTIALS, DEVIN_TOKEN, Sandbox, by_name, devin_stub, devin_stub_except,
+    enable_live_usage, json, stdout_of,
 };
 use predicates::prelude::*;
 
@@ -176,6 +176,19 @@ fn devin_shows_without_a_lookup_until_one_is_made() {
     // The footer counts Claude Code profiles only.
     let (_, err) = run(&sb, &stub, &["list"]);
     assert!(err.contains("1 profile ·"), "{err}");
+    // A hint says how to look Devin up: `mcc list` would with live usage on,
+    // bare `mcc` never does.
+    assert!(
+        err.contains("→ Devin not looked up yet: run `mcc usage --all` or set [usage] live = true"),
+        "{err}"
+    );
+    let (_, err) = run(&sb, &stub, &[]);
+    assert!(
+        err.contains("→ Devin not looked up yet: run `mcc usage --all` to see its usage"),
+        "{err}"
+    );
+    let (_, err) = run(&sb, &stub, &["list", "--json"]);
+    assert!(!err.contains("not looked up"), "{err}");
 
     let list = rows(&run(&sb, &stub, &["list", "--json"]).0);
     let d = by_name(&list, "devin");
@@ -279,7 +292,7 @@ fn usage_all_looks_devin_up_with_its_cli_login_and_saves_it() {
     assert!(err.contains("https://app.devin.ai/api"), "{err}");
 
     // Saved for the next look, without the token; the login file untouched.
-    let cache = sb.read(".mcc/state/devin/quota.json");
+    let cache = sb.read(".mcc/providers/devin/quota.json");
     assert!(!cache.contains(DEVIN_TOKEN), "{cache}");
     assert!(cache.contains("org-main"), "{cache}");
     assert_eq!(sb.read(DEVIN_CREDENTIALS), creds);
@@ -312,6 +325,11 @@ fn usage_all_looks_devin_up_with_its_cli_login_and_saves_it() {
         "{u}"
     );
     assert_eq!(stub.requests().len(), 2);
+    // Looked up: no more hint.
+    for args in [&["list"][..], &[]] {
+        let (_, err) = run(&sb, &stub, args);
+        assert!(!err.contains("not looked up"), "{args:?}: {err}");
+    }
 
     // The next live lookup reuses the organization it found.
     run(&sb, &stub, &["usage", "--all"]);
@@ -377,6 +395,47 @@ fn mcc_no_usage_never_reads_or_sends_the_devin_login() {
 }
 
 #[test]
+fn a_stale_cached_organization_is_looked_up_again() {
+    // The cache names an organization the login no longer has (the Devin CLI
+    // signed in to another account, say): the live lookup finds the login's
+    // organization again and saves that one.
+    let sb = devin_sandbox();
+    sb.write(
+        ".mcc/providers/devin/quota.json",
+        r#"{"updated_at":1700000000,"org_id":"org-old","org_name":"Old team"}"#,
+    );
+    let stub = devin_stub_except(|req| {
+        (req.path() == "/api/org-old/billing/quota/usage")
+            .then(|| (403, r#"{"detail":"Unauthorized"}"#.into()))
+    });
+    let usage = rows(&run(&sb, &stub, &["usage", "--all", "--json"]).0);
+    let d = by_name(&usage, "devin");
+    assert_eq!(d["usage"]["reason"], serde_json::Value::Null, "{d}");
+    assert_eq!(d["usage"]["weekly"]["percent"], 54.0);
+    let paths: Vec<String> = stub.requests().iter().map(|r| r.path().into()).collect();
+    assert_eq!(
+        paths,
+        [
+            "/api/org-old/billing/quota/usage",
+            "/api/organizations",
+            "/api/org-main/billing/quota/usage",
+        ]
+    );
+    let cache = sb.read(".mcc/providers/devin/quota.json");
+    assert!(cache.contains("\"org-main\""), "{cache}");
+    assert!(!cache.contains("org-old"), "{cache}");
+    assert!(!cache.contains(DEVIN_TOKEN), "{cache}");
+    let list = rows(&run(&sb, &stub, &["list", "--json"]).0);
+    assert_eq!(by_name(&list, "devin")["organization"], "Main team");
+
+    // The next lookup goes straight to the new organization.
+    run(&sb, &stub, &["usage", "--all"]);
+    let reqs = stub.requests();
+    assert_eq!(reqs.len(), 4);
+    assert_eq!(reqs[3].path(), "/api/org-main/billing/quota/usage");
+}
+
+#[test]
 fn a_rejected_devin_login_says_to_sign_in_again() {
     let sb = devin_sandbox();
     sb.seed_devin_login("test-stale-token");
@@ -391,7 +450,7 @@ fn a_rejected_devin_login_says_to_sign_in_again() {
     let usage = rows(&run(&sb, &stub, &["usage", "--all", "--json"]).0);
     assert_eq!(by_name(&usage, "devin")["usage"]["reason"], "unauthorized");
     // Nothing cached from a failed lookup.
-    assert!(!sb.exists(".mcc/state/devin/quota.json"));
+    assert!(!sb.exists(".mcc/providers/devin/quota.json"));
 
     // An empty token is never sent.
     sb.write(DEVIN_CREDENTIALS, "windsurf_api_key = \"\"\n");

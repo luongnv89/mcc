@@ -37,6 +37,9 @@ pub fn run(paths: &Paths, cfg: &Config) -> Result<()> {
         None => crate::devin::Lookup::Disabled,
     };
     let devin = super::list::devin_row(paths, how, cfg.show_email());
+    let devin_hint = devin
+        .as_ref()
+        .and_then(|d| crate::devin::not_looked_up_hint(&d.usage, false));
 
     let here = here(paths, cfg);
     let mut out = std::io::stdout().lock();
@@ -67,6 +70,9 @@ pub fn run(paths: &Paths, cfg: &Config) -> Result<()> {
     let usages: Vec<&usage::Usage> = all.iter().map(|m| &m.usage).collect();
     if let Some(hint) = usage::no_data_hint(&names, &usages) {
         ui::hint(&hint);
+    }
+    if let Some(hint) = devin_hint {
+        ui::hint(hint);
     }
     if problems > 0 {
         ui::hint("run `mcc doctor` for a full check of every profile, with a fix for each problem");

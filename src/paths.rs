@@ -26,6 +26,11 @@ pub struct Paths {
     /// Per-profile state written by mcc itself (`state/<profile>/`), such as
     /// the rate limits the statusline shim caches.
     pub state_dir: PathBuf,
+    /// What mcc keeps about the providers beside the profiles
+    /// (`providers/<provider>/`, e.g. Devin's last quota). Kept out of
+    /// `state_dir`, whose entries are named after profiles, so no profile
+    /// (not even one named like a provider) shares, renames or deletes it.
+    pub providers_dir: PathBuf,
     pub local_bin: PathBuf,
     /// The Devin CLI's login: `$XDG_DATA_HOME/devin/credentials.toml`, else
     /// `~/.local/share/devin/credentials.toml` (see [`devin_credentials`]).
@@ -66,6 +71,7 @@ impl Paths {
             backups_dir: mcc_dir.join("backups"),
             shared_dir: mcc_dir.join("shared"),
             state_dir: mcc_dir.join("state"),
+            providers_dir: mcc_dir.join("providers"),
             local_bin: home.join(".local").join("bin"),
             devin_credentials: devin_credentials(&home, None),
             home,
@@ -113,17 +119,16 @@ impl Paths {
         self.profile_state_dir(profile).join("auto-sync.json")
     }
 
-    /// What mcc keeps about Devin (`~/.mcc/state/devin/`): its last quota
-    /// lookup and organization, never its token.
-    pub fn devin_state_dir(&self) -> PathBuf {
-        self.state_dir.join("devin")
+    /// What mcc keeps about Devin (`~/.mcc/providers/devin/`): its last
+    /// quota lookup and organization, never its token.
+    pub fn devin_dir(&self) -> PathBuf {
+        self.providers_dir.join("devin")
     }
 
-    /// Devin's last successful quota lookup: `~/.mcc/state/devin/quota.json`
-    /// (not `usage.json`, the statusline cache an older profile named
-    /// `devin` may have there).
+    /// Devin's last successful quota lookup:
+    /// `~/.mcc/providers/devin/quota.json`.
     pub fn devin_quota_cache(&self) -> PathBuf {
-        self.devin_state_dir().join("quota.json")
+        self.devin_dir().join("quota.json")
     }
 
     pub fn wrapper(&self, alias: &str) -> PathBuf {
@@ -201,8 +206,12 @@ mod tests {
         );
         assert_eq!(
             p.devin_quota_cache(),
-            PathBuf::from("/h/.mcc/state/devin/quota.json")
+            PathBuf::from("/h/.mcc/providers/devin/quota.json")
         );
+        // Outside the per-profile state, so a profile named `devin` (from
+        // before the name was reserved) never shares, renames or deletes it.
+        assert!(!p.devin_quota_cache().starts_with(&p.state_dir));
+        assert!(!p.devin_quota_cache().starts_with(&p.profiles_dir));
         assert_eq!(p.share_store(None), Some(p.shared_projects_dir()));
         assert_eq!(
             p.share_store(Some("work")),

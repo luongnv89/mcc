@@ -16,7 +16,7 @@
 //! Like the Claude lookup ([`crate::usage`]), it runs only with `[usage]
 //! live = true` (after a one-time [`crate::usage::DEVIN_LIVE_DISCLOSURE`]) or
 //! for `mcc usage --all`, never with `MCC_NO_USAGE`. Otherwise mcc shows what
-//! the last lookup saved in `~/.mcc/state/devin/quota.json` (the numbers and
+//! the last lookup saved in `~/.mcc/providers/devin/quota.json` (the numbers and
 //! the organization, never the token), and reads no token at all.
 //!
 //! Token hygiene: [`SessionToken`] has a redacted `Debug` and no `Display`.
@@ -385,24 +385,56 @@ struct OrgRef {
 }
 
 /// One lookup: the organization (`known`, else discovered), then its quota.
+///
+/// A `known` organization (the cache's) can be stale: the Devin CLI may
+/// have signed in to another account, or the login may have left that
+/// organization. So when its quota request is refused (401/403, "no
+/// organizations", or any other HTTP error), the organization is looked up
+/// again, once, and the quota asked for that one; only if that fails too is
+/// the lookup an error. Discovery itself is never retried.
 fn fetch(
     agent: &ureq::Agent,
     base: &str,
     token: &SessionToken,
     known: Option<OrgRef>,
 ) -> Result<(Quota, OrgRef), Reason> {
-    let org = match known {
-        Some(org) => org,
-        None => {
-            let body = get(agent, &format!("{base}/organizations"), token, None)?;
-            let orgs = parse_orgs(&body).ok_or(Reason::ParseError)?;
-            let o = select_org(&orgs).ok_or(Reason::NoOrganizations)?;
-            OrgRef {
-                id: canonical_org_id(&o.id),
-                name: o.name.clone(),
-            }
-        }
+    let Some(known) = known else {
+        let org = discover_org(agent, base, token)?;
+        return fetch_quota(agent, base, token, org);
     };
+    let stale_id = known.id.clone();
+    match fetch_quota(agent, base, token, known) {
+        Err(first @ (Reason::Unauthorized | Reason::NoOrganizations | Reason::HttpError)) => {
+            let org = discover_org(agent, base, token)?;
+            if org.id == stale_id {
+                // Still the same organization: asking again would only
+                // repeat the answer.
+                return Err(first);
+            }
+            fetch_quota(agent, base, token, org)
+        }
+        done => done,
+    }
+}
+
+/// The login's organization, from `GET /organizations`.
+fn discover_org(agent: &ureq::Agent, base: &str, token: &SessionToken) -> Result<OrgRef, Reason> {
+    let body = get(agent, &format!("{base}/organizations"), token, None)?;
+    let orgs = parse_orgs(&body).ok_or(Reason::ParseError)?;
+    let o = select_org(&orgs).ok_or(Reason::NoOrganizations)?;
+    Ok(OrgRef {
+        id: canonical_org_id(&o.id),
+        name: o.name.clone(),
+    })
+}
+
+/// `org`'s quota, from `GET /{org}/billing/quota/usage`.
+fn fetch_quota(
+    agent: &ureq::Agent,
+    base: &str,
+    token: &SessionToken,
+    org: OrgRef,
+) -> Result<(Quota, OrgRef), Reason> {
     let url = format!("{base}/{}/billing/quota/usage", org.id);
     let body = get(agent, &url, token, Some(&org.id))?;
     Ok((parse_quota(&body)?, org))
@@ -410,7 +442,7 @@ fn fetch(
 
 // ---------------------------------------------------------------- the cache
 
-/// What `~/.mcc/state/devin/quota.json` keeps of the last successful lookup:
+/// What `~/.mcc/providers/devin/quota.json` keeps of the last successful lookup:
 /// the numbers and the organization, never the token. Times are Unix
 /// seconds, as in the statusline cache.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -617,6 +649,18 @@ pub fn describe(r: Reason) -> &'static str {
 /// "$3.50".
 pub fn dollars(v: f64) -> String {
     format!("${v:.2}")
+}
+
+/// The hint after a table whose Devin row nothing has looked up yet (no
+/// live lookup, nothing cached), else `None`. `live_helps`: whether
+/// `[usage] live = true` would look it up for this command (`mcc list`
+/// does, bare `mcc` never does).
+pub fn not_looked_up_hint(u: &Usage, live_helps: bool) -> Option<&'static str> {
+    (u.reason == Some(Reason::NotLookedUp)).then_some(if live_helps {
+        "Devin not looked up yet: run `mcc usage --all` or set [usage] live = true"
+    } else {
+        "Devin not looked up yet: run `mcc usage --all` to see its usage"
+    })
 }
 
 #[cfg(test)]
@@ -1053,6 +1097,95 @@ mod tests {
     }
 
     #[test]
+    fn fetch_looks_the_organization_up_again_when_the_cached_one_is_refused() {
+        // The cached organization is refused (401/403, "no organizations",
+        // or another HTTP error): find the login's organization again, once,
+        // and ask for its quota.
+        for (status, body) in [
+            (403, r#"{"detail":"Unauthorized"}"#),
+            (401, r#"{"detail":"No organizations found for auth1 user"}"#),
+            (404, r#"{"detail":"Not Found"}"#),
+        ] {
+            let (base, seen) = serve(move |req| {
+                if req.starts_with("GET /api/organizations ") {
+                    (200, r#"[{"org_id":"org_main","name":"Main"}]"#.into())
+                } else if req.starts_with("GET /api/org-main/billing/quota/usage ") {
+                    (200, r#"{"weekly_percentage":54}"#.into())
+                } else {
+                    (status, body.into())
+                }
+            });
+            let stale = OrgRef {
+                id: "org-old".into(),
+                name: Some("Old".into()),
+            };
+            let (q, org) = fetch(&agent(), &base, &test_token(), Some(stale)).unwrap();
+            assert_eq!(q.weekly.unwrap().percent, 54.0, "{status}");
+            assert_eq!(
+                org,
+                OrgRef {
+                    id: "org-main".into(),
+                    name: Some("Main".into())
+                }
+            );
+            let reqs = seen.lock().unwrap().clone();
+            let lines: Vec<&str> = reqs.iter().map(|r| r.lines().next().unwrap()).collect();
+            assert_eq!(
+                lines,
+                [
+                    "GET /api/org-old/billing/quota/usage HTTP/1.1",
+                    "GET /api/organizations HTTP/1.1",
+                    "GET /api/org-main/billing/quota/usage HTTP/1.1",
+                ],
+                "{status}"
+            );
+        }
+    }
+
+    #[test]
+    fn fetch_looks_the_organization_up_again_at_most_once() {
+        // A token rejected everywhere: the first refusal, then the discovery's
+        // 401, reported as before; no more requests.
+        let (base, seen) = serve(|_| (401, r#"{"detail":"Unauthorized"}"#.into()));
+        let stale = OrgRef {
+            id: "org-old".into(),
+            name: None,
+        };
+        assert_eq!(
+            fetch(&agent(), &base, &test_token(), Some(stale)).unwrap_err(),
+            Reason::Unauthorized
+        );
+        assert_eq!(seen.lock().unwrap().len(), 2);
+
+        // The same organization again: its quota is not asked for twice.
+        let (base, seen) = serve(|req| {
+            if req.starts_with("GET /api/organizations ") {
+                (200, r#"[{"org_id":"org_main"}]"#.into())
+            } else {
+                (500, "{}".into())
+            }
+        });
+        let known = OrgRef {
+            id: "org-main".into(),
+            name: None,
+        };
+        assert_eq!(
+            fetch(&agent(), &base, &test_token(), Some(known.clone())).unwrap_err(),
+            Reason::HttpError
+        );
+        assert_eq!(seen.lock().unwrap().len(), 2);
+
+        // Neither a network failure nor an unreadable quota is the
+        // organization's fault: no discovery.
+        let (base, seen) = serve(|_| (200, "not json".into()));
+        assert_eq!(
+            fetch(&agent(), &base, &test_token(), Some(known)).unwrap_err(),
+            Reason::ParseError
+        );
+        assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    #[test]
     fn fetch_maps_statuses_like_custats() {
         let cases: [(u16, &str, Reason); 7] = [
             (401, r#"{"detail":"Unauthorized"}"#, Reason::Unauthorized),
@@ -1166,6 +1299,34 @@ mod tests {
         );
         std::thread::sleep(Duration::from_millis(200));
         assert!(elsewhere_seen.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn not_looked_up_hint_only_before_a_lookup_and_within_80_columns() {
+        let not_yet = Usage::unavailable(Reason::NotLookedUp);
+        for live_helps in [true, false] {
+            let hint = not_looked_up_hint(&not_yet, live_helps).unwrap();
+            assert!(hint.contains("`mcc usage --all`"), "{hint}");
+            // `ui::hint` prints it after "    → ".
+            assert!(6 + hint.chars().count() <= 80, "{hint}");
+        }
+        assert!(
+            not_looked_up_hint(&not_yet, true)
+                .unwrap()
+                .contains("live = true")
+        );
+        assert!(
+            !not_looked_up_hint(&not_yet, false)
+                .unwrap()
+                .contains("live")
+        );
+        for u in [
+            Usage::ok(None, None),
+            Usage::unavailable(Reason::Disabled),
+            Usage::unavailable(Reason::Unauthorized),
+        ] {
+            assert_eq!(not_looked_up_hint(&u, true), None);
+        }
     }
 
     #[test]
