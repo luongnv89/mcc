@@ -632,7 +632,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_only_the_top_level_session_token() {
+    fn reads_the_first_session_token_line_like_custats() {
         let file = "api_server_url = \"https://example.invalid\"\n\
                     windsurf_api_key_extra = \"nope\"\n\
                     windsurf_api_key = \"test-token\"\n\
@@ -648,6 +648,9 @@ mod tests {
             ("  windsurf_api_key\t=\t\"test-token\"  ", "test-token"),
             ("windsurf_api_key=test-token", "test-token"),
             ("windsurf_api_key = \"test$token\"", "test$token"),
+            // Line by line, as custats reads it: a table header doesn't
+            // stop the match.
+            ("[other]\nwindsurf_api_key = \"test-token\"", "test-token"),
         ] {
             assert_eq!(
                 token(parse_credentials(line.as_bytes())),

@@ -197,6 +197,45 @@ fn devin_shows_without_a_lookup_until_one_is_made() {
     assert!(stub.requests().is_empty());
 }
 
+#[test]
+fn json_v2_carries_the_devin_row_in_the_same_envelope() {
+    let sb = devin_sandbox();
+    let stub = devin_stub();
+    for cmd in ["list", "usage"] {
+        let bare = json(run(&sb, &stub, &[cmd, "--json"]).0.as_bytes());
+        let v2 = json(run(&sb, &stub, &[cmd, "--json-v2"]).0.as_bytes());
+        let obj = v2.as_object().unwrap();
+        let keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["schema", "profiles"], "{cmd}: {v2}");
+        assert_eq!(v2["schema"], 2);
+        assert_eq!(v2["profiles"], bare, "{cmd}");
+        let rows = bare.as_array().unwrap();
+        assert_eq!(by_name(rows, "devin")["provider"], "devin", "{cmd}");
+    }
+}
+
+#[test]
+fn usage_devin_alone_shows_no_claude_disclosure() {
+    // Live on, neither note shown yet: `mcc usage devin` looks up Devin
+    // only, so only Devin's note is shown and recorded.
+    let sb = devin_sandbox();
+    let cfg = sb.read(".mcc/config.toml");
+    sb.write(
+        ".mcc/config.toml",
+        &cfg.replacen("[usage]\n", "[usage]\nlive = true\n", 1),
+    );
+    let stub = devin_stub();
+    let (_, err) = run(&sb, &stub, &["usage", "devin"]);
+    assert!(
+        err.contains("Live usage lookup is on for Devin too"),
+        "{err}"
+    );
+    assert!(!err.contains("Live usage lookup is on ("), "{err}");
+    let cfg = sb.read(".mcc/config.toml");
+    assert!(cfg.contains("devin_disclosed_at"), "{cfg}");
+    assert!(!cfg.contains("live_disclosed_at"), "{cfg}");
+}
+
 // ---- live lookups (AC2, AC4, AC5) ---------------------------------------------
 
 #[test]
