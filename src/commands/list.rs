@@ -14,7 +14,8 @@ use console::{measure_text_width, style};
 
 use crate::cli::ListArgs;
 use crate::config::Config;
-use crate::metrics::{self, ProfileMetrics};
+use crate::devin;
+use crate::metrics::{self, ProfileMetrics, Provider};
 use crate::paths::Paths;
 use crate::ui;
 use crate::usage::{self, Reason, Status, Usage, Window};
@@ -24,18 +25,33 @@ pub fn run(paths: &Paths, cfg: &Config, args: &ListArgs) -> Result<()> {
     let mut all = profiles(paths, cfg, true, usage);
     let show_email = (cfg.show_email() || args.show_email) && !args.hide_email;
     let known = redact(&mut all, show_email);
+    // Devin, after the profiles: the same live-or-cached choice for its usage.
+    let how = match usage {
+        None => devin::Lookup::Disabled,
+        Some(live) => devin::Lookup::of(live),
+    };
+    let devin = devin_row(paths, how, show_email);
+    let shown: Vec<ProfileMetrics> = all.iter().cloned().chain(devin.clone()).collect();
 
     let mut out = std::io::stdout().lock();
     if args.json || args.json_v2 {
-        super::write_json(&mut out, "profiles", &all, args.json_v2)?;
+        super::write_json(
+            &mut out,
+            "profiles",
+            &metrics::json_rows(&shown)?,
+            args.json_v2,
+        )?;
     } else if args.long {
         let now = Utc::now();
         let bar = card_bar(&all, now);
         for (m, known) in all.iter().zip(known) {
             card(&mut out, m, known && !show_email, bar, now, paths)?;
         }
+        if let Some(d) = &devin {
+            devin_card(&mut out, d, now, paths)?;
+        }
     } else {
-        table(&mut out, &all)?;
+        table(&mut out, &shown)?;
         if !cfg.projects.is_empty() {
             writeln!(out)?;
             for line in project_lines(paths, cfg, &all) {
@@ -105,6 +121,22 @@ pub(super) fn profiles(
         attach_usage(paths, live, &mut all);
     }
     all
+}
+
+/// Devin's row when Devin is set up here (its CLI's credentials file
+/// exists), with its usage as `how` says, emails hidden as for profiles;
+/// `None` otherwise.
+pub(super) fn devin_row(
+    paths: &Paths,
+    how: devin::Lookup,
+    show_email: bool,
+) -> Option<ProfileMetrics> {
+    if !devin::detected(paths) {
+        return None;
+    }
+    let mut row = metrics::devin_row(paths, &devin::lookup(paths, how));
+    redact(std::slice::from_mut(&mut row), show_email);
+    Some(row)
 }
 
 /// Hide account emails unless `show_email` ([`hide_email`]), and drop labels
@@ -231,7 +263,13 @@ fn usage_cell(u: &Usage, w: Option<&Window>, bar: usize, now: DateTime<Utc>) -> 
             None => ui::gauge(w.percent, bar),
         },
         (Status::Ok, None) => "—".into(),
-        _ if matches!(u.reason, Some(Reason::Disabled | Reason::NoData)) => "—".into(),
+        _ if matches!(
+            u.reason,
+            Some(Reason::Disabled | Reason::NoData | Reason::NotLookedUp)
+        ) =>
+        {
+            "—".into()
+        }
         _ => "unavailable".into(),
     }
 }
@@ -265,7 +303,7 @@ fn usage_rows(u: &Usage, bar: usize, now: DateTime<Utc>) -> Vec<(&'static str, S
             }
             rows
         }
-        (_, Some(r @ (Reason::Disabled | Reason::NoData))) => {
+        (_, Some(r @ (Reason::Disabled | Reason::NoData | Reason::NotLookedUp))) => {
             vec![("Usage", format!("— ({})", r.describe()))]
         }
         (_, reason) => vec![(
@@ -276,6 +314,82 @@ fn usage_rows(u: &Usage, bar: usize, now: DateTime<Utc>) -> Vec<(&'static str, S
             ),
         )],
     }
+}
+
+/// Devin's card usage rows: its daily window (when its plan shows one) and
+/// weekly window, a positive overage balance, how old cached numbers are;
+/// or a single "Usage" row saying why there is none.
+fn devin_usage_rows(u: &Usage, bar: usize, now: DateTime<Utc>) -> Vec<(&'static str, String)> {
+    match (u.status, u.reason) {
+        (Status::Ok, _) => {
+            let mut rows = Vec::new();
+            if let Some(d) = &u.daily {
+                rows.push(("Daily usage", usage_line(Some(d), bar, now)));
+            }
+            rows.push(("Weekly usage", usage_line(u.weekly.as_ref(), bar, now)));
+            if let Some(o) = u.overage_usd.filter(|o| *o > 0.0) {
+                rows.push(("Overage balance", devin::dollars(o)));
+            }
+            if let Some(age) = u.age(now) {
+                rows.push(("Usage updated", format!("{age} (last lookup)")));
+            }
+            rows
+        }
+        (_, Some(r @ (Reason::Disabled | Reason::NotLookedUp))) => {
+            vec![("Usage", format!("— ({})", devin::describe(r)))]
+        }
+        (_, reason) => vec![(
+            "Usage",
+            format!(
+                "unavailable ({})",
+                reason.map_or("unknown", devin::describe)
+            ),
+        )],
+    }
+}
+
+/// Devin's `--long` card: its command, where its login is, its
+/// organization and usage. It has no Claude Code counts.
+fn devin_card(
+    out: &mut impl Write,
+    m: &ProfileMetrics,
+    now: DateTime<Utc>,
+    paths: &Paths,
+) -> Result<()> {
+    let bar = ui::fit_bar(&CARD_BARS, |bar| {
+        devin_usage_rows(&m.usage, bar, now)
+            .iter()
+            .map(|(_, v)| CARD_KEY_WIDTH + measure_text_width(v))
+            .max()
+            .unwrap_or(0)
+    });
+    writeln!(
+        out,
+        "{} {}",
+        style("◆").cyan().bold(),
+        style(format!("{} (Devin CLI)", m.name)).bold()
+    )?;
+    let row =
+        |out: &mut dyn Write, k: &str, v: String| writeln!(out, "    {:<16} {v}", format!("{k}:"));
+    row(out, "Command", format!("{} (or `mcc devin`)", m.command))?;
+    row(
+        out,
+        "Login",
+        format!(
+            "{} (the Devin CLI's own; `devin auth login`)",
+            paths.display(&paths.devin_credentials)
+        ),
+    )?;
+    row(
+        out,
+        "Organization",
+        m.organization.clone().unwrap_or_else(|| "—".into()),
+    )?;
+    for (k, v) in devin_usage_rows(&m.usage, bar, now) {
+        row(out, k, v)?;
+    }
+    writeln!(out)?;
+    Ok(())
 }
 
 /// The widest bar that keeps every card's usage rows within the terminal.
@@ -395,12 +509,21 @@ fn table_lines(all: &[ProfileMetrics], bar: usize, now: DateTime<Utc>) -> Vec<St
             } else {
                 format!("{name} (missing)")
             };
+            // Devin has no 5-hour window (its daily one is in `--long`),
+            // and mcc can't tell when it was last used.
+            let (five_hour, last_used) = match m.provider {
+                Provider::Devin => ("n/a".into(), "—".into()),
+                Provider::Claude => (
+                    usage_cell(&m.usage, m.usage.five_hour.as_ref(), bar, now),
+                    metrics::ago(m.last_used_time),
+                ),
+            };
             vec![
                 name,
                 account_cell(m),
-                usage_cell(&m.usage, m.usage.five_hour.as_ref(), bar, now),
+                five_hour,
                 usage_cell(&m.usage, m.usage.weekly.as_ref(), bar, now),
-                metrics::ago(m.last_used_time),
+                last_used,
                 sync_cell(m),
             ]
         })

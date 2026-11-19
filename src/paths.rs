@@ -27,6 +27,10 @@ pub struct Paths {
     /// the rate limits the statusline shim caches.
     pub state_dir: PathBuf,
     pub local_bin: PathBuf,
+    /// The Devin CLI's login: `$XDG_DATA_HOME/devin/credentials.toml`, else
+    /// `~/.local/share/devin/credentials.toml` (see [`devin_credentials`]).
+    /// mcc only ever reads it.
+    pub devin_credentials: PathBuf,
 }
 
 impl Paths {
@@ -39,7 +43,15 @@ impl Paths {
                 CliError::input("cannot determine your home directory")
                     .hint("set HOME (or MCC_HOME) and try again")
             })?;
-        Ok(Self::new(home))
+        let data_home = std::env::var_os("XDG_DATA_HOME");
+        Ok(Self::new(home).with_data_home(data_home.as_deref()))
+    }
+
+    /// The same paths, with Devin's credentials under `data_home`
+    /// (`XDG_DATA_HOME`) when it is set and not empty.
+    pub fn with_data_home(mut self, data_home: Option<&std::ffi::OsStr>) -> Self {
+        self.devin_credentials = devin_credentials(&self.home, data_home);
+        self
     }
 
     pub fn new(home: PathBuf) -> Self {
@@ -55,6 +67,7 @@ impl Paths {
             shared_dir: mcc_dir.join("shared"),
             state_dir: mcc_dir.join("state"),
             local_bin: home.join(".local").join("bin"),
+            devin_credentials: devin_credentials(&home, None),
             home,
         }
     }
@@ -100,6 +113,19 @@ impl Paths {
         self.profile_state_dir(profile).join("auto-sync.json")
     }
 
+    /// What mcc keeps about Devin (`~/.mcc/state/devin/`): its last quota
+    /// lookup and organization, never its token.
+    pub fn devin_state_dir(&self) -> PathBuf {
+        self.state_dir.join("devin")
+    }
+
+    /// Devin's last successful quota lookup: `~/.mcc/state/devin/quota.json`
+    /// (not `usage.json`, the statusline cache an older profile named
+    /// `devin` may have there).
+    pub fn devin_quota_cache(&self) -> PathBuf {
+        self.devin_state_dir().join("quota.json")
+    }
+
     pub fn wrapper(&self, alias: &str) -> PathBuf {
         self.local_bin.join(alias)
     }
@@ -120,6 +146,24 @@ impl Paths {
             Err(_) => p.display().to_string(),
         }
     }
+}
+
+/// Where the Devin CLI keeps its login, as Devin (and custats) resolve it:
+/// `<data_home>/devin/credentials.toml` when `data_home` (`XDG_DATA_HOME`)
+/// is set and not empty, with a leading `~` expanded to `home`; else
+/// `<home>/.local/share/devin/credentials.toml`.
+pub fn devin_credentials(home: &Path, data_home: Option<&std::ffi::OsStr>) -> PathBuf {
+    let base = match data_home.filter(|v| !v.is_empty()) {
+        Some(v) => {
+            let v = Path::new(v);
+            match v.strip_prefix("~") {
+                Ok(rest) => home.join(rest),
+                Err(_) => v.to_path_buf(),
+            }
+        }
+        None => home.join(".local").join("share"),
+    };
+    base.join("devin").join("credentials.toml")
 }
 
 #[cfg(test)]
@@ -151,10 +195,41 @@ mod tests {
             p.shared_projects_dir(),
             PathBuf::from("/h/.mcc/shared/projects")
         );
+        assert_eq!(
+            p.devin_credentials,
+            PathBuf::from("/h/.local/share/devin/credentials.toml")
+        );
+        assert_eq!(
+            p.devin_quota_cache(),
+            PathBuf::from("/h/.mcc/state/devin/quota.json")
+        );
         assert_eq!(p.share_store(None), Some(p.shared_projects_dir()));
         assert_eq!(
             p.share_store(Some("work")),
             Some(PathBuf::from("/h/.mcc/shared/groups/work/projects"))
+        );
+    }
+
+    #[test]
+    fn devin_credentials_follow_xdg_data_home() {
+        let home = Path::new("/h");
+        let at = |v: Option<&str>| devin_credentials(home, v.map(std::ffi::OsStr::new));
+        let default = PathBuf::from("/h/.local/share/devin/credentials.toml");
+        assert_eq!(at(None), default);
+        assert_eq!(at(Some("")), default);
+        assert_eq!(
+            at(Some("/data")),
+            PathBuf::from("/data/devin/credentials.toml")
+        );
+        assert_eq!(
+            at(Some("~/xdg")),
+            PathBuf::from("/h/xdg/devin/credentials.toml")
+        );
+        assert_eq!(at(Some("~")), PathBuf::from("/h/devin/credentials.toml"));
+        let p = Paths::new(PathBuf::from("/h")).with_data_home(Some("/d".as_ref()));
+        assert_eq!(
+            p.devin_credentials,
+            PathBuf::from("/d/devin/credentials.toml")
         );
     }
 

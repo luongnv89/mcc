@@ -16,8 +16,9 @@ use serde::Serialize;
 
 use crate::cli::UsageArgs;
 use crate::config::Config;
+use crate::devin;
 use crate::error::{CliError, EXIT_INTERRUPTED};
-use crate::metrics;
+use crate::metrics::{self, Provider};
 use crate::paths::Paths;
 use crate::ui;
 use crate::usage::{self, DeadlineSource, LoginDeadline, Reason, Status, Usage, Window};
@@ -25,6 +26,10 @@ use crate::usage::{self, DeadlineSource, LoginDeadline, Reason, Status, Usage, W
 /// Printed on stderr each time `mcc usage --all` looks every account's
 /// usage up live (even with `--quiet`; never with `MCC_NO_USAGE`).
 pub const USAGE_ALL_NOTE: &str = crate::cli::usage_all_note!();
+
+/// Printed on its own line after [`USAGE_ALL_NOTE`] when Devin is set up
+/// here (#124): `--all` looks Devin's usage up live too.
+pub const USAGE_ALL_DEVIN_NOTE: &str = crate::cli::usage_all_devin_note!();
 
 /// How the table is laid out: the bar width of the usage cells (0 = no bar),
 /// whether the absolute reset time follows the relative one, and whether
@@ -101,6 +106,8 @@ struct Entry {
     /// The profile plain `claude` and `mcc run` start outside any project:
     /// always ~/.claude, whose account `mcc default` switches. Added in #104.
     is_global_default: bool,
+    /// `claude` for a Claude Code profile, `devin` for Devin. Added in #124.
+    provider: Provider,
     #[serde(skip)]
     config_dir: PathBuf,
 }
@@ -125,7 +132,26 @@ impl Entry {
             login_expires_source: None,
             login_warning: false,
             is_global_default: false,
+            provider: Provider::Claude,
             config_dir: dir.to_path_buf(),
+        }
+    }
+
+    /// Devin's row (#124): its usage, and nothing of a Claude Code login.
+    fn devin(usage: Usage) -> Self {
+        Self {
+            name: devin::NAME.into(),
+            command: devin::NAME.into(),
+            is_default: false,
+            account: None,
+            usage,
+            last_activity: None,
+            login_expires_at: None,
+            login_expires_source: None,
+            login_warning: false,
+            is_global_default: false,
+            provider: Provider::Devin,
+            config_dir: PathBuf::new(),
         }
     }
 
@@ -150,10 +176,24 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
     };
     let profile =
         |name: &str, dir: &Path| Entry::new(name, name, false, dir, &dir.join(".claude.json"));
+    // `mcc usage devin`: Devin alone (a profile of that name, from before
+    // the name was reserved, still comes first).
+    let devin_only =
+        args.profile.as_deref() == Some(devin::NAME) && !cfg.profiles.contains_key(devin::NAME);
+    if devin_only && !devin::detected(paths) {
+        return Err(CliError::usage(format!(
+            "Devin is not set up here: no Devin CLI login at {}",
+            paths.display(&paths.devin_credentials)
+        ))
+        .hint("sign the Devin CLI in with `devin auth login` (or `mcc devin -- auth login`)")
+        .into());
+    }
+    let with_devin = (args.profile.is_none() || devin_only) && devin::detected(paths);
     let mut entries = match args.profile.as_deref() {
         None => std::iter::once(default())
             .chain(cfg.profiles.iter().map(|(n, p)| profile(n, &p.dir)))
             .collect(),
+        Some(_) if devin_only => Vec::new(),
         Some("default" | "claude") => vec![default()],
         Some(name) => match cfg.profiles.get(name) {
             Some(p) => vec![profile(name, &p.dir)],
@@ -192,6 +232,9 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
         // default included, whatever `[usage] live` says.
         if args.all {
             eprintln!("{USAGE_ALL_NOTE}");
+            if with_devin {
+                eprintln!("{USAGE_ALL_DEVIN_NOTE}");
+            }
             crate::log::write("INFO", "mcc usage --all: live lookup for every profile");
         }
         let live = cfg.usage.live || args.all;
@@ -216,23 +259,44 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
             e.usage = u;
         }
     }
+    // Devin: looked up live only as the profiles are (`[usage] live`, or
+    // --all), never with MCC_NO_USAGE; else its last lookup.
+    let devin = with_devin.then(|| {
+        let how = devin::Lookup::of(cfg.usage.live || args.all);
+        Entry::devin(devin::lookup(paths, how).usage)
+    });
 
     let mut out = std::io::stdout().lock();
     if args.json || args.json_v2 {
-        super::write_json(&mut out, "profiles", &entries, args.json_v2)?;
+        let rows: Vec<&Entry> = entries.iter().chain(devin.as_ref()).collect();
+        super::write_json(&mut out, "profiles", &rows, args.json_v2)?;
     } else {
+        let lines = |l: Layout| {
+            let mut lines = if entries.is_empty() {
+                Vec::new()
+            } else {
+                render(&entries, l, show_email, now)
+            };
+            if let Some(d) = &devin {
+                if !lines.is_empty() {
+                    lines.push(String::new());
+                }
+                lines.extend(render_devin(d, l, now));
+            }
+            lines
+        };
         let layout = ui::fit_layout(
             &LAYOUTS,
             |l| l.bar,
             |l| {
-                render(&entries, l, show_email, now)
+                lines(l)
                     .iter()
                     .map(|line| measure_text_width(line))
                     .max()
                     .unwrap_or(0)
             },
         );
-        for line in render(&entries, layout, show_email, now) {
+        for line in lines(layout) {
             writeln!(out, "{line}")?;
         }
         drop(out);
@@ -365,8 +429,59 @@ fn render(entries: &[Entry], layout: Layout, show_email: bool, now: DateTime<Utc
             cells
         })
         .collect();
-    // A spanning reason (a short row's last cell) doesn't widen the column
-    // it starts in.
+    lay_out(&headers, &rows)
+}
+
+/// Devin's block under the profiles' table (#124), laid out as `layout`:
+///
+/// ```text
+/// PROVIDER  DAILY           RESETS IN  WEEKLY          RESETS IN  OVERAGE  UPDATED
+/// devin     █░░░░░░░░░ 12%  8h 0m      █████░░░░░ 54%  3d 4h      $3.50    12m ago
+/// ```
+///
+/// Devin has a daily window, not a 5-hour one ("—" when its plan hides
+/// it), and an overage balance (shown when positive). Without usage, the
+/// reason spans the usage columns.
+fn render_devin(e: &Entry, layout: Layout, now: DateTime<Utc>) -> Vec<String> {
+    let u = &e.usage;
+    let mut headers = vec!["PROVIDER", "DAILY", "RESETS IN", "WEEKLY", "RESETS IN"];
+    let overage = u.overage_usd.filter(|o| *o > 0.0);
+    if overage.is_some() {
+        headers.push("OVERAGE");
+    }
+    let cached = layout.updated && u.updated_at.is_some();
+    if cached {
+        headers.push("UPDATED");
+    }
+    let mut cells = vec![e.name.clone()];
+    match (u.status, u.reason) {
+        (Status::Ok, _) => {
+            for w in [u.daily.as_ref(), u.weekly.as_ref()] {
+                let (used, resets) = window(w, layout, now);
+                cells.extend([used, resets]);
+            }
+            if let Some(o) = overage {
+                cells.push(devin::dollars(o));
+            }
+            if cached {
+                cells.push(u.age(now).unwrap_or_default());
+            }
+        }
+        (_, Some(r @ (Reason::Disabled | Reason::NotLookedUp))) => {
+            cells.push(format!("— ({})", devin::describe(r)));
+        }
+        (_, reason) => cells.push(format!(
+            "unavailable ({})",
+            reason.map_or("unknown", devin::describe)
+        )),
+    }
+    lay_out(&headers, &[cells])
+}
+
+/// The bold header and the rows, each column as wide as its widest cell.
+/// A row shorter than the header ends in a reason spanning the remaining
+/// columns, which doesn't widen the column it starts in.
+fn lay_out(headers: &[&str], rows: &[Vec<String>]) -> Vec<String> {
     let widths: Vec<usize> = (0..headers.len())
         .map(|i| {
             rows.iter()
@@ -470,6 +585,7 @@ mod tests {
             login_expires_source: None,
             login_warning: false,
             is_global_default: name == "default",
+            provider: Provider::Claude,
             config_dir: PathBuf::new(),
         }
     }
@@ -491,6 +607,8 @@ mod tests {
             }),
             source: Some(usage::Source::Cache),
             updated_at: Some(at("2026-10-10T11:48:00Z")),
+            daily: None,
+            overage_usd: None,
         };
         let mut entries = [
             entry("default", Some("me@example.com"), ok),

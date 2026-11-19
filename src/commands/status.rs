@@ -11,6 +11,9 @@
 //! Account emails are hidden unless `[privacy] show_email` is set, and
 //! colors follow `--no-color`, `NO_COLOR` and whether stdout is a terminal.
 //!
+//! Devin (#124), when its CLI's login exists, gets a row after the profiles
+//! with the usage its last lookup saved.
+//!
 //! Before mcc is set up (no `[env]` in `~/.mcc/config.toml`), bare `mcc`
 //! prints the help as it always did (see `main.rs`).
 
@@ -28,12 +31,19 @@ pub fn run(paths: &Paths, cfg: &Config) -> Result<()> {
     let cached = (!usage::disabled_by_env()).then_some(false);
     let mut all = super::list::profiles(paths, cfg, false, cached);
     super::list::redact(&mut all, cfg.show_email());
+    // Devin (#124) when set up: its last lookup only, never a live one.
+    let how = match cached {
+        Some(_) => crate::devin::Lookup::Cached,
+        None => crate::devin::Lookup::Disabled,
+    };
+    let devin = super::list::devin_row(paths, how, cfg.show_email());
 
     let here = here(paths, cfg);
     let mut out = std::io::stdout().lock();
     writeln!(out, "{}", here.line)?;
     writeln!(out)?;
-    super::list::table(&mut out, &all)?;
+    let shown: Vec<ProfileMetrics> = all.iter().cloned().chain(devin).collect();
+    super::list::table(&mut out, &shown)?;
     drop(out);
 
     let mut problems = 0;

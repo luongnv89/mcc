@@ -3,6 +3,7 @@ mod cli;
 mod commands;
 mod config;
 mod copy;
+mod devin;
 mod env_detect;
 mod error;
 mod fsutil;
@@ -176,7 +177,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     let launch = matches!(&command, Command::Share(a) if a.from_launch)
         || matches!(
             command,
-            Command::Run(_) | Command::Env(_) | Command::Exec(_)
+            Command::Run(_) | Command::Env(_) | Command::Exec(_) | Command::Devin(_)
         );
     // Held from before the config is loaded until mcc exits, so concurrent
     // runs never lose each other's changes.
@@ -199,7 +200,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             commands::init::detect_and_save(&paths, &mut cfg, None)?;
         }
     }
-    if needs_live_disclosure(&command, &cfg) {
+    if needs_live_disclosure(&command, &cfg) || needs_devin_disclosure(&command, &cfg, &paths) {
         // Recording the acknowledgement writes config.toml, so it takes the
         // lock like any other write (only for this, when the command doesn't
         // hold it already) and re-reads the config under it.
@@ -211,12 +212,22 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 Some(l)
             }
         };
+        let now = || chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let mut shown = false;
         if needs_live_disclosure(&command, &cfg) {
             eprintln!("{}", usage::LIVE_DISCLOSURE);
-            cfg.usage.live_disclosed_at =
-                Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
-            cfg.save(&paths.config_file)?;
+            cfg.usage.live_disclosed_at = Some(now());
             log::write("INFO", "live usage lookup disclosure shown");
+            shown = true;
+        }
+        if needs_devin_disclosure(&command, &cfg, &paths) {
+            eprintln!("{}", usage::DEVIN_LIVE_DISCLOSURE);
+            cfg.usage.devin_disclosed_at = Some(now());
+            log::write("INFO", "Devin live usage lookup disclosure shown");
+            shown = true;
+        }
+        if shown {
+            cfg.save(&paths.config_file)?;
         }
     }
     if cfg.default_profile.is_some() && !matches!(command, Command::Default(_)) {
@@ -257,6 +268,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Run(args) => commands::run::run(&paths, &cfg, &args),
         Command::Env(args) => commands::env::run(&paths, &cfg, &args),
         Command::Exec(args) => commands::exec::run(&paths, &cfg, &args),
+        Command::Devin(args) => commands::devin::run(&paths, &args),
         Command::RefreshLaunchers(args) => commands::refresh_launchers::run(&paths, &cfg, &args),
         Command::Statusline(args) => commands::statusline::run(&paths, &cfg, &args),
         Command::Completions(_)
@@ -287,6 +299,27 @@ fn needs_live_disclosure(command: &Command, cfg: &config::Config) -> bool {
         && cfg.usage.live
         && cfg.usage.live_disclosed_at.is_none()
         && !usage::disabled_by_env()
+}
+
+/// Whether this command is about to look Devin's usage up live for the first
+/// time (#124): `[usage] live = true` without `devin_disclosed_at`, Devin set
+/// up here (its CLI's login file exists), and the command shows Devin's
+/// usage (`mcc list` without `--no-usage`, `mcc usage` for every profile or
+/// for `devin`) with `MCC_NO_USAGE` unset.
+fn needs_devin_disclosure(command: &Command, cfg: &config::Config, paths: &paths::Paths) -> bool {
+    let reads_devin = match command {
+        Command::List(args) => !args.no_usage,
+        Command::Usage(args) => match args.profile.as_deref() {
+            None => true,
+            Some(name) => name == devin::NAME && !cfg.profiles.contains_key(name),
+        },
+        _ => false,
+    };
+    reads_devin
+        && cfg.usage.live
+        && cfg.usage.devin_disclosed_at.is_none()
+        && !usage::disabled_by_env()
+        && devin::detected(paths)
 }
 
 /// Commands that may write ~/.mcc/config.toml, and so take its lock.
@@ -334,6 +367,8 @@ fn writes_config(command: &Command) -> bool {
         // Never locked: `mcc exec` runs commands that may run mcc commands
         // which take the lock themselves.
         Command::Env(_) | Command::Exec(_) => false,
+        // Starts the Devin CLI; never writes the config.
+        Command::Devin(_) => false,
     }
 }
 

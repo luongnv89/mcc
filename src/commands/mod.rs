@@ -4,6 +4,7 @@ pub mod completions;
 pub mod config;
 pub mod default;
 pub mod delete;
+pub mod devin;
 pub mod diff;
 pub mod doctor;
 pub mod env;

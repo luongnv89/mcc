@@ -113,6 +113,11 @@ pub struct UsageConfig {
     /// once. Left out of the file until then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live_disclosed_at: Option<String>,
+    /// When the Devin live-lookup disclosure was shown (RFC 3339): the
+    /// first time `live = true` looked Devin's usage up. Left out of the
+    /// file until then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub devin_disclosed_at: Option<String>,
     /// How many days before a profile's login runs out `mcc usage` warns
     /// about it. Unset means [`crate::usage::LOGIN_WARN_DAYS`]; read it with
     /// [`UsageConfig::login_warn_days`]. Left out of the file while unset.
@@ -1323,6 +1328,40 @@ mod tests {
         )
         .unwrap();
         assert!(!Config::load(&path).unwrap().show_email());
+    }
+
+    /// #124: `[usage] devin_disclosed_at` is left out until it is set, so an
+    /// existing file saves byte for byte, and it round-trips once set.
+    #[test]
+    fn devin_disclosure_round_trips_and_leaves_old_files_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let legacy = "[sync]\nexclude = []\nextra = []\n\n\
+            [usage]\nlive = true\nlive_disclosed_at = \"2026-10-01T00:00:00Z\"\n\n\
+            [profiles.work]\ndir = \"/h/.mcc/profiles/work\"\nmode = \"clone\"\n\
+            created_at = \"2026-10-10T00:00:00+02:00\"\n";
+        std::fs::write(&path, legacy).unwrap();
+        let mut cfg = Config::load(&path).unwrap();
+        assert_eq!(cfg.usage.devin_disclosed_at, None);
+        cfg.save(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), legacy);
+
+        cfg.usage.devin_disclosed_at = Some("2026-11-19T00:00:00Z".into());
+        cfg.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("devin_disclosed_at = \"2026-11-19T00:00:00Z\""),
+            "{text}"
+        );
+        let back = Config::load(&path).unwrap();
+        assert_eq!(
+            back.usage.devin_disclosed_at.as_deref(),
+            Some("2026-11-19T00:00:00Z")
+        );
+        assert_eq!(
+            back.usage.live_disclosed_at.as_deref(),
+            Some("2026-10-01T00:00:00Z")
+        );
     }
 
     #[test]

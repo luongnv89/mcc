@@ -156,7 +156,7 @@ fn settable(key: &str, parts: &[String]) -> Result<Key> {
                 "~/.claude is always the default profile; `mcc default` switches the account it is signed in to (see `mcc help default`)",
             ));
         }
-        ["usage", "live_disclosed_at"] => {
+        ["usage", "live_disclosed_at" | "devin_disclosed_at"] => {
             return Err(managed("mcc records it when it shows the live-usage note"));
         }
         _ => {
@@ -604,6 +604,7 @@ mod tests {
             "env.shell",
             "nope",
             "usage.live_disclosed_at",
+            "usage.devin_disclosed_at",
         ] {
             assert!(key(k).is_err(), "{k}");
         }

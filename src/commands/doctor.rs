@@ -22,7 +22,7 @@ use crate::cli::DoctorArgs;
 use crate::config::{Config, Profile};
 use crate::error::CliError;
 use crate::paths::Paths;
-use crate::{copy, env_detect, fsutil, manifest, plugins, shell, ui, usage, validate};
+use crate::{copy, devin, env_detect, fsutil, manifest, plugins, shell, ui, usage, validate};
 
 use super::share::{self, Projects};
 use super::statusline;
@@ -102,7 +102,7 @@ impl Doctor<'_> {
 }
 
 pub fn run(paths: &Paths, cfg: &Config, args: &DoctorArgs) -> Result<()> {
-    let (default, names) = selected(cfg, args.profile.as_deref())?;
+    let (default, names, with_devin) = selected(cfg, args.profile.as_deref())?;
     let claude_bin = claude::find_binary(cfg.env.as_ref().and_then(|e| e.claude_bin.as_deref()));
     let mut d = Doctor {
         paths,
@@ -126,6 +126,10 @@ pub fn run(paths: &Paths, cfg: &Config, args: &DoctorArgs) -> Result<()> {
     for name in &names {
         d.profile = Some(name.clone());
         check_profile(&mut d, name, &cfg.profiles[name]);
+    }
+    if with_devin {
+        d.profile = Some(devin::NAME.into());
+        check_devin(&mut d);
     }
 
     let findings = d.out;
@@ -171,12 +175,15 @@ fn plural(n: usize, one: &str) -> String {
     format!("{n} {one}{}", if n == 1 { "" } else { "s" })
 }
 
-/// Whether to check the default profile, and which mcc profiles.
-fn selected(cfg: &Config, only: Option<&str>) -> Result<(bool, Vec<String>)> {
+/// Whether to check the default profile, which mcc profiles, and Devin.
+fn selected(cfg: &Config, only: Option<&str>) -> Result<(bool, Vec<String>, bool)> {
     match only {
-        None => Ok((true, cfg.profiles.keys().cloned().collect())),
-        Some("default" | "claude") => Ok((true, Vec::new())),
-        Some(alias) if cfg.profiles.contains_key(alias) => Ok((false, vec![alias.to_string()])),
+        None => Ok((true, cfg.profiles.keys().cloned().collect(), true)),
+        Some("default" | "claude") => Ok((true, Vec::new(), false)),
+        Some(alias) if cfg.profiles.contains_key(alias) => {
+            Ok((false, vec![alias.to_string()], false))
+        }
+        Some(devin::NAME) => Ok((false, Vec::new(), true)),
         Some(alias) => Err(super::unknown_profile(alias)),
     }
 }
@@ -193,6 +200,9 @@ fn print(paths: &Paths, findings: &[Finding]) {
                     "Profile \"default\" ({})",
                     paths.display(&paths.default_dir)
                 ),
+                Some(devin::NAME) if f.check.starts_with("devin_") => {
+                    format!("Devin ({})", paths.display(&paths.devin_credentials))
+                }
                 Some(name) => format!("Profile \"{name}\""),
             });
         }
@@ -1217,6 +1227,92 @@ fn settings_conflict(d: &Doctor, dir: &Path) -> bool {
     )
 }
 
+// ---------------------------------------------------------------------------
+// Devin (#124)
+// ---------------------------------------------------------------------------
+
+/// Devin, when its CLI or its login is here (nothing otherwise): the
+/// `devin` command `mcc devin` starts, the CLI's own login (whether it
+/// holds a session token: read only where the live lookup may read it,
+/// `[usage] live = true` with MCC_NO_USAGE unset, and never shown), and
+/// whether Devin's usage is looked up live. Never a problem: Devin is
+/// optional, so at most a warning.
+fn check_devin(d: &mut Doctor) {
+    let bin = devin::find_binary(d.paths);
+    let creds = d.paths.devin_credentials.clone();
+    let has_login = creds.exists();
+    if bin.is_none() && !has_login {
+        return;
+    }
+    match &bin {
+        Some(b) => d.push(
+            "devin_cli",
+            Level::Ok,
+            format!("Devin CLI at {} (`mcc devin` starts it)", d.show(b)),
+        ),
+        None => d.push_manual(
+            "devin_cli",
+            Level::Warn,
+            "the `devin` command was not found on your PATH or in ~/.local/bin, so `mcc devin` can't start it".into(),
+            "install the Devin CLI (https://docs.devin.ai), or set MCC_DEVIN_BIN=/path/to/devin".into(),
+        ),
+    }
+    let shown = d.show(&creds);
+    if !has_login {
+        d.push_cmd(
+            "devin_auth",
+            Level::Warn,
+            format!("the Devin CLI is not signed in (no {shown}), so mcc shows no Devin usage"),
+            "devin auth login".into(),
+        );
+        return;
+    }
+    if !d.read_tokens {
+        // Only readable: the token is read only where a live lookup may.
+        match std::fs::File::open(&creds) {
+            Ok(_) => d.push(
+                "devin_auth",
+                Level::Ok,
+                format!("Devin CLI login at {shown} (mcc only reads it)"),
+            ),
+            Err(_) => d.push_manual(
+                "devin_auth",
+                Level::Warn,
+                format!("can't read the Devin CLI login at {shown}"),
+                format!(
+                    "make {shown} readable by your user, or sign in again with `devin auth login`"
+                ),
+            ),
+        }
+    } else {
+        match devin::load_token(&creds) {
+            Ok(_) => d.push(
+                "devin_auth",
+                Level::Ok,
+                format!("Devin CLI login at {shown} holds a session token (mcc only reads it)"),
+            ),
+            Err(e) => d.push_cmd(
+                "devin_auth",
+                Level::Warn,
+                format!(
+                    "the Devin CLI login at {shown} is not usable: {}",
+                    devin::describe(e.reason())
+                ),
+                "devin auth login".into(),
+            ),
+        }
+    }
+    let live = if usage::disabled_by_env() {
+        "Devin usage is off (MCC_NO_USAGE)".to_string()
+    } else if d.cfg.usage.live {
+        "Devin usage is looked up live at https://app.devin.ai/api ([usage] live = true)"
+            .to_string()
+    } else {
+        "Devin usage shows its last lookup; `mcc usage --all` looks it up live (or set [usage] live = true)".to_string()
+    };
+    d.push("devin_usage", Level::Ok, live);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1301,11 +1397,22 @@ export CLAUDE_CONFIG_DIR=$HOME/.claude-work
             toml::from_str("dir = \"/h/.mcc/profiles/work\"\nmode = \"clone\"\ncreated_at = \"\"")
                 .unwrap(),
         );
-        assert_eq!(selected(&cfg, None).unwrap(), (true, vec!["work".into()]));
-        assert_eq!(selected(&cfg, Some("claude")).unwrap(), (true, vec![]));
+        assert_eq!(
+            selected(&cfg, None).unwrap(),
+            (true, vec!["work".into()], true)
+        );
+        assert_eq!(
+            selected(&cfg, Some("claude")).unwrap(),
+            (true, vec![], false)
+        );
         assert_eq!(
             selected(&cfg, Some("work")).unwrap(),
-            (false, vec!["work".into()])
+            (false, vec!["work".into()], false)
+        );
+        // #124: `mcc doctor devin` checks Devin alone.
+        assert_eq!(
+            selected(&cfg, Some("devin")).unwrap(),
+            (false, vec![], true)
         );
         assert!(selected(&cfg, Some("nope")).is_err());
     }

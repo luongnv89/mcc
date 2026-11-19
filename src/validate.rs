@@ -24,6 +24,8 @@ const RESERVED_NAMES: &[&str] = &[
     "exec",
     "statusline",
     "doctor",
+    // `mcc devin`, and the Devin CLI's own command (#124).
+    "devin",
     crate::shell::PATH_BLOCK,
 ];
 
@@ -400,6 +402,12 @@ mod tests {
         assert!(!conflicts("export", &paths, &cfg, None).is_empty());
         assert!(!conflicts("taken", &paths, &cfg, None).is_empty());
         assert!(conflicts("zz-unused-name-xyz", &paths, &cfg, None).is_empty());
+        // #124: `devin` is `mcc devin` and Devin's own command.
+        let devin = conflicts("devin", &paths, &cfg, None);
+        assert!(
+            devin.iter().any(|c| c.reason.contains("reserved by mcc")),
+            "{devin:?}"
+        );
 
         // A renamed profile keeps its directory and may take its old name back.
         let own = paths.profile_dir("was");

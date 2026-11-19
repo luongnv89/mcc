@@ -13,6 +13,16 @@ use crate::paths::Paths;
 use crate::shell;
 use crate::usage::Usage;
 
+/// The tool a `mcc list` / `mcc usage` row is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Provider {
+    /// A Claude Code profile (the default, or an mcc profile).
+    Claude,
+    /// The Devin CLI, with its own login ([`crate::devin`]).
+    Devin,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ProfileMetrics {
     pub name: String,
@@ -73,6 +83,9 @@ pub struct ProfileMetrics {
     /// always ~/.claude now (`mcc default` switches its account), so the
     /// same as `is_default`. Kept for --json consumers (#104).
     pub is_global_default: bool,
+    /// What the row is: a Claude Code profile (`claude`), or Devin
+    /// (`devin`, #124), which has no Claude Code metrics (null in JSON).
+    pub provider: Provider,
     /// The config dir as Claude Code sees it (`CLAUDE_CONFIG_DIR`).
     #[serde(skip)]
     pub config_dir: PathBuf,
@@ -276,10 +289,98 @@ fn collect(
         usage: Usage::default(),
         // Set by `mcc list`, which knows the config.
         is_global_default: false,
+        provider: Provider::Claude,
         config_dir: dir.to_path_buf(),
         last_used_time,
         warnings,
     }
+}
+
+/// Devin's row (#124): its organization and usage. It has none of a Claude
+/// Code profile's counts; `mcc list --json` shows them as null
+/// ([`DEVIN_NULL_FIELDS`]).
+pub fn devin_row(paths: &Paths, d: &crate::devin::Devin) -> ProfileMetrics {
+    let dir = paths
+        .devin_credentials
+        .parent()
+        .unwrap_or(&paths.devin_credentials);
+    ProfileMetrics {
+        name: crate::devin::NAME.into(),
+        command: crate::devin::NAME.into(),
+        is_default: false,
+        dir: paths.display(dir),
+        exists: true,
+        mode: None,
+        account: None,
+        organization: d.org_name.clone(),
+        organization_uuid: d.org_id.clone(),
+        label: None,
+        color: None,
+        model: None,
+        skills: 0,
+        agents: 0,
+        commands: 0,
+        output_styles: 0,
+        plugins_installed: 0,
+        plugins_enabled: 0,
+        mcp_servers: 0,
+        hooks: 0,
+        projects: 0,
+        sessions: 0,
+        size_bytes: 0,
+        last_used: None,
+        created_at: None,
+        last_sync: None,
+        share_sessions: false,
+        share_group: None,
+        // Devin has no mcc launcher to refresh.
+        launcher_current: true,
+        project_defaults: Vec::new(),
+        sync: None,
+        auto_sync: None,
+        usage: d.usage.clone(),
+        is_global_default: false,
+        provider: Provider::Devin,
+        config_dir: dir.to_path_buf(),
+        last_used_time: None,
+        warnings: Vec::new(),
+    }
+}
+
+/// The Claude Code counts Devin's `mcc list --json` row has as null: it has
+/// no skills, plugins or sessions of its own for mcc to count.
+pub const DEVIN_NULL_FIELDS: [&str; 11] = [
+    "skills",
+    "agents",
+    "commands",
+    "output_styles",
+    "plugins_installed",
+    "plugins_enabled",
+    "mcp_servers",
+    "hooks",
+    "projects",
+    "sessions",
+    "size_bytes",
+];
+
+/// The `mcc list --json` rows: each profile as serialized, Devin's
+/// Claude Code counts null ([`DEVIN_NULL_FIELDS`]). Keys keep their order.
+pub fn json_rows(all: &[ProfileMetrics]) -> anyhow::Result<Vec<Value>> {
+    all.iter()
+        .map(|m| {
+            let mut v = serde_json::to_value(m)?;
+            if m.provider == Provider::Devin
+                && let Some(obj) = v.as_object_mut()
+            {
+                for k in DEVIN_NULL_FIELDS {
+                    if let Some(f) = obj.get_mut(k) {
+                        *f = Value::Null;
+                    }
+                }
+            }
+            Ok(v)
+        })
+        .collect()
 }
 
 /// The counts and the size on disk, which walk the profile directory `dir`.
