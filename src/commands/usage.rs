@@ -6,6 +6,7 @@
 //! [`crate::refresh::refresh_expired`]). Its notices go to stderr, so
 //! `--json` stays as it was.
 
+use std::cmp::Ordering;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -259,6 +260,10 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
             e.usage = u;
         }
     }
+    // The row order (#126): --sort for this run, else [usage] sort, else
+    // weekly usage least to most. Devin's block below is appended after
+    // the table, never part of this sort.
+    sort_entries(&mut entries, args.sort.unwrap_or_else(|| cfg.usage.sort()));
     // Devin: looked up live only as the profiles are (`[usage] live`, or
     // --all), never with MCC_NO_USAGE; else its last lookup.
     let devin = with_devin.then(|| {
@@ -328,6 +333,56 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
         .into());
     }
     Ok(())
+}
+
+/// Order `entries` as `order` says (#126): alphabetically by name, or by
+/// a window's percent used or reset time, least to most — a reset order
+/// puts the soonest reset first. An entry without the order's key (no
+/// such window, or no reset time for it) keeps its row but sorts last;
+/// `sort_by` is stable, so entries that tie keep their previous order.
+fn sort_entries(entries: &mut [Entry], order: usage::SortOrder) {
+    match order {
+        usage::SortOrder::Name => entries.sort_by(|a, b| a.name.cmp(&b.name)),
+        usage::SortOrder::FiveHour => entries.sort_by(|a, b| {
+            by_key(
+                a.usage.five_hour.as_ref().map(|w| w.percent),
+                b.usage.five_hour.as_ref().map(|w| w.percent),
+                |x, y| x.total_cmp(y),
+            )
+        }),
+        usage::SortOrder::FiveHourReset => entries.sort_by(|a, b| {
+            by_key(
+                a.usage.five_hour.as_ref().and_then(|w| w.resets_at),
+                b.usage.five_hour.as_ref().and_then(|w| w.resets_at),
+                Ord::cmp,
+            )
+        }),
+        usage::SortOrder::Weekly => entries.sort_by(|a, b| {
+            by_key(
+                a.usage.weekly.as_ref().map(|w| w.percent),
+                b.usage.weekly.as_ref().map(|w| w.percent),
+                |x, y| x.total_cmp(y),
+            )
+        }),
+        usage::SortOrder::WeeklyReset => entries.sort_by(|a, b| {
+            by_key(
+                a.usage.weekly.as_ref().and_then(|w| w.resets_at),
+                b.usage.weekly.as_ref().and_then(|w| w.resets_at),
+                Ord::cmp,
+            )
+        }),
+    }
+}
+
+/// Two sort keys compared with a missing key last: `None` after every
+/// `Some`; `cmp` orders two present keys.
+fn by_key<T>(a: Option<T>, b: Option<T>, cmp: impl FnOnce(&T, &T) -> Ordering) -> Ordering {
+    match (&a, &b) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Greater,
+        (Some(_), None) => Ordering::Less,
+        (Some(x), Some(y)) => cmp(x, y),
+    }
 }
 
 /// One warning per profile whose login runs out within `window_days` (or

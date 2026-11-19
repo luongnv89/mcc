@@ -44,6 +44,10 @@ pub const SETTABLE: &[(&str, &str)] = &[
         "usage.login_warn_days",
         "days before a login runs out that `mcc usage` warns, 1–14 (\"\" for the default, 2)",
     ),
+    (
+        "usage.sort",
+        "name, five-hour, five-hour-reset, weekly or weekly-reset (\"\" for the default, weekly)",
+    ),
     ("launch.banner", "true or false"),
     ("sync.auto", "true or false"),
     (
@@ -65,6 +69,7 @@ enum Key {
     ShowEmail,
     Live,
     LoginWarnDays,
+    Sort,
     Banner,
     SyncAuto,
     Label(String),
@@ -116,6 +121,7 @@ fn settable(key: &str, parts: &[String]) -> Result<Key> {
         ["privacy" | "usage", "show_email"] => Key::ShowEmail,
         ["usage", "live"] => Key::Live,
         ["usage", "login_warn_days"] => Key::LoginWarnDays,
+        ["usage", "sort"] => Key::Sort,
         ["launch", "banner"] => Key::Banner,
         ["sync", "auto"] => Key::SyncAuto,
         ["profiles", alias, "label"] => Key::Label(alias.to_string()),
@@ -196,6 +202,7 @@ fn lookup(cfg: &Config, key: &str, parts: &[String]) -> Result<String> {
         (None, Ok(Key::Live | Key::Banner)) => toml::Value::Boolean(false),
         (None, Ok(Key::SyncAuto)) => toml::Value::Boolean(true),
         (_, Ok(Key::LoginWarnDays)) => toml::Value::Integer(i64::from(cfg.usage.login_warn_days())),
+        (_, Ok(Key::Sort)) => toml::Value::String(cfg.usage.sort().name().into()),
         (None, Ok(Key::AutoSync(alias))) if cfg.profiles.contains_key(&alias) => {
             toml::Value::Boolean(true)
         }
@@ -320,6 +327,7 @@ fn apply(cfg: &mut Config, which: &Key, value: &str) -> Result<()> {
         Key::ShowEmail => cfg.privacy.show_email = Some(parse_bool(value)?),
         Key::Live => cfg.usage.live = parse_bool(value)?,
         Key::LoginWarnDays => cfg.usage.login_warn_days = parse_warn_days(value)?,
+        Key::Sort => cfg.usage.sort = parse_sort(value)?,
         Key::Banner => cfg.launch.banner = parse_bool(value)?,
         // Written either way: a `false` left in the file would otherwise
         // survive a save that leaves the key out.
@@ -397,6 +405,24 @@ fn parse_warn_days(value: &str) -> Result<Option<u32>> {
     }
 }
 
+/// `usage.sort`: a sort order (`name`, `five-hour`, `five-hour-reset`,
+/// `weekly`, `weekly-reset`), or "" for the default.
+fn parse_sort(value: &str) -> Result<Option<String>> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    match crate::usage::SortOrder::named(value) {
+        Some(order) => Ok(Some(order.name().to_string())),
+        None => Err(CliError::usage(format!(
+            "invalid value \"{value}\": expected one of {}",
+            crate::usage::SORT_ORDERS
+        ))
+        .hint("example: mcc config set usage.sort five-hour-reset")
+        .into()),
+    }
+}
+
 fn parse_bool(value: &str) -> Result<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
         "true" | "yes" | "on" | "1" => Ok(true),
@@ -426,6 +452,10 @@ fn load(paths: &Paths) -> Result<Config> {
 pub fn check(text: &str) -> Result<Config> {
     let cfg: Config = toml::from_str(text)
         .map_err(|e| CliError::input(format!("not valid mcc config: {}", e.message().trim())))?;
+    if let Some(sort) = &cfg.usage.sort {
+        crate::usage::check_sort_order(sort)
+            .map_err(|m| CliError::input(format!("usage.sort: {m}")))?;
+    }
     copy::spec(None, &cfg.sync)?;
     for (alias, p) in &cfg.profiles {
         if let Some(label) = &p.label {

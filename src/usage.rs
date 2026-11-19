@@ -246,6 +246,65 @@ impl Default for Usage {
     }
 }
 
+/// How `mcc usage` orders its rows (#126), for `--sort` and `[usage]
+/// sort`: the kebab-case values below in both places.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+pub enum SortOrder {
+    /// Alphabetically by profile name.
+    Name,
+    /// The 5-hour window's percent used, least to most.
+    FiveHour,
+    /// The 5-hour window's reset time, soonest first.
+    FiveHourReset,
+    /// The weekly window's percent used, least to most.
+    Weekly,
+    /// The weekly window's reset time, soonest first.
+    WeeklyReset,
+}
+
+impl SortOrder {
+    /// The order `mcc usage` uses with no `--sort` and no `[usage] sort`:
+    /// weekly usage, least to most.
+    pub const DEFAULT: SortOrder = SortOrder::Weekly;
+
+    /// This order's value (`name`, `five-hour`, `five-hour-reset`,
+    /// `weekly` or `weekly-reset`), as `--sort` and `[usage] sort` take
+    /// it and `mcc config get usage.sort` prints it.
+    pub fn name(self) -> &'static str {
+        match self {
+            SortOrder::Name => "name",
+            SortOrder::FiveHour => "five-hour",
+            SortOrder::FiveHourReset => "five-hour-reset",
+            SortOrder::Weekly => "weekly",
+            SortOrder::WeeklyReset => "weekly-reset",
+        }
+    }
+
+    /// The order `name` is the value of, case-insensitively; `None` when
+    /// it isn't one.
+    pub fn named(name: &str) -> Option<SortOrder> {
+        <SortOrder as clap::ValueEnum>::from_str(name.trim(), true).ok()
+    }
+}
+
+/// The values `--sort` and `[usage] sort` take, as an error message
+/// lists them.
+pub const SORT_ORDERS: &str = "name, five-hour, five-hour-reset, weekly or weekly-reset";
+
+/// A sort order as mcc stores it (trimmed, the canonical value), or why
+/// it isn't one — like `ui::check_color` for a profile color.
+pub fn check_sort_order(order: &str) -> std::result::Result<String, String> {
+    match SortOrder::named(order) {
+        Some(o) => Ok(o.name().to_string()),
+        None => Err(format!(
+            "unknown sort order \"{}\": use one of {}",
+            order.trim(),
+            SORT_ORDERS
+        )),
+    }
+}
+
 fn ser_time<S: Serializer>(t: &Option<DateTime<Utc>>, s: S) -> Result<S::Ok, S::Error> {
     match t {
         Some(t) => s.serialize_str(&t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),

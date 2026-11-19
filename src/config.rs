@@ -123,6 +123,16 @@ pub struct UsageConfig {
     /// [`UsageConfig::login_warn_days`]. Left out of the file while unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub login_warn_days: Option<u32>,
+    /// The order `mcc usage` sorts its rows in when `--sort` isn't given:
+    /// `name`, `five-hour`, `five-hour-reset`, `weekly` or
+    /// `weekly-reset`. Unset means [`crate::usage::SortOrder::DEFAULT`]
+    /// (weekly usage, least to most); read it with [`UsageConfig::sort`].
+    /// A string, not the enum, so a hand-edited value that isn't one
+    /// still loads — `mcc config edit`'s check reports it, and
+    /// [`UsageConfig::sort`] falls back to the default. Left out of the
+    /// file while unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort: Option<String>,
 }
 
 impl UsageConfig {
@@ -132,6 +142,16 @@ impl UsageConfig {
         self.login_warn_days
             .unwrap_or(crate::usage::LOGIN_WARN_DAYS)
             .clamp(1, crate::usage::LOGIN_WARN_DAYS_MAX)
+    }
+
+    /// The order `mcc usage` sorts rows in with no `--sort`: the
+    /// configured `[usage] sort` when it names one, else
+    /// [`crate::usage::SortOrder::DEFAULT`].
+    pub fn sort(&self) -> crate::usage::SortOrder {
+        self.sort
+            .as_deref()
+            .and_then(crate::usage::SortOrder::named)
+            .unwrap_or(crate::usage::SortOrder::DEFAULT)
     }
 }
 
