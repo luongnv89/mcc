@@ -161,7 +161,7 @@
             <tr><td><a href="#cmd-init"><code>mcc init</code></a></td><td>Detect OS, terminal, shell, rc file and the <code>claude</code> binary</td><td><code>--force</code>, <code>--shell</code></td></tr>
             <tr><td><a href="#cmd-add"><code>mcc add [ALIAS]</code></a></td><td>Create the default profile, or a new profile with its own command</td><td><code>--clone</code>, <code>--fresh</code>, <code>--link ITEMS</code>, <code>--copy-plugins</code>, <code>--no-login</code>, <code>--email</code>, <code>--sso</code>, <code>--label</code>, <code>--color</code>, <code>-y</code></td></tr>
             <tr><td><a href="#cmd-list"><code>mcc list</code></a> (<code>ls</code>)</td><td>Show every profile with metrics and usage</td><td><code>--json</code>, <code>--json-v2</code>, <code>-l</code>, <code>--no-usage</code></td></tr>
-            <tr><td><a href="#cmd-usage"><code>mcc usage [PROFILE]</code></a></td><td>Show 5-hour and weekly usage in a table; <code>--all</code> looks every account up live for one run, with a risk notice, and lets Claude Code refresh an expired token first in a one-turn session</td><td><code>--all</code>, <code>--json</code>, <code>--json-v2</code>, <code>--show-email</code>, <code>--hide-email</code></td></tr>
+            <tr><td><a href="#cmd-usage"><code>mcc usage [PROFILE]</code></a></td><td>Show 5-hour and weekly usage in a table; <code>--all</code> looks every account up live for one run, with a risk notice, and lets Claude Code refresh an expired token first in a one-turn session</td><td><code>--all</code>, <code>--json</code>, <code>--json-v2</code>, <code>--show-email</code>, <code>--hide-email</code>, <code>--sort ORDER</code></td></tr>
             <tr><td><a href="#cmd-login"><code>mcc login PROFILE</code></a> (<code>renew</code>)</td><td>Renew a profile's sign-in in place before its login runs out, and check that it worked</td><td><code>--refresh-only</code></td></tr>
             <tr><td><a href="#cmd-sync"><code>mcc sync [ALIAS]</code></a></td><td>Copy the default's setup into a profile</td><td><code>--all</code>, <code>--dry-run</code>, <code>--prune</code>, <code>--force</code>, <code>--only</code>, <code>-y</code></td></tr>
             <tr><td><a href="#cmd-diff"><code>mcc diff ALIAS</code></a></td><td>Show how a profile differs from the default's setup</td><td><code>--only</code></td></tr>
@@ -270,7 +270,7 @@ Here: `work` (Acme) — the default for ~/code/app
 <span class="p">$ </span>mcc list --json | jq '.[] | {name, five_hour: .usage.five_hour.percent, weekly: .usage.weekly.percent}'</pre></div>
 
         <h3 id="cmd-usage"><code>mcc usage</code> <a class="anchor" href="#cmd-usage" aria-label="Link to mcc usage">#</a></h3>
-        <p class="synopsis">mcc usage [PROFILE | --all] [--json | --json-v2] [--show-email | --hide-email]</p>
+        <p class="synopsis">mcc usage [PROFILE | --all] [--json | --json-v2] [--show-email | --hide-email] [--sort ORDER]</p>
         <p>Shows only usage, as a compact table with one row per profile: for each window a bar with the percent used, the time until it resets, and the reset time in your local time zone. Pass a profile name to see just one; use <code>default</code> or <code>claude</code> for <code>~/.claude</code>, and <code>devin</code> for <a href="#cmd-devin">Devin</a> alone. An unknown name is a usage error (exit 2).</p>
         <p>When the Devin CLI is signed in, a Devin block follows the table: Devin's <code>DAILY</code> and <code>WEEKLY</code> quota (never a 5-hour window) and its <code>OVERAGE</code> balance in dollars when positive. It is looked up live only with <code>[usage] live = true</code> (after a one-time note) or <code>--all</code>, and never with <code>MCC_NO_USAGE=1</code>; otherwise mcc shows what the last lookup saved. See <a href="#cmd-devin"><code>mcc devin</code></a>.</p>
         <p>Account emails are hidden by default, so the output is safe to share on screen. <code>--show-email</code> adds an <code>ACCOUNT</code> column; to show it every time, set <code>show_email = true</code> under <code>[privacy]</code> in <code>~/.mcc/config.toml</code>, which applies to <code>mcc list</code> too (see <a href="#configuration">Configuration</a>).</p>
@@ -283,12 +283,14 @@ Here: `work` (Acme) — the default for ~/code/app
             <tr><td><code>--json-v2</code></td><td>Print versioned JSON: <code>{"schema": 2, "profiles": [...]}</code>, the same objects as <code>--json</code>; <a href="https://github.com/luongnv89/mcc-herdr-plugin">mcc-herdr-plugin</a> reads it to show every account's usage in a <a href="https://herdr.dev">Herdr</a> pane</td></tr>
             <tr><td><code>--show-email</code></td><td>Show account emails for this run</td></tr>
             <tr><td><code>--hide-email</code></td><td>Hide account emails for this run, even with <code>show_email = true</code> in the config</td></tr>
+            <tr><td><code>--sort ORDER</code></td><td>Order the rows for this run: <code>name</code> (alphabetical), <code>five-hour</code> or <code>weekly</code> (that window's usage, least to most), or <code>five-hour-reset</code> or <code>weekly-reset</code> (the soonest reset first). The default is <code>[usage] sort</code>, else <code>weekly</code>; a profile without the order's value sorts last (see <a href="#usage-row-order">Row order</a>)</td></tr>
           </tbody>
         </table></div>
         <div class="code"><pre><span class="p">$ </span>mcc usage                       <span class="cm"># every profile, the default included</span>
 <span class="p">$ </span>mcc usage work                  <span class="cm"># only the `work` profile</span>
 <span class="p">$ </span>mcc usage --all                 <span class="cm"># every account looked up live (prints a risk notice)</span>
 <span class="p">$ </span>mcc usage --show-email          <span class="cm"># with each profile's account email</span>
+<span class="p">$ </span>mcc usage --sort weekly-reset   <span class="cm"># the account whose weekly limit resets soonest first</span>
 <span class="p">$ </span>mcc usage --json | jq '.[] | {name, weekly: .usage.weekly.percent}'</pre></div>
         <p>See <a href="#usage-limits">Usage limits</a> for how to read the output and where the data comes from, and <a href="#login-expiry">Login expiry</a> for <code>LAST ACTIVE</code>, <code>LOGIN ENDS</code> and the warning.</p>
 
@@ -541,6 +543,7 @@ show_email = true              <span class="cm"># show account emails in `mcc li
 [usage]
 <span class="cm"># live = true                  # look usage up live with each profile's login (default: off)</span>
 <span class="cm"># login_warn_days = 2          # warn when a login ends within this many days (1–14, default: 2)</span>
+<span class="cm"># sort = "weekly"              # `mcc usage` row order: name, five-hour, five-hour-reset, weekly, weekly-reset (default: weekly)</span>
 
 [profiles.work]
 share_sessions = true          <span class="cm"># default: false; set it with `mcc share work`</span>
@@ -552,7 +555,7 @@ model = "sonnet"
 profile = "work"               <span class="cm"># `mcc run` starts `work` here; set it with `mcc project set work`</span>
 allow = ["lab"]                <span class="cm"># optional: offered when `work` is at its limit (`--allow lab`)</span></pre></div>
         <p>A corrupt <code>config.toml</code> makes mcc exit with code 3 (invalid input) instead of guessing.</p>
-        <p>You don't have to edit it by hand: <code>mcc config set usage.live true</code>, <code>mcc config set sync.exclude plugins,mcp</code> or <code>mcc config set profiles.work.label "Acme (work)"</code> check the value first and leave the file unchanged when it is invalid, and keep your comments. <code>mcc config get KEY</code> prints a value, <code>mcc config path</code> the file's location, and <code>mcc config edit</code> opens a copy in <code>$VISUAL</code> or <code>$EDITOR</code>, saved only when it is valid mcc config. No lock is held while the editor is open; if another mcc command changes the file meanwhile, nothing is saved and your copy is kept. <code>mcc help config</code> lists the settable keys.</p>
+        <p>You don't have to edit it by hand: <code>mcc config set usage.live true</code>, <code>mcc config set usage.sort name</code>, <code>mcc config set sync.exclude plugins,mcp</code> or <code>mcc config set profiles.work.label "Acme (work)"</code> check the value first and leave the file unchanged when it is invalid, and keep your comments. <code>mcc config get KEY</code> prints a value, <code>mcc config path</code> the file's location, and <code>mcc config edit</code> opens a copy in <code>$VISUAL</code> or <code>$EDITOR</code>, saved only when it is valid mcc config. No lock is held while the editor is open; if another mcc command changes the file meanwhile, nothing is saved and your copy is kept. <code>mcc help config</code> lists the settable keys.</p>
         <p>An opt-in launch banner: with <code>[launch] banner = true</code> (<code>mcc config set launch.banner true</code>), starting a profile from its command or with <code>mcc run</code> prints one line on stderr, such as <code>▶ work · Acme · 5h 42% · week 18%</code>: the profile's name in its color, its label and its cached usage. It is printed only when stderr is a terminal, never on stdout, and reads only the config and the usage cache, never the network or a token. Launchers call it only while it is on: after turning it on, run <code>mcc refresh-launchers</code> so existing launchers show it (and again after turning it off, to take the call out).</p>
       </section>
 
@@ -606,6 +609,9 @@ allow = ["lab"]                <span class="cm"># optional: offered when `work` 
 2 lab        16d ago      1d 4h       <span class="d">— (no usage cached; run /usage)</span>
 3 work       just now     unknown     <span class="y">█████████</span><span class="d">░</span> <span class="y">85%!</span>  35m <span class="d">(Sat Oct 10 14:21)</span>     <span class="r">██████████</span> <span class="r">96%!!</span>  3d 4h <span class="d">(Wed Oct 14 00:00)</span>  just now
   <span class="y">⚠</span> Login for 'lab' expires in 1d 4h (Sun Oct 11 16:00) — run `mcc login lab` to renew it</pre></div>
+
+        <h3 id="usage-row-order">Row order</h3>
+        <p>Rows are sorted by weekly usage, least to most, so the account with the most headroom leads. <code>--sort</code> orders them by <code>name</code> (alphabetical), <code>five-hour</code> or <code>weekly</code> (percent used, least to most), or <code>five-hour-reset</code> / <code>weekly-reset</code> (the window that resets soonest first), for that run; <code>mcc config set usage.sort ORDER</code> changes the default order the same way (<code>""</code> back to <code>weekly</code>), and an invalid value is refused with the valid choices. A profile missing the order's value (no such window, or no reset time for it) keeps its row and sorts last; <a href="#cmd-devin">Devin</a>'s block follows the table and never takes part. <code>--json</code> prints the rows in the same order.</p>
 
         <h3>Reading the bars</h3>
         <p>Each bar is the share of the limit used. <code>!</code> after the percent marks 80% or more and <code>!!</code> marks 95% or more. In a colour terminal the bar is also green, yellow (80%+) or red (95%+), but the markers carry the same meaning, so nothing depends on colour alone (<code>--no-color</code>, <code>NO_COLOR</code> or piped output).</p>
