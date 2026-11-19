@@ -73,10 +73,15 @@ fn usage_shows_every_profile_as_a_table() {
         ),
         &out,
     );
-    // Header, then the default first and the profiles in name order.
+    // Header, then the rows by weekly usage, least to most (#126):
+    // default (18%), work (64%), then lab with none.
     let lines: Vec<&str> = out.lines().collect();
     assert_eq!(lines.len(), 4, "{out}");
-    assert!(lines[1].starts_with("1 default") && lines[2].starts_with("2 lab"));
+    assert!(
+        lines[1].starts_with("1 default")
+            && lines[2].starts_with("2 work")
+            && lines[3].starts_with("3 lab")
+    );
     // Account emails are hidden by default.
     assert!(
         !out.contains("me@example.com") && !out.contains("ACCOUNT"),
@@ -246,7 +251,8 @@ fn usage_json_has_the_same_information() {
     }
     let arr = usage_json(&out);
     let names: Vec<&str> = arr.iter().map(|p| p["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["default", "lab", "work"]);
+    // Weekly usage, least to most (#126): lab has none and comes last.
+    assert_eq!(names, ["default", "work", "lab"]);
     let keys: Vec<&str> = arr[0]
         .as_object()
         .unwrap()
@@ -993,4 +999,111 @@ fn usage_without_devin_has_no_devin_block() {
     assert!(!err.contains("Devin"), "{err}");
     let arr = usage_json(&stdout_of(sb.mcc().args(["usage", "--json"])));
     assert!(arr.iter().all(|p| p["provider"] == "claude"), "{arr:?}");
+}
+
+// ---- the row order (--sort, [usage] sort; #126) ------------------------------
+
+/// default (5h 42.4% resets in 1h, week 18% resets in 5d), `work` (5h 7%
+/// in 4h, week 64% in 1d) and `lab` (a 5-hour window without a reset
+/// time, no weekly), all from the statusline cache — so every order puts
+/// the rows differently.
+fn sort_sandbox() -> common::Sandbox {
+    let sb = common::Sandbox::new();
+    sb.seed_default();
+    common::with_profile(&sb, "work", "--clone");
+    common::with_profile(&sb, "lab", "--fresh");
+    common::seed_usage_cache(
+        &sb,
+        "default",
+        Some((42.4, 3600)),
+        Some((18.0, 5 * 86400)),
+        600,
+    );
+    common::seed_usage_cache(&sb, "work", Some((7.0, 4 * 3600)), Some((64.0, 86400)), 600);
+    sb.write(
+        ".mcc/state/lab/usage.json",
+        &serde_json::json!({
+            "profile": "lab",
+            "updated_at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "five_hour": {"used_percentage": 90.0, "resets_at": null},
+            "seven_day": null,
+        })
+        .to_string(),
+    );
+    sb
+}
+
+/// The profile names in `mcc usage` table order (the header skipped).
+fn row_order(out: &str) -> Vec<String> {
+    out.lines()
+        .skip(1)
+        .filter(|l| !l.is_empty())
+        .map(|l| {
+            common::unnumbered(l)
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .to_string()
+        })
+        .collect()
+}
+
+#[test]
+fn usage_sorts_by_weekly_usage_by_default_and_keeps_rows_without_it() {
+    let sb = sort_sandbox();
+    // default (18%) before work (64%); lab has no weekly window, last.
+    let out = stdout_of(sb.mcc().arg("usage"));
+    assert_eq!(row_order(&out), ["default", "work", "lab"], "{out}");
+    assert!(
+        out.lines().nth(1).unwrap().starts_with("1 default ★"),
+        "{out}"
+    );
+    // --json shares the same order.
+    let arr = usage_json(&stdout_of(sb.mcc().args(["usage", "--json"])));
+    let names: Vec<&str> = arr.iter().map(|p| p["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["default", "work", "lab"]);
+}
+
+#[test]
+fn usage_sort_orders_the_rows_as_asked() {
+    let sb = sort_sandbox();
+    for (order, want) in [
+        ("name", ["default", "lab", "work"]),
+        // lab has a 5-hour window, so it counts here.
+        ("five-hour", ["work", "default", "lab"]),
+        // Soonest reset first; lab's window has no reset time, so last.
+        ("five-hour-reset", ["default", "work", "lab"]),
+        ("weekly", ["default", "work", "lab"]),
+        ("weekly-reset", ["work", "default", "lab"]),
+    ] {
+        let out = stdout_of(sb.mcc().args(["usage", "--sort", order]));
+        assert_eq!(row_order(&out), want, "--sort {order}\n{out}");
+    }
+}
+
+#[test]
+fn usage_sort_config_sets_the_default_order_and_the_flag_wins() {
+    let sb = sort_sandbox();
+    sb.mcc()
+        .args(["config", "set", "usage.sort", "name"])
+        .assert()
+        .success();
+    let out = stdout_of(sb.mcc().arg("usage"));
+    assert_eq!(row_order(&out), ["default", "lab", "work"], "{out}");
+    // --sort wins over the configured default for the run.
+    let out = stdout_of(sb.mcc().args(["usage", "--sort", "five-hour"]));
+    assert_eq!(row_order(&out), ["work", "default", "lab"], "{out}");
+}
+
+#[test]
+fn usage_sort_rejects_an_unknown_order() {
+    let sb = sort_sandbox();
+    sb.mcc()
+        .args(["usage", "--sort", "bogus"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("invalid value"))
+        .stderr(predicate::str::contains("name"))
+        .stderr(predicate::str::contains("five-hour-reset"))
+        .stderr(predicate::str::contains("weekly-reset"));
 }

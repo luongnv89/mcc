@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand};
 
 use crate::env_detect::Shell;
+use crate::usage::SortOrder;
 
 /// The terms-of-service note printed the first time session sharing is
 /// turned on for a profile.
@@ -155,6 +156,7 @@ pub enum Command {
         "  mcc usage default             Only the default profile (~/.claude)\n",
         "  mcc usage --all               Every account looked up live, the default included (risk notice)\n",
         "  mcc usage --show-email        Also show each profile's account email\n",
+        "  mcc usage --sort five-hour    Rows by 5-hour usage, least to most\n",
         "  mcc usage devin               Only Devin (when the Devin CLI is signed in)\n",
         "  mcc usage --json | jq '.[] | {name, weekly: .usage.weekly.percent}'\n",
         "  mcc usage --json-v2 | jq '.profiles[].name'   Versioned: {\"schema\": 2, \"profiles\": [...]}\n",
@@ -167,6 +169,12 @@ pub enum Command {
         "`mcc statusline` (or the last --all) are; a profile with nothing current\n",
         "cached shows \"—\" (run /usage in Claude Code), and one whose usage can't\n",
         "be read shows \"unavailable\" and why. MCC_NO_USAGE=1 skips usage entirely.\n",
+        "\n",
+        "Rows sort by weekly usage, least to most; --sort picks another order\n",
+        "for the run: name (alphabetical), five-hour or weekly (that window's\n",
+        "usage, least to most), or five-hour-reset or weekly-reset (the soonest\n",
+        "reset first). A profile without the order's value sorts last. The\n",
+        "default order is set with `mcc config set usage.sort ORDER`.\n",
         "\n",
         "LAST ACTIVE is when the profile was last used (its prompt history or\n",
         "transcripts) and LOGIN ENDS the time left before its login needs a new\n",
@@ -568,6 +576,9 @@ pub enum Command {
         "  usage.live             true or false\n",
         "  usage.login_warn_days  days before a login runs out that `mcc usage`\n",
         "                         warns, 1–14 (\"\" for the default, 2)\n",
+        "  usage.sort             the order `mcc usage` sorts rows in: name,\n",
+        "                         five-hour, five-hour-reset, weekly or\n",
+        "                         weekly-reset (\"\" for the default, weekly)\n",
         "  launch.banner          true or false (a one-line banner on stderr when a\n",
         "                         profile starts; then run `mcc refresh-launchers`)\n",
         "  sync.auto              true or false (catch profiles up with the default\n",
@@ -730,6 +741,10 @@ pub struct UsageArgs {
     /// Hide account emails (the default)
     #[arg(long)]
     pub hide_email: bool,
+
+    /// Order the rows by name, 5-hour or weekly usage (least to most), or the soonest 5-hour or weekly reset first; a profile without the value sorts last (default: `[usage] sort`, else weekly usage)
+    #[arg(long, value_enum)]
+    pub sort: Option<SortOrder>,
 }
 
 #[derive(Debug, Args)]
