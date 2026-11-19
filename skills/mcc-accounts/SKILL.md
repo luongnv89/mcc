@@ -91,6 +91,8 @@ Usage comes from a cache: report its age (`updated_at`). Read `references/inspec
 - `CLAUDE_CONFIG_DIR` matches no profile: say so. Do not guess.
 - Usage `null` or `no_data` is unknown, not 0%. Team and Enterprise seats may report none.
 - `login_expires_at: null` on macOS can mean a Keychain-only login: report it as unknown.
+- mcc 0.11.0+ may add a `devin` row (`provider: "devin"`) to `mcc list` and `mcc usage`. Devin is not an mcc profile or a Claude Code account: never pass it to `mcc exec`, `mcc run --profile` or `mcc project set`, and report its usage apart from the accounts. Details in `references/inspect.md`.
+- From mcc 0.11.0, `mcc usage` orders rows from least to most weekly usage by default (`--sort`, `usage.sort`), so the ★ default is no longer first. That is mcc's display order, not a ranking: never present the first row as the account to use.
 
 ## Report
 

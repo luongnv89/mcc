@@ -21,8 +21,11 @@ Read this when you need a JSON field, a `reason` code, an exit code, or when `sc
 | `sync` | `{behind, local_edits, conflicts}` against the default; `null` for `default` |
 | `launcher_current` | `false` → suggest `mcc refresh-launchers` |
 | `usage` | See below |
+| `provider` | mcc 0.11.0+: `claude` for a Claude Code profile, `devin` for Devin's row (see below). Missing before 0.11.0 |
 
 `mcc list` measures every profile on disk, so it can take several seconds. `mcc usage --json-v2` is fast but has no `dir`.
+
+mcc 0.11.0+: when the Devin CLI is signed in, `profiles[]` in `list` and `usage` also holds a row with `provider: "devin"` and `name: "devin"`. It is not an mcc profile or a Claude Code account: its `dir` is Devin's login folder, not a `CLAUDE_CONFIG_DIR`; its Claude Code counts are `null`; and `mcc exec`, `mcc run --profile`, `mcc project set` and `mcc sync` do not take it. Leave it out when you list or resolve Claude Code accounts with `select(.provider != "devin")`, which also keeps every row of an older mcc that has no `provider`. Report its usage as Devin's, apart from the accounts.
 
 ### `usage` object (list and usage)
 
@@ -31,6 +34,7 @@ Read this when you need a JSON field, a `reason` code, an exit code, or when `sc
 - 100% in either window means the account is at its limit. `!` in tables marks 80%+, `!!` marks 95%+.
 - A window whose reset time has passed is dropped (`null`). `null` is unknown, not 0%.
 - `source: cache` comes from the opt-in `mcc statusline` cache. Report `updated_at` as the age. Team and Enterprise seats may report no rate limits at all.
+- Devin's row (mcc 0.11.0+) has `five_hour: null` and may have a `daily` window (same shape as `weekly`; absent when Devin's plan hides it or the saved one has reset) and `overage_usd` (dollars; absent when not reported). Both keys are left out when the row is unavailable. Claude Code profiles' `usage` never has either key.
 
 | `reason` | Meaning |
 | --- | --- |
@@ -39,6 +43,7 @@ Read this when you need a JSON field, a `reason` code, an exit code, or when `sc
 | `not_logged_in` | No login found (live lookup only) |
 | `token_expired` | Login expired or rejected (live lookup only) |
 | `unauthorized`, `rate_limited`, `network`, `http_error`, `parse_error` | Live lookup failures |
+| `not_looked_up`, `no_organizations`, `missing_token`, `permission_denied`, `decode_failed`, `missing_quota` | Devin's row only (mcc 0.11.0+). `not_looked_up`: nothing current from an earlier Devin lookup (none saved, or every saved window has reset) and none made now (`[usage] live` is off, or bare `mcc`); `mcc usage --all` looks it up. `no_organizations`: the Devin login has no organization; the user picks one at app.devin.ai. `missing_token`, `decode_failed`: Devin's `credentials.toml` holds no usable token (`decode_failed`: it is not text or can't be read for another reason); the user runs `devin auth login`. `permission_denied`: the user makes Devin's `credentials.toml` readable. `missing_quota`: Devin's API reported neither a daily nor a weekly window; nothing for the user to fix |
 
 ### `mcc usage --json-v2` extra fields
 
@@ -80,7 +85,7 @@ Prints the profile `mcc run` would start on stdout, and the reason on stderr. At
 
 ```sh
 mcc list --json-v2 --hide-email | jq -e '.schema == 2' >/dev/null && \
-  mcc list --json-v2 --hide-email | jq '.profiles[] | {name, organization, label, five_hour: .usage.five_hour.percent, weekly: .usage.weekly.percent}'
+  mcc list --json-v2 --hide-email | jq '.profiles[] | select(.provider != "devin") | {name, organization, label, five_hour: .usage.five_hour.percent, weekly: .usage.weekly.percent}'
 mcc usage --json-v2 --hide-email | jq '.profiles[] | select(.login_warning) | .name'
 mcc project list --json-v2 | jq '.projects[] | {path, profile, allow}'
 ```

@@ -4,6 +4,10 @@ All notable changes to mcc are recorded here. The format follows [Keep a Changel
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-20
+
+mcc now shows Devin beside your Claude Code accounts. `mcc devin` starts the Devin CLI with its own configuration and login, and once you are signed in to Devin, `mcc list`, `mcc` and `mcc usage` add a `devin` row with its daily and weekly quota and its overage balance. mcc never signs Devin in or writes its login, and asks Devin's API only with `[usage] live = true` (after a one-time note) or for `mcc usage --all`; otherwise it shows the last numbers it saw. `mcc usage` can now order its rows with `--sort` or the `usage.sort` setting, and by default lists accounts from least to most weekly usage, so the default profile's ★ row is no longer always first. The `mcc list` and `mcc usage` tables number their rows, and `--json` output gains a `provider` field.
+
 ### Added
 
 - Devin as a provider beside your Claude Code accounts. `mcc devin [-- ARGS]` starts the Devin CLI as it is (`MCC_DEVIN_BIN`, else `PATH`, else `~/.local/bin/devin`): your arguments verbatim, no `--config`, no change to `HOME`, `XDG_*` or any other variable, so Devin uses its default configuration and its own login; `--dry-run` prints the command. mcc never signs Devin in and never writes its login (`$XDG_DATA_HOME/devin/credentials.toml`, else `~/.local/share/devin/credentials.toml`) or `~/.local/bin/devin`. When that login exists, `mcc list`, bare `mcc` and `mcc usage` add a `devin` row (`mcc usage devin` for Devin alone) with Devin's daily and weekly quota (never a 5-hour window) and its overage balance, read as custats-macos reads it: the session token goes to `https://app.devin.ai/api` (`/organizations`, then `/<org>/billing/quota/usage`). That lookup runs only with `[usage] live = true`, after a one-time note recorded as `[usage] devin_disclosed_at`, or for `mcc usage --all`, whose notice then names Devin's API; never with `MCC_NO_USAGE`, and never for bare `mcc`. Otherwise the last lookup's numbers are shown from `~/.mcc/providers/devin/quota.json`, which keeps the organization but never the token. `mcc doctor` checks Devin when its CLI or login is there (warnings at most). `devin` is now a reserved profile name (an existing profile of that name keeps working). ([#124](https://github.com/luongnv89/mcc/issues/124))
@@ -209,7 +213,8 @@ The first version of mcc.
 - Access tokens are kept in memory only, sent only to the usage endpoint for their own profile, and never printed, logged or written to disk. Expired tokens are never sent. ([#15](https://github.com/luongnv89/mcc/pull/15))
 - GitHub private vulnerability reporting is enabled, and `contact@luongnv.com` is listed as the security contact. ([#21](https://github.com/luongnv89/mcc/pull/21))
 
-[Unreleased]: https://github.com/luongnv89/mcc/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/luongnv89/mcc/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/luongnv89/mcc/releases/tag/v0.11.0
 [0.10.0]: https://github.com/luongnv89/mcc/releases/tag/v0.10.0
 [0.9.0]: https://github.com/luongnv89/mcc/releases/tag/v0.9.0
 [0.8.0]: https://github.com/luongnv89/mcc/releases/tag/v0.8.0

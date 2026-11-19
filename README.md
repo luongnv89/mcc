@@ -228,7 +228,7 @@ Homebrew builds mcc from source with its own Rust, so you don't need Rust instal
 curl -fsSL https://raw.githubusercontent.com/luongnv89/mcc/main/install.sh | sh
 ```
 
-The script downloads the prebuilt `mcc` for your platform (macOS or Linux, x86_64 or arm64) from the latest [GitHub release](https://github.com/luongnv89/mcc/releases), checks it against the release's SHA-256 checksum, and installs it into `~/.local/bin` (override with `MCC_INSTALL_DIR`). If `~/.local/bin` is not on your `PATH` (it isn't by default on macOS), the script tells you; add it with `export PATH="$HOME/.local/bin:$PATH"` in your shell profile. You don't need Rust. A checksum mismatch stops the install with nothing installed. `MCC_VERSION=v0.10.0` installs a given release. When the release has no binary for your platform (releases up to v0.3.0 have none), the script builds from source with `cargo` instead (at the `MCC_VERSION` tag when one is set). Older versions of the script installed into `~/.cargo/bin`; if an old `mcc` there still comes first on your `PATH`, the script warns you, and `cargo uninstall mcc` removes it.
+The script downloads the prebuilt `mcc` for your platform (macOS or Linux, x86_64 or arm64) from the latest [GitHub release](https://github.com/luongnv89/mcc/releases), checks it against the release's SHA-256 checksum, and installs it into `~/.local/bin` (override with `MCC_INSTALL_DIR`). If `~/.local/bin` is not on your `PATH` (it isn't by default on macOS), the script tells you; add it with `export PATH="$HOME/.local/bin:$PATH"` in your shell profile. You don't need Rust. A checksum mismatch stops the install with nothing installed. `MCC_VERSION=v0.11.0` installs a given release. When the release has no binary for your platform (releases up to v0.3.0 have none), the script builds from source with `cargo` instead (at the `MCC_VERSION` tag when one is set). Older versions of the script installed into `~/.cargo/bin`; if an old `mcc` there still comes first on your `PATH`, the script warns you, and `cargo uninstall mcc` removes it.
 
 Each release lists `mcc-<target>.tar.gz` archives (`x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`; the Linux builds are static) with a `.sha256` file each and a `SHA256SUMS`, if you'd rather download one by hand:
 
@@ -267,6 +267,7 @@ mcc add work --clone        # new profile with your default setup → then log i
 work                        # start Claude Code as the "work" account
 mcc list                    # see all profiles
 mcc usage                   # how much of each account's limits is used
+mcc devin                   # start the Devin CLI as is; its quota shows in mcc list and mcc usage
 mcc sync work               # later: pull new skills/plugins/settings from the default
 mcc rename work job         # rename the profile: its command becomes `job`
 mcc default job             # ~/.claude and `job` trade accounts (asks first)
@@ -979,15 +980,21 @@ In `mcc list --json`, every profile has a `usage` object. `mcc usage --json` pri
 |---|---|
 | `not_logged_in` | no Claude Code OAuth login found for the profile |
 | `token_expired` | the stored login has expired, or the API rejected it (HTTP 401); start the profile to refresh it (`mcc usage --all` lets Claude Code refresh it first, and shows this only when that didn't work) |
-| `unauthorized` | the API refused the token (HTTP 403), e.g. a login without the profile scope |
-| `rate_limited` | HTTP 429 |
+| `unauthorized` | the API refused the token (HTTP 403), e.g. a login without the profile scope; for [Devin](#devin-mcc-devin)'s row, Devin rejected its session token (HTTP 401 or 403): run `devin auth login` |
+| `rate_limited` | HTTP 429 (Claude Code profiles; Devin's HTTP 429 shows as `http_error`) |
 | `network` | offline, timeout, or connection failure |
 | `http_error` | any other HTTP status |
 | `parse_error` | the response wasn't the expected JSON |
 | `disabled` | not fetched (`--no-usage` / `MCC_NO_USAGE`) |
 | `no_data` | nothing current in the statusline cache: never cached, or every cached window has reset since; run `/usage` in Claude Code |
+| `not_looked_up` | [Devin](#devin-mcc-devin) only: nothing current from an earlier lookup (none saved, or every saved window has reset since) and none made now (`[usage] live` is off, or bare `mcc`, which never looks Devin up); `mcc usage --all` looks it up |
+| `no_organizations` | Devin only: the Devin login has no organization; pick one at app.devin.ai |
+| `missing_token` | Devin only: Devin's `credentials.toml` holds no session token; run `devin auth login` |
+| `permission_denied` | Devin only: Devin's `credentials.toml` can't be read (permission denied) |
+| `decode_failed` | Devin only: Devin's `credentials.toml` is not text, or can't be read for another reason (e.g. the path is a directory) |
+| `missing_quota` | Devin only: Devin's quota response had neither a daily nor a weekly window |
 
-The other reasons only come from the live lookup.
+The other reasons only come from the live lookup, except Devin's `not_looked_up`.
 
 </details>
 
