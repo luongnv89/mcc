@@ -188,7 +188,7 @@ The full documentation, one collapsed section per topic. `mcc help COMMAND` prin
 - **`usage`.** Every profile's 5-hour and weekly limits in one compact table: a usage bar with the percent used, time until reset and the reset time. Near-limit accounts stand out with `!` / `!!` markers and colour. Rows are ordered by weekly usage, least to most — `--sort` (or `[usage] sort`) picks another order (`name`, `five-hour`, `five-hour-reset`, `weekly`, `weekly-reset`). Account emails are hidden unless you ask for them. `--json` for scripts.
 - **`rename`.** Gives a profile a new name, and with it a new command. The new name is checked like an alias in `add`. The profile's directory, login and setup stay as they are.
 - **`default`.** `~/.claude` is always the default profile. `mcc default` changes the account it is signed in to: `mcc default work` trades accounts with `work` (after you confirm, `~/.claude` signs in to `work`'s account and `work` to the one `~/.claude` had), and `mcc default --new` signs `~/.claude` in to another account, offering to keep the old one as a new profile. Each sign-in is checked before the next step (see [Choosing the default profile](#choosing-the-default-profile-mcc-default)).
-- **`sync`.** A one-way copy of setup from the default profile into a profile, with `--dry-run`, `--prune`, `--only`, and `--all`. It keeps edits made in the profile and reports a path changed on both sides as a conflict (`--force` overwrites it), once the profile has a sync record (a profile cloned by mcc 0.4.0 or later has one; any other profile gets it from its first sync). Everything it replaces is backed up first, and `mcc diff` shows what differs.
+- **`sync`.** A one-way copy of setup from the default profile into a profile, with `--dry-run`, `--prune`, `--only`, and `--all`. It keeps edits made in the profile and reports a path changed on both sides as a conflict (`--force` overwrites it), once the profile has a sync record (a profile cloned by mcc 0.4.0 or later has one; any other profile gets it from its first sync). Everything it replaces is backed up first, and `mcc diff` shows what differs. `settings.json` is synced [key by key](#settings-synced-key-by-key): a setting changed in any profile reaches the others, API keys are synced only when you agree, and an account's own credentials never leave its profile.
 - **Auto sync.** On by default: when a profile starts, mcc does the safe part of `mcc sync` for it and then for the other profiles the default changed for, so they don't fall behind. Edits in a profile and conflicts are kept; anything that needs a decision is left to `mcc sync`. `mcc config set sync.auto false` turns it off, or `profiles.ALIAS.auto_sync false` for one profile.
 - **Opt-in session sharing.** Off by default. `mcc share work` (or starting a profile with `work --mcc-share`) lets that profile's `--resume` see the sessions of the other sharing profiles in its group (`--group NAME`, else the `default` group). Joining a group whose profiles are in another organization is refused unless you pass `--allow-cross-org`. Credentials and account files are never shared.
 - **Per-project profiles.** `mcc project set work` makes `work` the profile `mcc run` starts in this repository, so a project stays on one account. Set on a workspace folder (`--path`), a default applies in every folder below it that has none of its own, and `mcc here` shows which one applies where. mcc never switches accounts on its own: if that account is at its 5-hour or weekly limit, `mcc run` asks whether to wait (the default) or start it anyway, and offers another profile only when the project allows it (`--allow`). `mcc env` and `mcc exec` let plain `claude`, IDE extensions and scripts use a profile too.
@@ -458,6 +458,31 @@ mcc completions fish > ~/.config/fish/completions/mcc.fish
 
 </details>
 
+#### Settings synced key by key
+
+<details>
+<summary>A setting changed in any profile reaches the others; secrets by category</summary>
+
+`settings.json` is compared and synced one key at a time: each top-level key, and each variable of `env` on its own (`env.NAME`). The sync record keeps a hash of every key, so a key changed in a profile is told apart from one changed in the default. Every key falls in one category:
+
+| Category | Keys | What sync does |
+|---|---|---|
+| basic | everything else (`model`, `hooks`, `env.CLAUDE_CODE_EXPERIMENTAL_CODE_MODE`, …) | synced to every profile |
+| shared secret | an `env` variable whose name has `API_KEY`, `APIKEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `CREDENTIAL(S)`, `PRIVATE_KEY`, `ACCESS_KEY` or `AUTH` as a `_`-separated part (`TAVILY_API_KEY`), any key whose value looks like a token (`sk-…`, `ghp_…`, `github_pat_…`, `xoxb-…`, `AKIA…`, or a run of 32+ mixed-case letters and digits), and `[sync] secret_keys` | synced only when you agree at a terminal |
+| account-bound | `env.ANTHROPIC_API_KEY`, `env.ANTHROPIC_AUTH_TOKEN`, `env.ANTHROPIC_BASE_URL`, `env.CLAUDE_CODE_OAUTH_TOKEN`, `env.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`, `env.CLAUDE_CODE_USE_BEDROCK`, `env.CLAUDE_CODE_USE_VERTEX`, `apiKeyHelper`, `awsAuthRefresh`, `awsCredentialExport`, `forceLoginMethod`, `forceLoginOrgUUID`, and `[sync] account_keys` | never copied, added or removed: each profile keeps its own, and the default's never reach a profile |
+
+Account-bound wins over shared secret.
+
+- **From any profile.** Before copying anything, `mcc sync` (with an alias or `--all`) reads the settings of **every** profile and takes a key changed in one of them since its last sync into the default's `settings.json` (backed up first to `~/.claude/.mcc-backup/<timestamp>/`; written through a symlink, so your dotfiles keep it). The profiles this sync names get it right away; the others on their next sync or [auto sync](#auto-sync). A key changed differently in two places (two profiles, or a profile and the default) is a **conflict**: nothing is taken, and `--force` keeps the default's value. A basic key removed in a profile is removed everywhere only with `--yes` or a confirmation. Keys a profile's [overlay](#per-profile-settings-overlays) sets are its own and never taken.
+- **Shared secrets.** `mcc sync` asks before taking one, showing the key, its category and the profile, never the value. `--yes` never agrees for you. Without a terminal it is skipped, and the sync goes on. A declined value is remembered (by hash, in the profile's sync record) and not asked about again until it changes.
+- **The report.** Each key taken from a profile is listed with its category, the profile it came from and what happened, e.g. `env.CLAUDE_CODE_EXPERIMENTAL_CODE_MODE: basic · from "csdaisy" · synced`, or `skipped (…)`, `conflict`, `declined earlier`, `removed`. Values never appear, in the output or in `~/.mcc/logs/mcc.log`, and `mcc diff` shows a secret's value as `<hidden>` (`<hidden, differs>` on the profile's side when it differs).
+- **`--dry-run`** reports the same, asks nothing and writes nothing.
+- **Auto sync** gets the default's keys into a profile the same way (a profile with its own `ANTHROPIC_BASE_URL` still gets a new setting), but never takes settings from a profile, never asks, and never writes the default's `settings.json`: that is left to `mcc sync`.
+- **After upgrading.** A record from an older mcc holds a hash of the whole file only. A profile unchanged since is read key by key at once; for an edited one, a key only that profile has, or has differently while the others agree with the default, is taken (never a shared secret: one that differs is a conflict), and the record is per key from then on.
+- `settings.local.json` is still synced as a whole file, as before: it is meant to stay local.
+
+</details>
+
 #### Auto sync
 
 <details>
@@ -522,7 +547,11 @@ In `~/.mcc/config.toml`:
 exclude = ["plugins"]          # built-in items to skip
 extra = ["my-tool/config.yml"] # additional paths (relative to the config dir) to copy
 auto = false                   # no auto sync when a profile starts (on by default)
+account_keys = ["env.MY_ORG_KEY"]   # more account-bound settings keys: never copied
+secret_keys = ["env.MY_PASSPHRASE"] # more shared-secret keys: synced only when you agree
 ```
+
+`account_keys` and `secret_keys` name [settings keys](#settings-synced-key-by-key) as sync flattens them: a top-level key (`apiKeyHelper`), or `env.NAME` for a variable.
 
 </details>
 
@@ -607,8 +636,8 @@ ANTHROPIC_DEFAULT_SONNET_MODEL = "claude-sonnet-5"
 ```
 
 - **Merge rules.** Objects merge key by key, recursively. A string, number, boolean or **array** replaces the default's value whole: arrays are never concatenated, so an overlay `permissions.allow` is the profile's whole list (copy the default's entries into it to extend them). A `null` removes the key (JSON only, since TOML has no null). Overlay values are written as they are: their paths are not rewritten.
-- **Order.** The default's `settings.json`, then `[profiles.<alias>.settings]`, then `<profile>/settings.mcc.json`, so the file wins where both set a key. Only `settings.json` is overlaid; `settings.local.json` is still copied as it is. The overlay needs the default's `settings.json` to merge onto: while the default has none, nothing is written and `sync` warns. With an overlay, `settings.json` is written as formatted JSON (and as a file, even when the default's is a symlink); without one it is copied byte for byte, as before.
-- **Sync keeps it.** `sync` recomputes the merge every time and records the merged result in `.mcc-sync.json`, so overlay keys never show up as local edits or conflicts in `sync`, `mcc diff` (which labels the source `default/settings.json + <alias> overlay`) or `mcc list`. Changing the overlay is a change the next `sync` applies; an edit made directly in the profile's `settings.json` is still a local edit, and `--force` replaces it with the merged result. As with every overwrite, the previous `settings.json` is backed up to `.mcc-backup/` first.
+- **Order.** The default's `settings.json`, then `[profiles.<alias>.settings]`, then `<profile>/settings.mcc.json`, so the file wins where both set a key. Only `settings.json` is overlaid; `settings.local.json` is still copied as it is. The overlay needs the default's `settings.json` to merge onto: while the default has none, nothing is written and `sync` warns. `settings.json` is written as a file, even when the default's is a symlink: byte for byte when the profile gets exactly the default's, else as formatted JSON in the profile's key order.
+- **Sync keeps it.** `sync` recomputes the merge every time and records the merged result in `.mcc-sync.json`, so overlay keys never show up as local edits or conflicts in `sync`, `mcc diff` (which labels the source `default/settings.json + <alias> overlay`) or `mcc list`. Changing the overlay is a change the next `sync` applies. An edit made directly in the profile's `settings.json` is a local edit until `mcc sync` takes it into the default ([key by key](#settings-synced-key-by-key)); a key changed in the default too is a conflict, and `--force` replaces it with the default's value. As with every overwrite, the previous `settings.json` is backed up to `.mcc-backup/` first.
 - **Excluded settings.** When `[sync] exclude` has `"settings"`, the profile owns its `settings.json` and sync never writes it, so the overlay is not applied (`sync` warns that it is ignored). Edit that profile's `settings.json` directly instead.
 - **Status line.** An overlay `statusLine` replaces the default's, the `mcc statusline` shim included, so that profile's rate limits are no longer cached. To keep the shim with a profile-specific command, leave `statusLine` out of the overlay, or exclude `settings` and use `mcc statusline install`, which wraps each profile's own `statusLine`. `mcc sync` warns when an overlay replaces the shim this way.
 - `settings.mcc.json` belongs to its profile: it is never copied, pruned or backed up by sync, and a `[sync] extra` entry naming it is rejected. An overlay that isn't a JSON object, or a default `settings.json` that isn't valid JSON while an overlay is set, stops the sync before anything is written.
