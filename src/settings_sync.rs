@@ -140,15 +140,6 @@ impl Category {
             Category::AccountBound => "account-bound",
         }
     }
-
-    /// What sync does with such a key, for people.
-    pub fn describe(self) -> &'static str {
-        match self {
-            Category::Basic => "synced to every profile",
-            Category::SharedSecret => "synced only if you agree; its value is never shown",
-            Category::AccountBound => "never copied to another profile",
-        }
-    }
 }
 
 /// Whether a string in `v` (at any depth) looks like a token: a known
@@ -237,12 +228,14 @@ impl Classifier {
     }
 
     /// `flat` with the value of every secret key (shared or account-bound,
-    /// here or in `other`) replaced by a placeholder, which tells only
-    /// whether it is the same as in `other`.
+    /// here or in `other`) replaced by a placeholder: `<hidden>`, or with
+    /// `mark` and a value `other` has otherwise, `<hidden, differs>`. So
+    /// two sides tell only whether a secret differs.
     pub fn masked(
         &self,
         flat: &Map<String, Value>,
         other: &Map<String, Value>,
+        mark: bool,
     ) -> Map<String, Value> {
         flat.iter()
             .map(|(k, v)| {
@@ -250,10 +243,10 @@ impl Classifier {
                     || self.category(k, other.get(k)) != Category::Basic;
                 let v = if !secret {
                     v.clone()
-                } else if other.get(k) == Some(v) {
-                    Value::String("<hidden>".into())
-                } else {
+                } else if mark && other.get(k) != Some(v) {
                     Value::String("<hidden, differs>".into())
+                } else {
+                    Value::String("<hidden>".into())
                 };
                 (k.clone(), v)
             })
@@ -267,12 +260,6 @@ impl Classifier {
 pub struct Shareable {
     key: String,
     value: Value,
-}
-
-impl Shareable {
-    pub fn key(&self) -> &str {
-        &self.key
-    }
 }
 
 /// A key that may be removed from other profiles: never account-bound,
@@ -748,10 +735,15 @@ mod tests {
         let b = obj(
             json!({"env.TAVILY_API_KEY": "two", "env.ANTHROPIC_API_KEY": "k", "model": "haiku"}),
         );
-        let m = Value::Object(c.masked(&a, &b)).to_string();
+        let left = Value::Object(c.masked(&a, &b, false)).to_string();
+        let right = Value::Object(c.masked(&b, &a, true)).to_string();
         assert_eq!(
-            m,
-            r#"{"env.TAVILY_API_KEY":"<hidden, differs>","env.ANTHROPIC_API_KEY":"<hidden>","model":"opus"}"#
+            left,
+            r#"{"env.TAVILY_API_KEY":"<hidden>","env.ANTHROPIC_API_KEY":"<hidden>","model":"opus"}"#
+        );
+        assert_eq!(
+            right,
+            r#"{"env.TAVILY_API_KEY":"<hidden, differs>","env.ANTHROPIC_API_KEY":"<hidden>","model":"haiku"}"#
         );
     }
 

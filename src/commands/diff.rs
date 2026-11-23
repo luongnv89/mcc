@@ -224,8 +224,8 @@ fn settings_diff(
     };
     header(out, label, copy::SETTINGS_FILE)?;
     let c = rw.classifier();
-    let text = |flat: &Map<String, Value>, other: &Map<String, Value>| -> Result<String> {
-        let shown = settings_sync::unflatten(&c.masked(flat, other));
+    let text = |flat: &Map<String, Value>, other: &Map<String, Value>, mark| -> Result<String> {
+        let shown = settings_sync::unflatten(&c.masked(flat, other, mark));
         Ok(serde_json::to_string_pretty(&Value::Object(shown))? + "\n")
     };
     let from = if rw.has_overlay() {
@@ -237,8 +237,8 @@ fn settings_diff(
         out,
         &from,
         &format!("{alias}/{}", copy::SETTINGS_FILE),
-        &text(&s.want, &s.have)?,
-        &text(&s.have, &s.want)?,
+        &text(&s.want, &s.have, false)?,
+        &text(&s.have, &s.want, true)?,
     )
 }
 
