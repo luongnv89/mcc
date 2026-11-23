@@ -54,7 +54,27 @@ pub struct Config {
     /// every command.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub machines: BTreeMap<String, Machine>,
+    /// Keys the file sets that mcc doesn't know (a misspelled `[machine]`
+    /// for `[machines]`, say), by dotted path, sorted. Serde skips
+    /// them, so without this they would be dropped without a word; see
+    /// [`Config::unknown_key_warnings`]. Never written.
+    #[serde(skip)]
+    pub unknown_keys: Vec<String>,
 }
+
+/// The top-level keys of config.toml, for the "did you mean" hint of an
+/// unknown one ([`Config::unknown_key_warnings`]).
+const TOP_LEVEL_KEYS: &[&str] = &[
+    "default_profile",
+    "env",
+    "sync",
+    "usage",
+    "privacy",
+    "launch",
+    "profiles",
+    "projects",
+    "machines",
+];
 
 /// Another machine `mcc usage` reads (`[machines.NAME]`, #130).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -529,7 +549,7 @@ impl Config {
         }
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        let mut cfg: Self = toml::from_str(&text).map_err(|e| -> anyhow::Error {
+        let mut cfg = Self::parse(&text).map_err(|e| -> anyhow::Error {
             CliError::input(format!(
                 "{} is not valid mcc config: {}",
                 path.display(),
@@ -544,6 +564,41 @@ impl Config {
             cfg.privacy.show_email = Some(true);
         }
         Ok(cfg)
+    }
+
+    /// Config text as `toml::from_str` reads it, plus the keys it skipped
+    /// ([`Config::unknown_keys`]).
+    pub fn parse(text: &str) -> std::result::Result<Self, toml::de::Error> {
+        let mut unknown = Vec::new();
+        let de = toml::Deserializer::parse(text)?;
+        let mut cfg: Self = serde_ignored::deserialize(de, |path| unknown.push(path.to_string()))?;
+        cfg.unknown_keys = unknown;
+        Ok(cfg)
+    }
+
+    /// One warning per key mcc doesn't know, naming the top-level key it
+    /// probably meant when one is close: `[machine.lab]` gets "did you mean
+    /// `machines`?". Empty when every key is known.
+    pub fn unknown_key_warnings(&self, file: &str) -> Vec<String> {
+        self.unknown_keys
+            .iter()
+            .map(|key| {
+                let hint = (!key.contains('.'))
+                    .then(|| {
+                        TOP_LEVEL_KEYS
+                            .iter()
+                            .map(|k| (strsim::damerau_levenshtein(key, k), k))
+                            .filter(|(d, _)| *d <= 2)
+                            .min()
+                            .map(|(_, k)| format!(" — did you mean `{k}`?"))
+                    })
+                    .flatten()
+                    .unwrap_or_default();
+                format!(
+                    "{file}: mcc doesn't know the setting `{key}`, so it ignores it and drops it the next time it saves the file{hint}"
+                )
+            })
+            .collect()
     }
 
     /// Whether launches catch the profile `alias` up with the default
@@ -889,6 +944,67 @@ mod tests {
         assert_eq!(back.profiles, cfg.profiles);
         assert_eq!(back.sync.exclude, vec!["plugins".to_string()]);
         assert!(back.show_email());
+    }
+
+    /// Keys mcc doesn't know are listed by path, the rest of the file
+    /// still loads, and a near-miss top-level key gets a "did you mean".
+    #[test]
+    fn unknown_keys_are_listed_with_a_hint() {
+        let cfg = Config::parse(
+            "[usage]\nlive = true\nlivee = true\n\n\
+             [machine.lab]\nhost = \"lab\"\n\n\
+             [machines.box]\nhost = \"box\"\nhots = \"x\"\n\n\
+             [nothing_like_it]\n",
+        )
+        .unwrap();
+        assert!(cfg.usage.live);
+        assert_eq!(cfg.machines["box"].host, "box");
+        assert_eq!(
+            cfg.unknown_keys,
+            [
+                "machine",
+                "machines.box.hots",
+                "nothing_like_it",
+                "usage.livee"
+            ]
+        );
+        let warnings = cfg.unknown_key_warnings("~/.mcc/config.toml");
+        assert_eq!(warnings.len(), 4);
+        assert!(warnings[0].contains("`machine`"), "{}", warnings[0]);
+        assert!(
+            warnings[0].ends_with("did you mean `machines`?"),
+            "{}",
+            warnings[0]
+        );
+        // No guess for a nested key or a name close to nothing.
+        for w in &warnings[1..] {
+            assert!(!w.contains("did you mean"), "{w}");
+        }
+    }
+
+    /// A file mcc wrote itself has no unknown keys, so no warning.
+    #[test]
+    fn a_saved_config_has_no_unknown_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut cfg = Config::default();
+        cfg.machines.insert(
+            "lab".into(),
+            Machine {
+                host: "lab".into(),
+                mcc: Some("/opt/mcc".into()),
+            },
+        );
+        cfg.privacy.show_email = Some(true);
+        cfg.save(&path).unwrap();
+        let back = Config::load(&path).unwrap();
+        assert!(back.unknown_keys.is_empty(), "{:?}", back.unknown_keys);
+        for key in toml::from_str::<toml::Table>(&std::fs::read_to_string(&path).unwrap())
+            .unwrap()
+            .keys()
+        {
+            assert!(TOP_LEVEL_KEYS.contains(&key.as_str()), "{key}");
+        }
     }
 
     /// A config written before session sharing existed: loads with sharing

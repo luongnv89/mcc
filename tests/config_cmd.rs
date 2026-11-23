@@ -8,6 +8,7 @@ use std::os::fd::AsRawFd;
 use std::time::Duration;
 
 use common::{Sandbox, stdout_of, with_profile};
+use predicates::prelude::*;
 use predicates::str::contains;
 
 fn sandbox() -> Sandbox {
@@ -412,4 +413,37 @@ fn machines_are_edited_by_hand_and_checked() {
         after.contains("# my build box\n[machines.lab]\nhost = \"me@lab-box\"\n"),
         "{after}"
     );
+}
+
+/// A misspelled section (`[machine]` for `[machines]`) used to be ignored
+/// without a word. Now every command warns about it on stderr, with a
+/// hint, and keeps stdout clean; `config edit` warns once it saves.
+#[test]
+fn unknown_settings_are_warned_about() {
+    let sb = sandbox();
+    let ed = editor(
+        &sb,
+        "cat >> \"$1\" <<'EOF'\n\n[machine.lab]\nhost = \"lab\"\nEOF\n",
+    );
+    sb.mcc()
+        .args(["config", "edit"])
+        .env("EDITOR", ed)
+        .assert()
+        .success()
+        .stderr(contains("saved"))
+        .stderr(contains("doesn't know the setting `machine`"))
+        .stderr(contains("did you mean `machines`?"));
+    let out = sb.mcc().args(["usage", "--json-v2"]).output().unwrap();
+    assert!(out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("did you mean `machines`?"), "{err}");
+    common::json(&out.stdout);
+    // A known file stays quiet.
+    let clean = sandbox();
+    clean
+        .mcc()
+        .args(["list"])
+        .assert()
+        .success()
+        .stderr(contains("doesn't know").not());
 }

@@ -460,7 +460,7 @@ fn load(paths: &Paths) -> Result<Config> {
 /// Check edited config text: it must load as mcc config and pass the
 /// checks the commands that set those keys make.
 pub fn check(text: &str) -> Result<Config> {
-    let cfg: Config = toml::from_str(text)
+    let cfg = Config::parse(text)
         .map_err(|e| CliError::input(format!("not valid mcc config: {}", e.message().trim())))?;
     if let Some(sort) = &cfg.usage.sort {
         crate::usage::check_sort_order(sort)
@@ -502,7 +502,7 @@ fn edit(paths: &Paths) -> Result<()> {
     });
     let copy = edit_copy_path(file);
     write_private(&copy, &start)?;
-    let edited = loop {
+    let (edited, cfg) = loop {
         if let Err(e) = run_editor(&copy) {
             let _ = std::fs::remove_file(&copy);
             return Err(e);
@@ -515,7 +515,7 @@ fn edit(paths: &Paths) -> Result<()> {
             return Ok(());
         }
         match check(&edited) {
-            Ok(_) => break edited,
+            Ok(cfg) => break (edited, cfg),
             Err(e) => {
                 let again = ui::is_interactive() && {
                     ui::error(&format!("{e:#}"), None);
@@ -551,6 +551,9 @@ fn edit(paths: &Paths) -> Result<()> {
     let _ = std::fs::remove_file(&copy);
     crate::log::write("INFO", "config: edited by hand with `mcc config edit`");
     ui::success(&format!("saved {}", paths.display(file)));
+    for warning in cfg.unknown_key_warnings(&paths.display(file)) {
+        ui::warn(&warning);
+    }
     Ok(())
 }
 

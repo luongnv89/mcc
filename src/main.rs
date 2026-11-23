@@ -91,6 +91,15 @@ fn set_up() -> bool {
         .is_ok_and(|c| c.env.is_some())
 }
 
+/// Warn about each key of config.toml mcc doesn't know (a misspelled
+/// section is otherwise ignored without a word). On stderr, so `--json`
+/// output stays clean.
+fn warn_unknown_keys(paths: &paths::Paths, cfg: &config::Config) {
+    for warning in cfg.unknown_key_warnings(&paths.display(&paths.config_file)) {
+        ui::warn(&warning);
+    }
+}
+
 /// Hint for failures that carry no specific one (I/O errors, failed spawns).
 fn fallback_hint() -> String {
     let log = paths::Paths::from_env()
@@ -106,6 +115,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         // lock, no first-run setup, no live usage lookup, nothing written.
         let paths = paths::Paths::from_env()?;
         let cfg = config::Config::load(&paths.config_file)?;
+        warn_unknown_keys(&paths, &cfg);
         return commands::status::run(&paths, &cfg);
     };
     if let Command::Here = &command {
@@ -114,6 +124,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         // an older mcc's pointer — nothing written.
         let paths = paths::Paths::from_env()?;
         let cfg = config::Config::load(&paths.config_file)?;
+        warn_unknown_keys(&paths, &cfg);
         return commands::here::run(&paths, &cfg);
     }
     if let Command::Completions(args) = &command {
@@ -153,6 +164,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         log::init_if_present(paths.log_file.clone());
         log_invocation();
         let cfg = config::Config::load(&paths.config_file)?;
+        warn_unknown_keys(&paths, &cfg);
         return commands::doctor::run(&paths, &cfg, args);
     }
     log::init(paths.log_file.clone());
@@ -188,6 +200,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         None
     };
     let mut cfg = config::Config::load(&paths.config_file)?;
+    // Not for the launch commands, which run on every start.
+    if !launch {
+        warn_unknown_keys(&paths, &cfg);
+    }
     if cfg.env.is_none() && !explicit_init && !launch {
         if lock.is_none() {
             lock = Some(config::lock(&paths)?);
