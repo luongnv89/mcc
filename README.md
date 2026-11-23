@@ -342,7 +342,7 @@ mcc usage --json | jq '.[] | select(.login_warning) | .name'   # logins about to
 mcc login work                        # sign `work` in again before its login runs out
 mcc sync work --dry-run               # preview what would change
 mcc sync work --only skills,agents    # only some items
-mcc sync --all --prune --yes          # make every profile mirror the default exactly
+mcc sync --all --prune --yes          # make every profile mirror the default (--yes also removes settings keys removed in a profile)
 mcc sync work --force                 # also overwrite paths edited in both (conflicts)
 mcc diff work                         # what differs from the default, with line diffs
 mcc rename lab sandbox                # new command `sandbox`, same directory and login
@@ -478,7 +478,7 @@ Account-bound wins over shared secret.
 - **The report.** Each key taken from a profile is listed with its category, the profile it came from and what happened, e.g. `env.CLAUDE_CODE_EXPERIMENTAL_CODE_MODE: basic · from "csdaisy" · synced`, or `skipped (…)`, `conflict`, `declined earlier`, `removed`. Values never appear, in the output or in `~/.mcc/logs/mcc.log`, and `mcc diff` shows a secret's value as `<hidden>` (`<hidden, differs>` on the profile's side when it differs).
 - **`--dry-run`** reports the same, asks nothing and writes nothing.
 - **Auto sync** gets the default's keys into a profile the same way (a profile with its own `ANTHROPIC_BASE_URL` still gets a new setting), but never takes settings from a profile, never asks, and never writes the default's `settings.json`: that is left to `mcc sync`.
-- **After upgrading.** A record from an older mcc holds a hash of the whole file only. A profile unchanged since is read key by key at once; for an edited one, a key only that profile has, or has differently while the others agree with the default, is taken (never a shared secret: one that differs is a conflict), and the record is per key from then on.
+- **After upgrading.** A record from an older mcc holds a hash of the whole file only. A profile unchanged since is read key by key at once. For an edited one, when the default is also unchanged since that record, every key that differs is that profile's change (a shared secret among them is asked about, as above); when the default changed too, a key only that profile has, or has differently while the others agree with the default, is taken, but never a shared secret: one that differs is a conflict. The record is per key from then on.
 - `settings.local.json` is still synced as a whole file, as before: it is meant to stay local.
 
 </details>
