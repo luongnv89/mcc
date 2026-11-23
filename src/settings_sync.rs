@@ -324,6 +324,18 @@ pub enum KeyBase {
 /// only once the user confirms it, until both sides agree on it.
 pub const PROPOSED_BASE: &str = "proposed";
 
+/// The prefix of the base recorded for a key a profile lacks while it
+/// can't be told whether it removed or lost it ([`KeyState::Lost`]),
+/// followed by the hash of the default's value then: never a removal.
+pub const LOST_PREFIX: &str = "lost:";
+
+/// The mark a declined removal of `key` is remembered by in
+/// `declined_secrets`, for the default's value `default` (so a new value
+/// there is asked about again).
+pub fn declined_removal(default: Option<&Value>) -> String {
+    format!("absent:{}", hash(default).unwrap_or_default())
+}
+
 /// Where a key differs between the default's side (`w`) and the
 /// profile's (`p`), who changed it since the record: what both
 /// [`decide`] (taking profile changes into the default) and the profile's
@@ -338,8 +350,9 @@ pub enum KeyState {
     /// [`decide`] takes it into the default.
     Ours { base: Option<String> },
     /// The profile lacks it, but whether it removed or lost it can't be
-    /// told (a guess): the profile keeps it as it is (recording `base`);
-    /// never taken into the default.
+    /// told (a guess): the profile keeps it as it is (recording `base`, a
+    /// [`LOST_PREFIX`] mark); never taken into the default, never removed
+    /// from it.
     Lost { base: Option<String> },
     /// No record: the profile's own key, kept; never taken.
     Untracked,
@@ -367,12 +380,19 @@ pub fn key_state(base: &KeyBase, key: &str, w: Option<&Value>, p: Option<&Value>
                     (Some(_), None) => KeyState::Theirs,
                     (Some(_), Some(_)) => KeyState::Both,
                 }
-            } else if hash(p).as_deref() == last {
-                KeyState::Theirs
-            } else if hash(w).as_deref() == last {
-                KeyState::Ours { base: None }
+            } else if let Some(real) = last.and_then(|l| l.strip_prefix(LOST_PREFIX)) {
+                // Lost: kept so while the default still has its value then;
+                // a new one there reaches the profile; a value the profile
+                // adds follows the rules, against that value.
+                match p {
+                    None if hash(w).as_deref() == Some(real) => KeyState::Lost {
+                        base: last.map(String::from),
+                    },
+                    None => KeyState::Theirs,
+                    Some(_) => by_last(Some(real), w, p),
+                }
             } else {
-                KeyState::Both
+                by_last(last, w, p)
             }
         }
         // The default is as mcc wrote it: the profile changed the key. A
@@ -380,11 +400,12 @@ pub fn key_state(base: &KeyBase, key: &str, w: Option<&Value>, p: Option<&Value>
         KeyBase::Guess {
             default_unchanged: true,
         } => {
-            let base = hash(w);
             if p.is_some() {
-                KeyState::Ours { base }
+                KeyState::Ours { base: hash(w) }
             } else {
-                KeyState::Lost { base }
+                KeyState::Lost {
+                    base: hash(w).map(|h| format!("{LOST_PREFIX}{h}")),
+                }
             }
         }
         KeyBase::Guess {
@@ -395,6 +416,46 @@ pub fn key_state(base: &KeyBase, key: &str, w: Option<&Value>, p: Option<&Value>
             (Some(_), Some(_)) => KeyState::Both,
         },
     }
+}
+
+/// [`key_state`] against a key's last recorded hash `last`.
+fn by_last(last: Option<&str>, w: Option<&Value>, p: Option<&Value>) -> KeyState {
+    if hash(p).as_deref() == last {
+        KeyState::Theirs
+    } else if hash(w).as_deref() == last {
+        KeyState::Ours { base: None }
+    } else {
+        KeyState::Both
+    }
+}
+
+/// For a profile read by guess ([`KeyBase::Guess`]), the per-key record
+/// that reads every key the same way against the same default: what
+/// `mcc sync` saves before it changes the default, so the guess (which
+/// compares with the default) can't flip for this profile. `None` for a
+/// profile with a per-key record, or none.
+pub fn per_key_record(view: &SettingsView, c: &Classifier) -> Option<BTreeMap<String, String>> {
+    if !matches!(view.base, KeyBase::Guess { .. }) {
+        return None;
+    }
+    let mut out = BTreeMap::new();
+    for k in view.keys() {
+        let (w, p) = (view.want.get(&k), view.have.get(&k));
+        let base = if w == p || view.overlaid(&k) || c.is_account_bound(&k) {
+            hash(p)
+        } else {
+            match key_state(&view.base, &k, w, p) {
+                KeyState::Theirs | KeyState::Untracked => hash(p),
+                KeyState::Ours { base } | KeyState::Lost { base } => base,
+                KeyState::Proposed => Some(PROPOSED_BASE.into()),
+                KeyState::Both => None,
+            }
+        };
+        if let Some(b) = base {
+            out.insert(k, b);
+        }
+    }
+    Some(out)
 }
 
 /// A profile's `settings.json` next to the default's, key by key.
@@ -1132,6 +1193,45 @@ mod tests {
         );
     }
 
+    /// The per-key record saved for a profile read by guess reads every
+    /// key as the guess did, against the same default.
+    #[test]
+    fn a_per_key_record_reads_like_the_guess() {
+        let c = classifier();
+        let want = json!({"same": 1, "theirs": 2, "both": 3, "lost": 4});
+        let have = json!({"same": 1, "both": 9, "ours": 5, "env.ANTHROPIC_BASE_URL": "x"});
+        for unchanged in [true, false] {
+            let g = view(
+                want.clone(),
+                have.clone(),
+                KeyBase::Guess {
+                    default_unchanged: unchanged,
+                },
+            );
+            let record = per_key_record(&g, &c).expect("a guess");
+            let k = view(want.clone(), have.clone(), KeyBase::Keys(record));
+            for key in g.keys() {
+                let (w, p) = (g.want.get(&key), g.have.get(&key));
+                if w == p || c.is_account_bound(&key) {
+                    continue;
+                }
+                let (a, b) = (
+                    key_state(&g.base, &key, w, p),
+                    key_state(&k.base, &key, w, p),
+                );
+                // The guess's own base for Ours is what the record keeps.
+                let norm = |s: KeyState| match s {
+                    KeyState::Ours { .. } => KeyState::Ours { base: None },
+                    s => s,
+                };
+                assert_eq!(norm(a), norm(b), "{unchanged} {key}");
+            }
+        }
+        // Not for a profile with a per-key record.
+        let k = view(want, have, KeyBase::Keys(BTreeMap::new()));
+        assert!(per_key_record(&k, &c).is_none());
+    }
+
     /// A conflict says what `--force` does: keep the default's value, or,
     /// when the default has none, remove the key from the profile.
     #[test]
@@ -1191,7 +1291,36 @@ mod tests {
             // Whole-file records.
             (guess(true), Some(&a), Some(&b), Ours { base: Some(h(&a)) }),
             (guess(true), None, Some(&b), Ours { base: None }),
-            (guess(true), Some(&a), None, Lost { base: Some(h(&a)) }),
+            (
+                guess(true),
+                Some(&a),
+                None,
+                Lost {
+                    base: Some(format!("{LOST_PREFIX}{}", h(&a))),
+                },
+            ),
+            // Lost: never a removal; settles once the default changes it, or
+            // the profile has it again.
+            (
+                keys(Some(format!("{LOST_PREFIX}{}", h(&a)))),
+                Some(&a),
+                None,
+                Lost {
+                    base: Some(format!("{LOST_PREFIX}{}", h(&a))),
+                },
+            ),
+            (
+                keys(Some(format!("{LOST_PREFIX}{}", h(&b)))),
+                Some(&a),
+                None,
+                Theirs,
+            ),
+            (
+                keys(Some(format!("{LOST_PREFIX}{}", h(&a)))),
+                Some(&a),
+                Some(&b),
+                Ours { base: None },
+            ),
             (guess(false), Some(&a), Some(&b), Both),
             (guess(false), None, Some(&b), Proposed),
             (guess(false), Some(&a), None, Theirs),

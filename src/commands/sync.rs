@@ -164,7 +164,9 @@ struct SettingsSource {
 /// symlink) is never a source. Each key is
 /// reported with its category and what happened, never its value. The
 /// default's settings.json is backed up before it is first written, and
-/// written through a symlink (dotfiles). A dry run reports only.
+/// written through a symlink (dotfiles); before that, every profile read
+/// by guess gets a per-key record of this reading, so the change can't
+/// flip it. A dry run reports only.
 fn gather_settings(
     paths: &Paths,
     cfg: &Config,
@@ -192,7 +194,11 @@ fn gather_settings(
         ));
         return Ok(());
     };
+    let classifier = Classifier::new(&cfg.sync);
     let mut sources = Vec::new();
+    // Per-key records for the profiles read by guess, saved before the
+    // default changes (see [`settings_sync::per_key_record`]).
+    let mut guessed = Vec::new();
     for (alias, p) in &cfg.profiles {
         if !p.dir.is_dir() {
             continue;
@@ -206,26 +212,34 @@ fn gather_settings(
                 force: false,
             };
             let dst = p.dir.join(copy::SETTINGS_FILE);
-            Ok(copy::settings_view(&src, &dst, item.rewrite, &rw, &base)?
-                // A missing file is not a profile that removed every key.
-                .filter(|view| view.have_obj.is_some() && !view.linked)
-                .map(|view| SettingsSource {
-                    alias: alias.clone(),
-                    dir: p.dir.clone(),
-                    rw,
-                    view,
-                    manifest,
-                }))
+            Ok(
+                copy::settings_view(&src, &dst, item.rewrite, &rw, &base)?.map(|view| {
+                    SettingsSource {
+                        alias: alias.clone(),
+                        dir: p.dir.clone(),
+                        rw,
+                        view,
+                        manifest,
+                    }
+                }),
+            )
         };
         match read() {
-            Ok(Some(s)) => sources.push(s),
+            Ok(Some(s)) => {
+                if let Some(record) = settings_sync::per_key_record(&s.view, &classifier) {
+                    guessed.push((s.dir.clone(), record));
+                }
+                // A missing file is not a profile that removed every key.
+                if s.view.have_obj.is_some() && !s.view.linked {
+                    sources.push(s);
+                }
+            }
             Ok(None) => {}
             Err(e) => ui::warn(&format!(
                 "\"{alias}\": its settings are not read for changes to take into the default ({e:#})"
             )),
         }
     }
-    let classifier = Classifier::new(&cfg.sync);
     let maps: Vec<ToDefault> = sources
         .iter()
         .map(|s| Box::new(|v: &Value| s.rw.to_default(v)) as ToDefault)
@@ -239,7 +253,8 @@ fn gather_settings(
             to_default: f.as_ref(),
         })
         .collect();
-    let decisions = settings_sync::decide(&classifier, &settings_sync::flatten(&default), &views);
+    let default_flat = settings_sync::flatten(&default);
+    let decisions = settings_sync::decide(&classifier, &default_flat, &views);
     if decisions.is_empty() {
         return Ok(());
     }
@@ -320,13 +335,9 @@ fn gather_settings(
                     set.push(value);
                     Outcome::Approved
                 } else {
-                    // Read afresh: an earlier decline in this run is kept.
                     for (s, h) in hashes {
-                        if let (Some(mut m), Some(h)) =
-                            (manifest::load(&s.dir).manifest().cloned(), h)
-                        {
-                            m.declined_secrets.insert(d.key.clone(), h);
-                            m.save(&s.dir)?;
+                        if let Some(h) = h {
+                            save_declined(&s.dir, &d.key, h)?;
                         }
                     }
                     Outcome::Declined { earlier: false }
@@ -334,13 +345,28 @@ fn gather_settings(
             }
             // A real sync removes it only once the user confirms it at a
             // terminal: --yes never does (the profile may have lost it).
-            Verdict::Remove(_) if args.dry_run => Outcome::Asked,
-            Verdict::Remove(_) if args.yes || !ask.interactive() => {
-                unconfirmed = true;
-                Outcome::Skipped("needs confirmation")
-            }
+            // A declined removal is not asked about again while the
+            // default keeps the same value.
             Verdict::Remove(key) => {
-                if ask.confirm(&format!(
+                let mark = settings_sync::declined_removal(default_flat.get(&d.key));
+                let from: Vec<&SettingsSource> = sources
+                    .iter()
+                    .filter(|s| d.sources.contains(&s.alias))
+                    .collect();
+                let declined = from.iter().all(|s| {
+                    s.manifest
+                        .as_ref()
+                        .and_then(|m| m.declined_secrets.get(&d.key))
+                        == Some(&mark)
+                });
+                if declined {
+                    Outcome::Declined { earlier: true }
+                } else if args.dry_run {
+                    Outcome::Asked
+                } else if args.yes || !ask.interactive() {
+                    unconfirmed = true;
+                    Outcome::Skipped("needs confirmation")
+                } else if ask.confirm(&format!(
                     "Remove {} ({}) from the default and every profile? It was removed in {}",
                     d.key,
                     d.category.as_str(),
@@ -349,7 +375,10 @@ fn gather_settings(
                     remove.push(key);
                     Outcome::Removed
                 } else {
-                    Outcome::Skipped("removal not confirmed")
+                    for s in from {
+                        save_declined(&s.dir, &d.key, mark.clone())?;
+                    }
+                    Outcome::Declined { earlier: false }
                 }
             }
         };
@@ -390,6 +419,15 @@ fn gather_settings(
         );
         return Ok(());
     }
+    // The profiles read by guess compare with the default: give them the
+    // per-key record of this reading first, so its change doesn't flip it.
+    for (dir, record) in guessed {
+        if let Some(mut m) = manifest::load(&dir).manifest().cloned() {
+            m.items.insert(manifest::SETTINGS_ITEM.into());
+            m.settings = record;
+            m.save(&dir)?;
+        }
+    }
     // Through a symlink: the user's own file gets the change, and stays linked.
     let real = std::fs::canonicalize(&src).with_context(|| format!("reading {}", src.display()))?;
     let backup = new_backup_dir(&paths.default_dir)?;
@@ -402,6 +440,17 @@ fn gather_settings(
         "updated the default's settings.json (backed up to {}); profiles get it as they sync",
         paths.display(&backup)
     ));
+    Ok(())
+}
+
+/// Remember in the sync record at `dir` that the user declined `key` as
+/// `mark` (a value's hash, or [`settings_sync::declined_removal`]). Read
+/// afresh, so an earlier decline in this run is kept.
+fn save_declined(dir: &Path, key: &str, mark: String) -> Result<()> {
+    if let Some(mut m) = manifest::load(dir).manifest().cloned() {
+        m.declined_secrets.insert(key.to_string(), mark);
+        m.save(dir)?;
+    }
     Ok(())
 }
 
@@ -1306,13 +1355,7 @@ mod tests {
     /// since. Which side the key is new on can't be told, so it is asked.
     fn upgraded_with_codemode(value: &str) -> (tempfile::TempDir, Paths, Config) {
         let (d, paths, cfg) = synced();
-        for a in PROFILES {
-            let dir = paths.profile_dir(a);
-            let mut m = record(&dir);
-            m.items.remove(manifest::SETTINGS_ITEM);
-            m.settings.clear();
-            m.save(&dir).unwrap();
-        }
+        legacy_records(&paths);
         let cs = paths.profile_dir("csdaisy");
         let mut s = settings(&cs);
         s["env"] = serde_json::json!({"CODE_MODE": value});
@@ -1321,6 +1364,132 @@ mod tests {
         s["effortLevel"] = "high".into();
         write(&paths.default_dir, s);
         (d, paths, cfg)
+    }
+
+    /// Every profile's record as an older mcc kept it: the whole
+    /// settings.json's hash only.
+    fn legacy_records(paths: &Paths) {
+        for a in PROFILES {
+            let dir = paths.profile_dir(a);
+            let mut m = record(&dir);
+            m.items.remove(manifest::SETTINGS_ITEM);
+            m.settings.clear();
+            m.save(&dir).unwrap();
+        }
+    }
+
+    /// What `mcc list` would say about `alias`'s settings.
+    fn status(paths: &Paths, cfg: &Config, alias: &str) -> Status {
+        let dir = paths.profile_dir(alias);
+        let spec = copy::spec(Some(&["settings".to_string()]), &cfg.sync).unwrap();
+        plan_for(paths, cfg, &dir, &spec, Some(&record(&dir)), false, false)
+            .unwrap()
+            .status()
+    }
+
+    /// #129 QA: two profiles on records from an older mcc, each with a
+    /// change of its own, the default unchanged. Taking the first change
+    /// into the default must not make the second profile's reading flip
+    /// (the guess compares with the default): both changes reach every
+    /// profile, with no conflict, and the next sync is quiet.
+    #[test]
+    fn changes_in_several_upgraded_profiles_all_reach_every_profile() {
+        let (_d, paths, mut cfg) = synced();
+        legacy_records(&paths);
+        let edit = |a: &str, k: &str, v: &str| {
+            let dir = paths.profile_dir(a);
+            let mut s = settings(&dir);
+            s[k] = v.into();
+            write(&dir, s);
+        };
+        edit("work", "model", "sonnet");
+        edit("lab", "effortLevel", "high");
+        sync(&paths, &mut cfg, &mut Scripted::new(&[]));
+        for dir in PROFILES
+            .iter()
+            .map(|a| paths.profile_dir(a))
+            .chain([paths.default_dir.clone()])
+        {
+            let s = settings(&dir);
+            assert_eq!(s["model"], "sonnet", "{}: {s}", dir.display());
+            assert_eq!(s["effortLevel"], "high", "{}: {s}", dir.display());
+        }
+        for a in PROFILES {
+            assert_eq!(status(&paths, &cfg, a), Status::default(), "{a}");
+        }
+        let before = std::fs::read(paths.default_dir.join(copy::SETTINGS_FILE)).unwrap();
+        sync(&paths, &mut cfg, &mut Scripted::new(&[]));
+        assert_eq!(
+            std::fs::read(paths.default_dir.join(copy::SETTINGS_FILE)).unwrap(),
+            before
+        );
+    }
+
+    /// A default with `effortLevel`, synced to every profile.
+    fn synced_with_effort() -> (tempfile::TempDir, Paths, Config) {
+        let (d, paths, mut cfg) = synced();
+        let mut s = settings(&paths.default_dir);
+        s["effortLevel"] = "high".into();
+        write(&paths.default_dir, s);
+        sync(&paths, &mut cfg, &mut Scripted::new(&[]));
+        (d, paths, cfg)
+    }
+
+    /// #129 QA: a key an upgraded profile lacks while the default is
+    /// unchanged may have been lost rather than removed: it is never
+    /// proposed for removal, on this sync or the next.
+    #[test]
+    fn a_key_an_upgraded_profile_lacks_is_never_proposed_for_removal() {
+        let (_d, paths, mut cfg) = synced_with_effort();
+        legacy_records(&paths);
+        let cs = paths.profile_dir("csdaisy");
+        let mut s = settings(&cs);
+        s.as_object_mut().unwrap().remove("effortLevel");
+        write(&cs, s);
+        for _ in 0..2 {
+            // Asking anything fails the test.
+            sync(&paths, &mut cfg, &mut Scripted::new(&[]));
+            assert_eq!(settings(&paths.default_dir)["effortLevel"], "high");
+            assert!(settings(&cs).get("effortLevel").is_none());
+            let base = record(&cs).settings["effortLevel"].clone();
+            assert!(base.starts_with(settings_sync::LOST_PREFIX), "{base}");
+        }
+        // A new value in the default reaches it.
+        let mut s = settings(&paths.default_dir);
+        s["effortLevel"] = "low".into();
+        write(&paths.default_dir, s);
+        sync(&paths, &mut cfg, &mut Scripted::new(&[]));
+        assert_eq!(settings(&cs)["effortLevel"], "low");
+        assert_eq!(
+            record(&cs).settings["effortLevel"],
+            manifest::hash_json(&serde_json::json!("low"))
+        );
+    }
+
+    /// A removal declined at the prompt is not asked about again while the
+    /// default keeps the same value.
+    #[test]
+    fn a_declined_removal_is_not_asked_again() {
+        let (_d, paths, mut cfg) = synced_with_effort();
+        let cs = paths.profile_dir("csdaisy");
+        let mut s = settings(&cs);
+        s.as_object_mut().unwrap().remove("effortLevel");
+        write(&cs, s);
+        let mut ask = Scripted::new(&[false]);
+        sync(&paths, &mut cfg, &mut ask);
+        assert_eq!(ask.prompts.len(), 1);
+        assert!(
+            ask.prompts[0].starts_with("Remove effortLevel (basic)"),
+            "{:?}",
+            ask.prompts
+        );
+        assert_eq!(settings(&paths.default_dir)["effortLevel"], "high");
+        assert_eq!(
+            record(&cs).declined_secrets["effortLevel"],
+            settings_sync::declined_removal(Some(&serde_json::json!("high")))
+        );
+        sync(&paths, &mut cfg, &mut Scripted::new(&[]));
+        assert_eq!(settings(&paths.default_dir)["effortLevel"], "high");
     }
 
     #[test]

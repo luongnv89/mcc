@@ -2551,6 +2551,59 @@ fn first_sync_after_upgrade_never_reverts_the_default() {
     }
 }
 
+/// #129 QA: two profiles on records from an older mcc, each with a change
+/// of its own, the default unchanged. `mcc sync work` takes both into the
+/// default; lab, not synced, catches up on launch with no conflict (its
+/// reading must not flip because the default just changed), and a later
+/// sync of every profile has nothing to report.
+#[test]
+fn changes_in_several_upgraded_profiles_reach_every_profile_also_on_launch() {
+    let sb = three_profiles();
+    for p in ["work", "lab", "csdaisy"] {
+        legacy_record(&sb, p);
+    }
+    for (p, key, value) in [("work", "model", "sonnet"), ("lab", "effortLevel", "high")] {
+        let dir = format!(".mcc/profiles/{p}");
+        let mut s = settings_of(&sb, &dir);
+        s[key] = value.into();
+        sb.write(&format!("{dir}/settings.json"), &s.to_string());
+    }
+    let err = sync_stderr(&sb, &["work"]);
+    assert!(
+        err.contains("model: basic · from \"work\" · synced"),
+        "{err}"
+    );
+    assert!(
+        err.contains("effortLevel: basic · from \"lab\" · synced"),
+        "{err}"
+    );
+    assert!(!err.contains("conflict"), "{err}");
+    let o = sb.launcher("lab").args(["-p", "hi"]).output().unwrap();
+    assert!(o.status.success(), "{o:?}");
+    let lab = settings_of(&sb, ".mcc/profiles/lab");
+    assert_eq!(lab["model"], "sonnet", "{lab}");
+    assert_eq!(lab["effortLevel"], "high", "{lab}");
+    let err = sync_stderr(&sb, &["--all"]);
+    assert!(!err.contains("Settings changed in profiles"), "{err}");
+    assert!(!err.contains("conflict"), "{err}");
+    for p in ["work", "lab", "csdaisy"] {
+        let s = settings_of(&sb, &format!(".mcc/profiles/{p}"));
+        assert_eq!(s["model"], "sonnet", "{p}: {s}");
+        assert_eq!(s["effortLevel"], "high", "{p}: {s}");
+    }
+    let list = sb
+        .mcc()
+        .args(["list", "--json", "--no-usage"])
+        .output()
+        .unwrap();
+    let all: Vec<serde_json::Value> = serde_json::from_slice(&list.stdout).unwrap();
+    for p in ["work", "lab", "csdaisy"] {
+        assert_eq!(by_name(&all, p)["sync"]["conflicts"], 0, "{p}");
+        assert_eq!(by_name(&all, p)["sync"]["local_edits"], 0, "{p}");
+        assert_eq!(by_name(&all, p)["sync"]["behind"], 0, "{p}");
+    }
+}
+
 /// No secret value is ever shown or logged: not by a sync, a dry run,
 /// nor `mcc diff`.
 #[test]
