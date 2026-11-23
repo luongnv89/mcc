@@ -216,26 +216,28 @@ impl Classifier {
     }
 
     /// The key `key` holding `value`, to be copied into other profiles;
-    /// `None` when it is account-bound, which is never copied.
+    /// `None` when it is account-bound, or bare `"env"` (a non-object
+    /// `env` that would replace an `env` object and its account-bound
+    /// variables), which is never copied.
     pub fn shareable(&self, key: &str, value: Value) -> Option<Shareable> {
-        (!self.is_account_bound(key)).then(|| Shareable {
+        (key != "env" && !self.is_account_bound(key)).then(|| Shareable {
             key: key.to_string(),
             value,
         })
     }
 
     /// The key `key`, to be removed from other profiles; `None` when it is
-    /// account-bound, which sync never removes.
+    /// account-bound or bare `"env"`, which sync never removes.
     pub fn removable(&self, key: &str) -> Option<SharedKey> {
-        (!self.is_account_bound(key)).then(|| SharedKey(key.to_string()))
+        (key != "env" && !self.is_account_bound(key)).then(|| SharedKey(key.to_string()))
     }
 
-    /// The flat settings `flat` without their account-bound keys: what
-    /// may reach another profile.
+    /// The flat settings `flat` without their account-bound keys or a bare
+    /// non-object `"env"`: what may reach another profile.
     pub fn shared(&self, flat: Map<String, Value>) -> Shared {
         Shared(
             flat.into_iter()
-                .filter(|(k, _)| !self.is_account_bound(k))
+                .filter(|(k, _)| k != "env" && !self.is_account_bound(k))
                 .collect(),
         )
     }
@@ -483,7 +485,8 @@ pub struct SettingsView {
 impl SettingsView {
     /// Whether the profile's overlay decides `key`.
     pub fn overlaid(&self, key: &str) -> bool {
-        self.overlay_keys.contains(key) || (self.overlay_env && key.starts_with(ENV_PREFIX))
+        self.overlay_keys.contains(key)
+            || (self.overlay_env && (key == "env" || key.starts_with(ENV_PREFIX)))
     }
 
     /// Every key either side has or the record knows, the default's first.
@@ -512,7 +515,7 @@ impl SettingsView {
     /// Profiles without a record are never sources; neither is a key the
     /// overlay sets, or one that already matches the default.
     fn changed(&self, key: &str) -> Option<Change> {
-        if self.overlaid(key) {
+        if key == "env" || self.overlaid(key) {
             return None;
         }
         let (w, p) = (self.want.get(key), self.have.get(key));
@@ -922,9 +925,13 @@ mod tests {
         assert!(c.removable("apiKeyHelper").is_none());
         assert!(c.shareable("env.TAVILY_API_KEY", json!("x")).is_some());
         let shared = c.shared(obj(json!({
-            "env.ANTHROPIC_API_KEY": "a", "env.ANTHROPIC_BASE_URL": "b", "apiKeyHelper": "c", "model": "opus"
+            "env.ANTHROPIC_API_KEY": "a", "env.ANTHROPIC_BASE_URL": "b", "apiKeyHelper": "c", "env": null, "model": "opus"
         })));
         assert_eq!(shared.into_map().keys().collect::<Vec<_>>(), ["model"]);
+        // A non-object `env` (bare "env") can never be shared or removed,
+        // so it can never overwrite an `env` object and its account keys.
+        assert!(c.shareable("env", Value::Null).is_none());
+        assert!(c.removable("env").is_none());
     }
 
     #[test]

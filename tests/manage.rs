@@ -2728,6 +2728,55 @@ fn a_profile_with_unreadable_settings_never_gets_account_bound_keys() {
     assert!(!log.contains(&key) && !log.contains(&tavily));
 }
 
+/// A settings.json whose `env` is not a JSON object (e.g. `"env": null`) is
+/// never taken into the default and never wipes account-bound `env` variables
+/// in the default or other profiles.
+#[test]
+fn non_object_env_never_wipes_account_bound_env_vars() {
+    let sb = three_profiles();
+    set_env(&sb, ".claude", "ANTHROPIC_API_KEY", "default-acct-key");
+    set_env(&sb, ".claude", CODE_MODE, "1");
+    sync_stderr(&sb, &["--all"]);
+    set_env(
+        &sb,
+        ".mcc/profiles/work",
+        "ANTHROPIC_BASE_URL",
+        "https://work.example.invalid",
+    );
+
+    // Profile with `"env": null`: neither default nor other profiles lose env.
+    let mut cs = settings_of(&sb, ".mcc/profiles/csdaisy");
+    cs["env"] = serde_json::Value::Null;
+    sb.write(".mcc/profiles/csdaisy/settings.json", &cs.to_string());
+    let default_before = sb.read(".claude/settings.json");
+
+    sync_stderr(&sb, &["--all"]);
+    assert_eq!(sb.read(".claude/settings.json"), default_before);
+    assert_eq!(
+        settings_of(&sb, ".claude")["env"]["ANTHROPIC_API_KEY"],
+        "default-acct-key"
+    );
+    assert_eq!(settings_of(&sb, ".claude")["env"][CODE_MODE], "1");
+    let work = settings_of(&sb, ".mcc/profiles/work");
+    assert_eq!(
+        work["env"]["ANTHROPIC_BASE_URL"],
+        "https://work.example.invalid"
+    );
+    assert_eq!(work["env"][CODE_MODE], "1");
+    assert!(settings_of(&sb, ".mcc/profiles/csdaisy")["env"].is_null());
+
+    // Default with `"env": null`: syncing work keeps work's account-bound env.
+    let mut def = settings_of(&sb, ".claude");
+    def["env"] = serde_json::Value::Null;
+    sb.write(".claude/settings.json", &def.to_string());
+    sync_stderr(&sb, &["work"]);
+    let work = settings_of(&sb, ".mcc/profiles/work");
+    assert_eq!(
+        work["env"]["ANTHROPIC_BASE_URL"], "https://work.example.invalid",
+        "{work}"
+    );
+}
+
 /// The settings.local.json at `dir` (a profile dir, or `.claude`).
 fn local_settings_of(sb: &Sandbox, dir: &str) -> serde_json::Value {
     json(sb.read(&format!("{dir}/settings.local.json")).as_bytes())

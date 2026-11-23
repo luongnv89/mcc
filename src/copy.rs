@@ -458,13 +458,16 @@ impl Rewriter {
         src == self.from_dir.join(LOCAL_SETTINGS_FILE)
     }
 
-    /// The account-bound keys of this profile's own `settings.local.json`
-    /// (flattened), kept when the default's is copied over it. None when
-    /// it is missing, not a JSON object, or the default's own file (a
-    /// symlink to it, as an older mcc left it): what is read through it is
-    /// the default's.
-    fn own_local_account_keys(&self, src: &Path) -> Map<String, Value> {
-        let dst = self.to_dir.join(LOCAL_SETTINGS_FILE);
+    /// The account-bound keys of this profile's own `settings.json` or
+    /// `settings.local.json` (flattened), kept when the default's is copied
+    /// over it whole-file. None when it is missing, not a JSON object, or
+    /// the default's own file (a symlink to it, as an older mcc left it):
+    /// what is read through it is the default's.
+    fn own_account_keys(&self, src: &Path) -> Map<String, Value> {
+        let Some(name) = src.file_name() else {
+            return Map::new();
+        };
+        let dst = self.to_dir.join(name);
         if same_file(&dst, src) {
             return Map::new();
         }
@@ -993,11 +996,9 @@ pub fn desired_bytes(src: &Path, rewrite: bool, rw: &Rewriter) -> Result<Vec<u8>
         && let Ok(Value::Object(m)) = serde_json::from_slice::<Value>(&bytes)
     {
         let (mut kept, mut changed) = rw.shared_settings(m);
-        if rw.local_settings_file(src) {
-            for (k, v) in rw.own_local_account_keys(src) {
-                settings_sync::set_flat(&mut kept, &k, Some(v));
-                changed = true;
-            }
+        for (k, v) in rw.own_account_keys(src) {
+            settings_sync::set_flat(&mut kept, &k, Some(v));
+            changed = true;
         }
         if changed {
             bytes = serde_json::to_vec_pretty(&Value::Object(kept))?;
@@ -1486,10 +1487,14 @@ pub fn settings_view(
     rw: &Rewriter,
     base: &Base,
 ) -> Result<Option<SettingsView>> {
+    let non_object_env = |m: &Map<String, Value>| m.get("env").is_some_and(|v| !v.is_object());
     let text = rewritten_src(src, rewrite, rw)?;
     let Ok(Value::Object(default)) = serde_json::from_slice::<Value>(&text) else {
         return Ok(None);
     };
+    if non_object_env(&default) {
+        return Ok(None);
+    }
     let have_obj = match kind(dst) {
         Kind::Missing => None,
         Kind::Dir => return Ok(None),
@@ -1497,7 +1502,7 @@ pub fn settings_view(
             .ok()
             .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
         {
-            Some(Value::Object(m)) => Some(m),
+            Some(Value::Object(m)) if !non_object_env(&m) => Some(m),
             _ => return Ok(None),
         },
     };

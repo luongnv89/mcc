@@ -190,8 +190,9 @@ fn file_diff(
             )?;
             return Ok(());
         }
-        // Compared as a whole file: one side isn't a JSON object, so its
-        // keys, and which of them are secret, can't be told apart.
+        // Compared as a whole file: one side (or its `env`) isn't a JSON
+        // object, so its keys, and which of them are secret, can't be told
+        // apart.
         writeln!(
             out,
             "  (not shown: one side is not a JSON object, and settings.json may hold secrets)"
@@ -201,12 +202,7 @@ fn file_diff(
     let src = paths.default_dir.join(&c.rel);
     let dst = dir.join(&c.rel);
     let (a, b) = (side(&src, Some((c.rewrite, rw)))?, side(&dst, None)?);
-    // The default's settings.json as the profile receives it: with its overlay.
-    let from = if rel == copy::SETTINGS_FILE && rw.has_overlay() {
-        format!("default/{rel} + {alias} overlay")
-    } else {
-        format!("default/{rel}")
-    };
+    let from = format!("default/{rel}");
     let to = format!("{alias}/{rel}");
     if rel == copy::LOCAL_SETTINGS_FILE {
         return local_settings_diff(out, &from, &to, &a, &b, rw);
