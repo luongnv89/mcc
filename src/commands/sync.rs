@@ -296,10 +296,15 @@ fn gather_settings(
                     )
                 } else {
                     format!(
-                        "Take {} ({}) from {} into the default? Only that profile has it: it may be new there, or one the default dropped. Its value is not shown.",
+                        "Take {} ({}) from {} into the default? Only {} it: it may be new there, or one the default dropped. Its value is not shown.",
                         d.key,
                         d.category.as_str(),
-                        quoted(&d.sources)
+                        quoted(&d.sources),
+                        if d.sources.len() > 1 {
+                            "those profiles have"
+                        } else {
+                            "that profile has"
+                        }
                     )
                 };
                 if declined {
@@ -315,8 +320,11 @@ fn gather_settings(
                     set.push(value);
                     Outcome::Approved
                 } else {
+                    // Read afresh: an earlier decline in this run is kept.
                     for (s, h) in hashes {
-                        if let (Some(mut m), Some(h)) = (s.manifest.clone(), h) {
+                        if let (Some(mut m), Some(h)) =
+                            (manifest::load(&s.dir).manifest().cloned(), h)
+                        {
                             m.declined_secrets.insert(d.key.clone(), h);
                             m.save(&s.dir)?;
                         }
@@ -1353,16 +1361,24 @@ mod tests {
     #[test]
     fn a_declined_proposal_is_not_asked_again_until_its_value_changes() {
         let (_d, paths, mut cfg) = upgraded_with_codemode("codemode-on");
-        let mut ask = Scripted::new(&[false]);
+        // A second key only csdaisy has: both declined in one run are kept.
+        let cs = paths.profile_dir("csdaisy");
+        let mut s = settings(&cs);
+        s["env"]["OTHER_FLAG"] = "1".into();
+        write(&cs, s);
+        let mut ask = Scripted::new(&[false, false]);
         sync(&paths, &mut cfg, &mut ask);
-        assert_eq!(ask.prompts.len(), 1);
+        assert_eq!(ask.prompts.len(), 2, "{:?}", ask.prompts);
         assert!(
             settings(&paths.default_dir)["env"]
                 .get("CODE_MODE")
                 .is_none()
         );
-        let cs = paths.profile_dir("csdaisy");
         let m = record(&cs);
+        assert_eq!(
+            m.declined_secrets["env.OTHER_FLAG"],
+            manifest::hash_json(&serde_json::json!("1"))
+        );
         assert_eq!(
             m.declined_secrets["env.CODE_MODE"],
             manifest::hash_json(&serde_json::json!("codemode-on"))
