@@ -2133,3 +2133,371 @@ fn settings_overlay_errors_and_excluded_settings() {
         .stderr(predicate::str::contains("overlay is not applied"));
     assert_eq!(sb.read(".mcc/profiles/work/settings.json"), before);
 }
+
+// ---- settings synced key by key (#129) ---------------------------------------
+
+const CODE_MODE: &str = "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE";
+
+/// The settings.json at `rel` (a profile dir, or `.claude`).
+fn settings_of(sb: &Sandbox, dir: &str) -> serde_json::Value {
+    json(sb.read(&format!("{dir}/settings.json")).as_bytes())
+}
+
+/// Set `env.NAME` in the settings.json of `dir`.
+fn set_env(sb: &Sandbox, dir: &str, name: &str, value: &str) {
+    let mut s = settings_of(sb, dir);
+    if s.get("env").is_none() {
+        s["env"] = serde_json::json!({});
+    }
+    s["env"][name] = value.into();
+    sb.write(&format!("{dir}/settings.json"), &s.to_string());
+}
+
+/// default + `work`, `lab` and `csdaisy`, all cloned from it.
+fn three_profiles() -> Sandbox {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    for p in ["work", "lab", "csdaisy"] {
+        with_profile(&sb, p, "--clone");
+    }
+    sb
+}
+
+/// `mcc sync ARGS…`'s stderr; it must succeed.
+fn sync_stderr(sb: &Sandbox, args: &[&str]) -> String {
+    let o = sb.mcc().arg("sync").args(args).output().unwrap();
+    let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+    assert!(o.status.success(), "{stderr}");
+    stderr
+}
+
+#[test]
+fn a_basic_setting_changed_in_any_profile_reaches_every_profile() {
+    let sb = three_profiles();
+    set_env(&sb, ".mcc/profiles/csdaisy", CODE_MODE, "1");
+
+    // Syncing another profile still reads csdaisy's settings: the key goes
+    // into the default, and into the profile synced.
+    let err = sync_stderr(&sb, &["work"]);
+    assert!(
+        err.contains(&format!(
+            "env.{CODE_MODE}: basic · from \"csdaisy\" · synced"
+        )),
+        "{err}"
+    );
+    assert_eq!(settings_of(&sb, ".claude")["env"][CODE_MODE], "1");
+    assert_eq!(
+        settings_of(&sb, ".mcc/profiles/work")["env"][CODE_MODE],
+        "1"
+    );
+    // The default's settings.json was backed up first.
+    let backups: Vec<_> = std::fs::read_dir(sb.path(".claude/.mcc-backup"))
+        .unwrap()
+        .collect();
+    assert_eq!(backups.len(), 1);
+    // lab gets it on its own sync; then nothing is left to report.
+    assert!(
+        settings_of(&sb, ".mcc/profiles/lab")["env"]
+            .get(CODE_MODE)
+            .is_none()
+    );
+    let err = sync_stderr(&sb, &["--all"]);
+    assert!(!err.contains("Settings changed in profiles"), "{err}");
+    for p in ["work", "lab", "csdaisy"] {
+        let dir = format!(".mcc/profiles/{p}");
+        assert_eq!(settings_of(&sb, &dir)["env"][CODE_MODE], "1", "{p}");
+        // The rest of the default's settings, paths rewritten, still there.
+        let hook = settings_of(&sb, &dir)["hooks"]["Stop"][0]["hooks"][0]["command"].clone();
+        assert!(
+            hook.as_str()
+                .unwrap()
+                .contains(&format!("{dir}/hooks/notify.sh")),
+            "{hook}"
+        );
+    }
+    let list = sb
+        .mcc()
+        .args(["list", "--json", "--no-usage"])
+        .output()
+        .unwrap();
+    let all: Vec<serde_json::Value> = serde_json::from_slice(&list.stdout).unwrap();
+    for p in ["work", "lab", "csdaisy"] {
+        assert_eq!(by_name(&all, p)["sync"]["behind"], 0, "{p}");
+        assert_eq!(by_name(&all, p)["sync"]["local_edits"], 0, "{p}");
+    }
+}
+
+#[test]
+fn a_key_changed_differently_in_two_profiles_is_a_conflict() {
+    let sb = three_profiles();
+    for (p, model) in [("work", "sonnet"), ("lab", "haiku")] {
+        let dir = format!(".mcc/profiles/{p}");
+        let mut s = settings_of(&sb, &dir);
+        s["model"] = model.into();
+        sb.write(&format!("{dir}/settings.json"), &s.to_string());
+    }
+    let err = sync_stderr(&sb, &["--all"]);
+    assert!(
+        err.contains("model: basic · from \"lab\", \"work\" · conflict: changed differently in several profiles; skipped"),
+        "{err}"
+    );
+    assert!(!err.contains("hooks"), "{err}");
+    assert_eq!(settings_of(&sb, ".claude")["model"], "opus");
+    assert_eq!(settings_of(&sb, ".mcc/profiles/work")["model"], "sonnet");
+    assert_eq!(settings_of(&sb, ".mcc/profiles/lab")["model"], "haiku");
+    assert_eq!(settings_of(&sb, ".mcc/profiles/csdaisy")["model"], "opus");
+}
+
+#[test]
+fn a_basic_setting_removed_in_a_profile_is_removed_everywhere_with_yes() {
+    let sb = three_profiles();
+    let mut s = settings_of(&sb, ".mcc/profiles/lab");
+    s.as_object_mut().unwrap().remove("statusLine");
+    sb.write(".mcc/profiles/lab/settings.json", &s.to_string());
+    // Without --yes (and no terminal to ask at) the removal is skipped.
+    let err = sync_stderr(&sb, &["work"]);
+    assert!(
+        err.contains(
+            "statusLine: basic · from \"lab\" · skipped (removing it needs --yes or a terminal)"
+        ),
+        "{err}"
+    );
+    assert!(settings_of(&sb, ".claude").get("statusLine").is_some());
+    let err = sync_stderr(&sb, &["--all", "--yes"]);
+    assert!(
+        err.contains("statusLine: basic · from \"lab\" · removed"),
+        "{err}"
+    );
+    for dir in [".claude", ".mcc/profiles/work", ".mcc/profiles/csdaisy"] {
+        assert!(settings_of(&sb, dir).get("statusLine").is_none(), "{dir}");
+    }
+}
+
+#[test]
+fn account_bound_settings_are_never_copied_to_another_profile() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    // The default's own provider never reaches a clone.
+    set_env(&sb, ".claude", "ANTHROPIC_API_KEY", "default-account-key");
+    with_profile(&sb, "work", "--clone");
+    with_profile(&sb, "csdaisy", "--clone");
+    assert!(
+        settings_of(&sb, ".mcc/profiles/work")["env"]
+            .get("ANTHROPIC_API_KEY")
+            .is_none()
+    );
+    set_env(
+        &sb,
+        ".mcc/profiles/csdaisy",
+        "ANTHROPIC_API_KEY",
+        "csdaisy-account-key",
+    );
+    set_env(
+        &sb,
+        ".mcc/profiles/csdaisy",
+        "ANTHROPIC_BASE_URL",
+        "https://gw.example.invalid",
+    );
+    // A basic key next to them still travels.
+    set_env(&sb, ".mcc/profiles/csdaisy", CODE_MODE, "1");
+
+    let err = sync_stderr(&sb, &["--all"]);
+    assert!(
+        err.contains("env.ANTHROPIC_BASE_URL: account-bound · from \"csdaisy\" · skipped (account-bound: never copied to another profile)"),
+        "{err}"
+    );
+    let default = settings_of(&sb, ".claude");
+    assert_eq!(default["env"]["ANTHROPIC_API_KEY"], "default-account-key");
+    assert!(
+        default["env"].get("ANTHROPIC_BASE_URL").is_none(),
+        "{default}"
+    );
+    let work = settings_of(&sb, ".mcc/profiles/work");
+    assert!(work["env"].get("ANTHROPIC_API_KEY").is_none(), "{work}");
+    assert!(work["env"].get("ANTHROPIC_BASE_URL").is_none(), "{work}");
+    assert_eq!(work["env"][CODE_MODE], "1");
+    // csdaisy keeps its own, and they are not a local edit.
+    let cs = settings_of(&sb, ".mcc/profiles/csdaisy");
+    assert_eq!(cs["env"]["ANTHROPIC_API_KEY"], "csdaisy-account-key");
+    assert_eq!(
+        cs["env"]["ANTHROPIC_BASE_URL"],
+        "https://gw.example.invalid"
+    );
+    let err = sync_stderr(&sb, &["--all"]);
+    assert!(!err.contains("account-bound"), "{err}");
+    assert!(!err.contains("local edit"), "{err}");
+}
+
+/// What mcc records for a declined value: the hash `manifest::hash_json`
+/// gives a JSON string.
+fn value_hash(value: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"json\0");
+    h.update(serde_json::Value::from(value).to_string().as_bytes());
+    format!("{:x}", h.finalize())
+}
+
+#[test]
+fn a_shared_secret_is_only_synced_once_agreed_to() {
+    let sb = three_profiles();
+    set_env(
+        &sb,
+        ".mcc/profiles/csdaisy",
+        "TAVILY_API_KEY",
+        "tvly-shared-one",
+    );
+    // No terminal to ask at: skipped, and the sync goes on; --yes never
+    // agrees for the user.
+    for args in [&["--all"][..], &["--all", "--yes"]] {
+        let err = sync_stderr(&sb, args);
+        assert!(
+            err.contains("env.TAVILY_API_KEY: shared secret · from \"csdaisy\" · skipped (a shared secret is only synced once you agree at a terminal)"),
+            "{err}"
+        );
+        assert!(err.contains("3/3 profiles synced"), "{err}");
+    }
+    assert!(settings_of(&sb, ".claude").get("env").is_none());
+    assert!(settings_of(&sb, ".mcc/profiles/work").get("env").is_none());
+    let err = sync_stderr(&sb, &["--all", "--dry-run"]);
+    assert!(err.contains("· would be asked about"), "{err}");
+
+    // A value declined before is not asked about again…
+    let path = ".mcc/profiles/csdaisy/.mcc-sync.json";
+    let mut m = json(sb.read(path).as_bytes());
+    m["declined_secrets"] =
+        serde_json::json!({"env.TAVILY_API_KEY": value_hash("tvly-shared-one")});
+    sb.write(path, &m.to_string());
+    let err = sync_stderr(&sb, &["--all"]);
+    assert!(err.contains("· declined earlier"), "{err}");
+    // …until it changes.
+    set_env(
+        &sb,
+        ".mcc/profiles/csdaisy",
+        "TAVILY_API_KEY",
+        "tvly-shared-two",
+    );
+    let err = sync_stderr(&sb, &["--all"]);
+    assert!(err.contains("· skipped (a shared secret"), "{err}");
+}
+
+/// The first sync after upgrading (#129): records from before per-key
+/// settings, a shared secret set differently in each profile, and a basic
+/// key in one. The basic key is synced; the secret is never spread, and
+/// no prompt is needed for it.
+#[test]
+fn first_sync_after_upgrade_syncs_basic_keys_and_never_spreads_secrets() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    set_env(&sb, ".claude", "TAVILY_API_KEY", "tvly-default");
+    for p in ["work", "lab", "csdaisy"] {
+        with_profile(&sb, p, "--clone");
+        // As an older mcc recorded it: the whole file's hash only.
+        let path = format!(".mcc/profiles/{p}/.mcc-sync.json");
+        let mut m = json(sb.read(&path).as_bytes());
+        let m = m.as_object_mut().unwrap();
+        m.remove("settings");
+        m["items"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|i| i != ":settings");
+        sb.write(&path, &serde_json::Value::Object(m.clone()).to_string());
+    }
+    set_env(&sb, ".mcc/profiles/work", "TAVILY_API_KEY", "tvly-work");
+    set_env(&sb, ".mcc/profiles/lab", "TAVILY_API_KEY", "tvly-lab");
+    set_env(&sb, ".mcc/profiles/csdaisy", CODE_MODE, "1");
+    // The default changed since too.
+    let mut d = settings_of(&sb, ".claude");
+    d["effortLevel"] = "high".into();
+    sb.write(".claude/settings.json", &d.to_string());
+
+    let err = sync_stderr(&sb, &["--all"]);
+    assert!(
+        err.contains(&format!(
+            "env.{CODE_MODE}: basic · from \"csdaisy\" · synced"
+        )),
+        "{err}"
+    );
+    assert!(
+        err.contains("env.TAVILY_API_KEY: shared secret · from \"lab\", \"work\" · conflict"),
+        "{err}"
+    );
+    assert!(
+        !err.contains("would be asked") && !err.contains("agree at a terminal"),
+        "{err}"
+    );
+    assert_eq!(
+        settings_of(&sb, ".claude")["env"]["TAVILY_API_KEY"],
+        "tvly-default"
+    );
+    for (p, tavily) in [
+        ("work", "tvly-work"),
+        ("lab", "tvly-lab"),
+        ("csdaisy", "tvly-default"),
+    ] {
+        let s = settings_of(&sb, &format!(".mcc/profiles/{p}"));
+        assert_eq!(s["env"]["TAVILY_API_KEY"], tavily, "{p}");
+        assert_eq!(s["env"][CODE_MODE], "1", "{p}");
+        assert_eq!(s["effortLevel"], "high", "{p}");
+    }
+    // The records are per key now: the next sync has nothing new to say.
+    let err = sync_stderr(&sb, &["--all"]);
+    assert!(!err.contains(&format!("env.{CODE_MODE}:")), "{err}");
+    let m = json(sb.read(".mcc/profiles/csdaisy/.mcc-sync.json").as_bytes());
+    assert!(m["settings"][format!("env.{CODE_MODE}")].is_string(), "{m}");
+}
+
+/// No secret value is ever shown or logged: not by a sync, a dry run,
+/// nor `mcc diff`.
+#[test]
+fn secret_setting_values_never_reach_the_output_or_the_log() {
+    let sb = three_profiles();
+    // Built at run time, so the source holds no token-shaped literal.
+    let tavily = ["tvly", "LEAKCHECK", "1234567890abcdef"].join("-");
+    let anthropic = ["sk", "ant", "LEAKCHECK", "0987654321fedcba"].join("-");
+    set_env(&sb, ".mcc/profiles/csdaisy", "TAVILY_API_KEY", &tavily);
+    set_env(
+        &sb,
+        ".mcc/profiles/csdaisy",
+        "ANTHROPIC_API_KEY",
+        &anthropic,
+    );
+    // The default has another TAVILY value, so the profile differs from it.
+    set_env(&sb, ".claude", "TAVILY_API_KEY", "tvly-default-value");
+    let runs: [&[&str]; 4] = [
+        &["sync", "--all", "--dry-run"],
+        &["sync", "--all"],
+        &["diff", "csdaisy"],
+        &["sync", "csdaisy", "--force"],
+    ];
+    for args in runs {
+        let o = sb.mcc().args(args).output().unwrap();
+        let (out, err) = (
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr),
+        );
+        for secret in [&tavily, &anthropic] {
+            assert!(!out.contains(secret.as_str()), "{args:?} stdout: {out}");
+            assert!(!err.contains(secret.as_str()), "{args:?} stderr: {err}");
+        }
+        if args[0] == "diff" {
+            // The key is shown, its value hidden.
+            assert!(out.contains("TAVILY_API_KEY"), "{out}");
+            assert!(out.contains("<hidden, differs>"), "{out}");
+        }
+    }
+    let log = sb.read(".mcc/logs/mcc.log");
+    for secret in [&tavily, &anthropic] {
+        assert!(!log.contains(secret.as_str()), "{log}");
+    }
+    // The account key stays in csdaisy only.
+    assert_eq!(
+        settings_of(&sb, ".mcc/profiles/csdaisy")["env"]["ANTHROPIC_API_KEY"],
+        anthropic.as_str()
+    );
+    assert!(!sb.read(".claude/settings.json").contains(&anthropic));
+    assert!(
+        !sb.read(".mcc/profiles/work/settings.json")
+            .contains(&anthropic)
+    );
+}

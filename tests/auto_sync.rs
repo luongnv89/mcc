@@ -731,3 +731,42 @@ fn auto_sync_keeps_only_its_latest_backups_and_never_prunes_mcc_syncs() {
         "# my rules v10\n"
     );
 }
+
+/// #129: settings are caught up key by key on launch too. A profile with
+/// its own provider still gets a new key of the default, and keeps its
+/// own; a key set in a profile is never taken into the default, nor into
+/// the other profiles, without `mcc sync`.
+#[test]
+fn a_launch_catches_settings_up_key_by_key_and_never_gathers() {
+    let sb = sandbox();
+    let edit = |rel: &str, f: &dyn Fn(&mut serde_json::Value)| {
+        let mut s = json(sb.read(rel).as_bytes());
+        f(&mut s);
+        sb.write(rel, &s.to_string());
+    };
+    edit(".mcc/profiles/work/settings.json", &|s| {
+        s["env"] =
+            serde_json::json!({"ANTHROPIC_BASE_URL": "https://gw.example.invalid", "MINE": "1"});
+    });
+    edit(".claude/settings.json", &|s| {
+        s["alwaysThinkingEnabled"] = true.into()
+    });
+    let default_before = sb.read(".claude/settings.json");
+
+    launch(&sb, "work");
+    let s = json(sb.read(".mcc/profiles/work/settings.json").as_bytes());
+    assert_eq!(s["alwaysThinkingEnabled"], true, "{s}");
+    assert_eq!(
+        s["env"]["ANTHROPIC_BASE_URL"], "https://gw.example.invalid",
+        "{s}"
+    );
+    assert_eq!(s["env"]["MINE"], "1", "{s}");
+    assert_eq!(sb.read(".claude/settings.json"), default_before);
+    assert!(!sb.exists(".claude/.mcc-backup"));
+    let lab = json(sb.read(".mcc/profiles/lab/settings.json").as_bytes());
+    assert_eq!(lab["alwaysThinkingEnabled"], true, "{lab}");
+    assert!(lab.get("env").is_none(), "{lab}");
+    // The profile's own key is a local edit until `mcc sync` takes it.
+    let cell = sync_cell(&sb, "work");
+    assert!(cell.contains("1 local edit"), "{cell}");
+}
