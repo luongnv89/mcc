@@ -700,14 +700,14 @@ host = "me@lab-box"                 # what `ssh` connects to: a host, user@host,
 mcc = "/home/me/.cargo/bin/mcc"     # optional: mcc's full path there
 ```
 
-`mcc usage` then runs `mcc usage` on each machine over SSH and shows one table per machine after this one's, which is called `local`. Each table is headed by its machine's name and when its numbers were last updated:
+`mcc usage` then runs `mcc usage` on each machine over SSH and shows one table per machine after this one's, which is called `local`. Each table sits under a rule that names its machine and says when its numbers were last updated:
 
 ```text
-local · updated 30m ago
+── local · updated 30m ago ─────────────────────────────────────────────────────────────────────────
 # PROFILE    ALSO ON  LAST ACTIVE  LOGIN ENDS  5-HOUR  RESETS IN  WEEKLY          RESETS IN  UPDATED
 1 default ★  lab      just now     unknown     —                  ██░░░░░░░░ 20%  1d 0h      30m ago
 
-lab (me@lab-box) · updated 5m ago
+── lab (me@lab-box) · updated 5m ago ───────────────────────────────────────────────────────────────
 # PROFILE    ALSO ON  LAST ACTIVE  LOGIN ENDS  5-HOUR  RESETS IN  WEEKLY          RESETS IN  UPDATED
 1 work       local    unknown      unknown     —                  ██░░░░░░░░ 20%  1d 0h      30m ago
 2 default ★  —        just now     unknown     —                  ███░░░░░░░ 30%  1d 0h      5m ago

@@ -61,6 +61,23 @@ fn run(sb: &Sandbox, stub: &UsageStub, args: &[&str]) -> String {
     stdout_of(sb.mcc().env("MCC_USAGE_URL", &stub.url).args(args))
 }
 
+/// `mcc usage`'s table output with each machine heading's rule taken off
+/// (`── lab (lab-host) · updated 5m ago ───` → `lab (lab-host) · updated
+/// 5m ago`), for tests about what a heading says.
+fn table(sb: &Sandbox, stub: &UsageStub, args: &[&str]) -> String {
+    unruled(&run(sb, stub, args))
+}
+
+fn unruled(out: &str) -> String {
+    out.lines()
+        .map(|l| match l.strip_prefix("── ") {
+            Some(h) => h.trim_end_matches('─').trim_end(),
+            None => l,
+        })
+        .map(|l| format!("{l}\n"))
+        .collect()
+}
+
 fn v2(sb: &Sandbox, stub: &UsageStub, args: &[&str]) -> serde_json::Value {
     json(run(sb, stub, &[&["usage", "--json-v2"], args].concat()).as_bytes())
 }
@@ -111,7 +128,7 @@ fn every_machine_gets_its_own_table_next_to_this_ones() {
     local.add_machine("lab", "lab-host", Some(&lab), None);
     let stub = stub(&[]);
 
-    let out = run(&local, &stub, &["usage"]);
+    let out = table(&local, &stub, &["usage"]);
     // T4: options first, then `--` right before the host.
     assert_eq!(
         local.ssh_log(),
@@ -371,7 +388,7 @@ fn a_machine_that_fails_shows_why_while_the_others_show() {
     local.add_machine("nowhere", "no-such-host", None, None);
     let stub = stub(&[]);
 
-    let out = run(&local, &stub, &["usage"]);
+    let out = table(&local, &stub, &["usage"]);
     for line in [
         "down (down) · updated — · ssh could not connect to down without a prompt: check that `ssh down true` works with your key",
         "old (old) · updated — · the mcc on old is too old to share its usage: upgrade it there",
@@ -746,7 +763,7 @@ fn what_another_machine_sends_is_never_shown_raw() {
     local.write("ssh-canned", &reply.to_string());
     local.add_machine("box", "canned", None, None);
     let stub = stub(&[]);
-    let out = run(&local, &stub, &["usage", "--show-email"]);
+    let out = table(&local, &stub, &["usage", "--show-email"]);
     assert!(out.contains("box (canned) · updated —"), "{out}");
     assert!(!out.contains('\u{1b}') && !out.contains("evil"), "{out:?}");
     let v = v2(&local, &stub, &["--show-email"]);
@@ -772,7 +789,7 @@ fn this_machines_heading_shows_its_own_update_time() {
     let own = json(local.read(".mcc/state/default/usage.json").as_bytes())["updated_at"].clone();
 
     for _ in 0..2 {
-        let out = run(&local, &stub, &["usage"]);
+        let out = table(&local, &stub, &["usage"]);
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines[0], "local · updated 30m ago", "{out}");
         assert!(
@@ -825,7 +842,7 @@ fn another_machine_tells_its_own_update_time_from_numbers_it_got() {
             .get("own_updated_at")
             .is_none()
     );
-    let out = run(&local, &stub, &["usage"]);
+    let out = table(&local, &stub, &["usage"]);
     assert!(
         out.lines().any(|l| l == "lab (lab-host) · updated 2h ago"),
         "{out}"
@@ -889,7 +906,7 @@ fn a_time_ahead_of_this_clock_never_wins() {
     // Its own times weren't believed, so it has none.
     assert_eq!(box_v["updated_at"], serde_json::Value::Null, "{v}");
     assert_eq!(local.read(".mcc/state/default/usage.json"), before);
-    let out = run(&local, &stub, &["usage"]);
+    let out = table(&local, &stub, &["usage"]);
     assert!(out.starts_with("local · updated 5m ago\n"), "{out}");
     assert!(out.contains("box (canned) · updated —"), "{out}");
     assert_eq!(local.read(".mcc/state/default/usage.json"), before);
@@ -931,4 +948,42 @@ fn a_machine_that_fails_to_refresh_keeps_what_it_had() {
     assert_eq!(machine_of(&v, "box")["error"], serde_json::Value::Null);
     // Only ann was looked up, here; dan's lookup never ran.
     assert_eq!(stub.tokens(), ["tok-ann"]);
+}
+
+/// Each machine's heading is a rule as wide as the tables, so machines
+/// stand apart; a narrower terminal caps it.
+#[test]
+fn each_machines_heading_is_a_rule_as_wide_as_the_tables() {
+    let local = machine(Some(("ann@example.com", "tok-1")), &[]);
+    let lab = machine(Some(("bob@example.com", "tok-2")), &[]);
+    local.add_machine("lab", "lab-host", Some(&lab), None);
+    let stub = stub(&[]);
+    let is_rule = |l: &&str| l.starts_with("── ");
+
+    let out = run(&local, &stub, &["usage"]);
+    let width = out
+        .lines()
+        .filter(|l| !is_rule(l))
+        .map(|l| l.chars().count())
+        .max()
+        .unwrap();
+    let rules: Vec<&str> = out.lines().filter(is_rule).collect();
+    assert_eq!(rules.len(), 2, "{out}");
+    for r in rules {
+        assert!(r.ends_with("──"), "{out}");
+        assert_eq!(r.chars().count(), width, "{out}");
+    }
+
+    let narrow = stdout_of(
+        local
+            .mcc()
+            .env("MCC_USAGE_URL", &stub.url)
+            .env("COLUMNS", "40")
+            .args(["usage"]),
+    );
+    let rules: Vec<&str> = narrow.lines().filter(is_rule).collect();
+    assert_eq!(rules.len(), 2, "{narrow}");
+    for r in rules {
+        assert_eq!(r.chars().count(), 40, "{narrow}");
+    }
 }

@@ -443,12 +443,13 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
         super::write_json_with(&mut out, "profiles", &rows, args.json_v2, &extra)?;
     } else {
         // Each line, and whether it counts for the layout's width: a
-        // machine's heading doesn't (its error may be long).
+        // machine's heading doesn't (its error may be long), and is drawn
+        // as a rule as wide as the tables once the layout is known.
         let lines = |l: Layout| {
-            let mut lines: Vec<(String, bool)> = Vec::new();
+            let mut lines: Vec<(Line, bool)> = Vec::new();
             if machines.is_some() {
                 lines.push((
-                    heading(LOCAL_MACHINE, None, local_updated, None, now),
+                    Line::Heading(heading(LOCAL_MACHINE, None, local_updated, None, now)),
                     false,
                 ));
             }
@@ -456,23 +457,29 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
                 lines.extend(
                     render(&entries, l, show_email, now)
                         .into_iter()
-                        .map(|t| (t, true)),
+                        .map(|t| (Line::Text(t), true)),
                 );
             }
             if let Some(d) = &devin {
                 if !entries.is_empty() {
-                    lines.push((String::new(), false));
+                    lines.push((Line::Text(String::new()), false));
                 }
                 lines.extend(
                     render_devin(d, entries.len(), l, now)
                         .into_iter()
-                        .map(|t| (t, true)),
+                        .map(|t| (Line::Text(t), true)),
                 );
             }
             for v in machines.iter().flatten() {
-                lines.push((String::new(), false));
+                lines.push((Line::Text(String::new()), false));
                 lines.push((
-                    heading(&v.name, Some(&v.host), v.updated_at, v.error.as_ref(), now),
+                    Line::Heading(heading(
+                        &v.name,
+                        Some(&v.host),
+                        v.updated_at,
+                        v.error.as_ref(),
+                        now,
+                    )),
                     false,
                 ));
                 let n = v
@@ -485,32 +492,41 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
                     lines.extend(
                         render(profiles, l, show_email, now)
                             .into_iter()
-                            .map(|t| (t, true)),
+                            .map(|t| (Line::Text(t), true)),
                     );
                 }
                 for d in devins {
                     if !profiles.is_empty() {
-                        lines.push((String::new(), false));
+                        lines.push((Line::Text(String::new()), false));
                     }
-                    lines.extend(render_devin(d, n, l, now).into_iter().map(|t| (t, true)));
+                    lines.extend(
+                        render_devin(d, n, l, now)
+                            .into_iter()
+                            .map(|t| (Line::Text(t), true)),
+                    );
                 }
             }
             lines
         };
-        let layout = ui::fit_layout(
-            &LAYOUTS,
-            |l| l.bar,
-            |l| {
-                lines(l)
-                    .iter()
-                    .filter(|(_, counts)| *counts)
-                    .map(|(line, _)| measure_text_width(line))
-                    .max()
-                    .unwrap_or(0)
-            },
-        );
-        for (line, _) in lines(layout) {
-            writeln!(out, "{line}")?;
+        let width = |lines: &[(Line, bool)]| {
+            lines
+                .iter()
+                .filter_map(|(line, counts)| match line {
+                    Line::Text(t) if *counts => Some(measure_text_width(t)),
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(0)
+        };
+        let layout = ui::fit_layout(&LAYOUTS, |l| l.bar, |l| width(&lines(l)));
+        let lines = lines(layout);
+        // A heading's rule spans the tables, never past the terminal.
+        let rule_width = ui::terminal_width().map_or(width(&lines), |w| width(&lines).min(w));
+        for (line, _) in lines {
+            match line {
+                Line::Text(t) => writeln!(out, "{t}")?,
+                Line::Heading(h) => writeln!(out, "{}", rule(&h, rule_width))?,
+            }
         }
         drop(out);
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
@@ -854,8 +870,33 @@ fn merge_accounts(paths: &Paths, entries: &mut [Entry], views: &mut [MachineView
     }
 }
 
+/// One line of `mcc usage`'s table output: a table's text as it is, or a
+/// machine's heading, drawn by [`rule`] once the tables' width is known.
+enum Line {
+    Text(String),
+    Heading(String),
+}
+
+/// A machine's heading as a rule `width` columns wide, so each machine's
+/// tables stand apart: the heading in bold between dim `─` lines. A
+/// heading too long for the rule (a long error) gets no tail.
+///
+/// ```text
+/// ── lab (me@lab-box) · updated 12m ago ──────────────────────────────
+/// ```
+fn rule(text: &str, width: usize) -> String {
+    let lead = "── ";
+    let fill = width.saturating_sub(lead.chars().count() + measure_text_width(text) + 1);
+    let mut line = format!("{}{}", style(lead).dim(), style(text).bold());
+    if fill > 0 {
+        line.push_str(&format!(" {}", style("─".repeat(fill)).dim()));
+    }
+    line
+}
+
 /// A machine's heading over its table (#130): its name (and host), and
 /// when its numbers were last updated, or "—" and why it couldn't be read.
+/// [`rule`] draws it.
 ///
 /// ```text
 /// lab (me@lab-box) · updated 12m ago
@@ -879,7 +920,7 @@ fn heading(
     if let Some(e) = error {
         text.push_str(&format!(" · {}", e.describe(name, host.unwrap_or(name))));
     }
-    style(text).bold().to_string()
+    text
 }
 
 /// Order `entries` as `order` says (#126): alphabetically by name, or by
