@@ -674,7 +674,8 @@ pub enum Secrets<'a> {
     Held,
     /// Held, except the keys in this set, which the user agreed to.
     HeldExcept(&'a BTreeSet<String>),
-    /// Copied as any key is: a new profile cloned from the default.
+    /// Copied as any key is: items `mcc link` copies back from the
+    /// default when a profile stops linking them.
     Copied,
 }
 
@@ -1318,7 +1319,8 @@ fn linked_ancestor(dst_dir: &Path, rel: &Path) -> Option<PathBuf> {
 }
 
 /// Compute what a copy from `src` to `dst` would change (two-way: every
-/// difference is taken from the source).
+/// difference is taken from the source, shared secrets included: what
+/// `mcc link` copies back; a clone holds them, see [`Secrets`]).
 pub fn plan(
     src_dir: &Path,
     src_json: &Path,
@@ -1462,14 +1464,8 @@ pub fn plan_with(
             }
             Kind::File | Kind::Link(_) => {
                 let local = rw.local_settings_file(&src) && rw.settings_like(&src);
-                let mut local_held = Vec::new();
                 let want = if local {
-                    let (bytes, held) = local_desired(&src, &dst, item.rewrite, rw, &base.secrets)?;
-                    if !held.is_empty() {
-                        plan.prepared.insert(item.rel.clone(), bytes.clone());
-                    }
-                    local_held = held;
-                    local_settings_hash(&bytes, rw)
+                    local_settings_hash(&desired_bytes(&src, item.rewrite, rw)?, rw)
                 } else {
                     desired_hash(&src, item.rewrite, rw)?.expect("file or symlink")
                 };
@@ -1488,6 +1484,7 @@ pub fn plan_with(
                     }
                     _ => want,
                 };
+                let mut have = None;
                 if detached {
                     push(Action::Add, item.rel.clone(), false);
                 } else if kind(&dst) == Kind::Missing {
@@ -1501,7 +1498,7 @@ pub fn plan_with(
                     // file without the default's account-bound keys.
                     push(Action::Update, item.rel.clone(), false);
                 } else {
-                    let have = if local {
+                    have = if local {
                         local_settings_current(&dst, base, rw)?
                     } else {
                         current_hash(&dst)?
@@ -1514,15 +1511,26 @@ pub fn plan_with(
                         push(a, item.rel.clone(), f);
                     }
                 }
-                // Asking about a held secret is moot while the file is
-                // kept as the profile has it (a local edit or conflict).
-                let kept = changes
-                    .iter()
-                    .rev()
-                    .find(|c| c.rel == item.rel)
-                    .is_some_and(|c| c.action.kept());
-                if !kept {
-                    plan.local_held.extend(local_held);
+                // settings.local.json the sync writes: the shared secrets
+                // the default's adds or changes are held out of it. Where
+                // the profile's is kept (a local edit or conflict) or
+                // already as the default gives it, there is nothing to hold.
+                let writes = changes
+                    .last()
+                    .is_some_and(|c| c.rel == item.rel && !c.action.kept() && !c.dir);
+                if local && writes {
+                    let (bytes, held) = local_desired(&src, &dst, item.rewrite, rw, &base.secrets)?;
+                    if !held.is_empty() {
+                        let want = local_settings_hash(&bytes, rw);
+                        hashes.insert(item.rel.clone(), want.clone());
+                        if have.as_deref() == Some(want.as_str()) {
+                            changes.pop();
+                            plan.unchanged += 1;
+                        } else {
+                            plan.prepared.insert(item.rel.clone(), bytes);
+                        }
+                        plan.local_held.extend(held);
+                    }
                 }
             }
             Kind::Dir => {

@@ -2008,6 +2008,16 @@ mod tests {
         );
         assert_eq!(local(&lab)["env"]["SEARCH_TOKEN"], "tok-two");
         sync(&paths, &mut cfg, &mut Scripted::new(&[]));
+        // A profile that changes its own value has a local edit, kept and
+        // never asked about (asking anything fails the test).
+        let mut l = local(&lab);
+        l["env"]["SEARCH_TOKEN"] = "tok-lab-own".into();
+        std::fs::write(lab.join(copy::LOCAL_SETTINGS_FILE), l.to_string()).unwrap();
+        for _ in 0..2 {
+            sync(&paths, &mut cfg, &mut Scripted::new(&[]));
+            assert_eq!(local(&lab)["env"]["SEARCH_TOKEN"], "tok-lab-own");
+            assert_eq!(status(&paths, &cfg, "lab").local_edits, 1);
+        }
     }
 
     #[test]
