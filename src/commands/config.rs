@@ -165,6 +165,16 @@ fn settable(key: &str, parts: &[String]) -> Result<Key> {
         ["usage", "live_disclosed_at" | "devin_disclosed_at"] => {
             return Err(managed("mcc records it when it shows the live-usage note"));
         }
+        ["usage", "machines_disclosed_at"] => {
+            return Err(managed(
+                "mcc records it when it shows the note about reading other machines",
+            ));
+        }
+        ["machines", ..] => {
+            return Err(managed(
+                "other machines are added with `mcc config edit`: a [machines.NAME] table with host = \"user@host\" (and mcc = \"/full/path/to/mcc\" when needed)",
+            ));
+        }
         _ => {
             return Err(CliError::usage(format!("unknown config key \"{key}\""))
                 .hint(settable_hint())
@@ -450,7 +460,7 @@ fn load(paths: &Paths) -> Result<Config> {
 /// Check edited config text: it must load as mcc config and pass the
 /// checks the commands that set those keys make.
 pub fn check(text: &str) -> Result<Config> {
-    let cfg: Config = toml::from_str(text)
+    let cfg = Config::parse(text)
         .map_err(|e| CliError::input(format!("not valid mcc config: {}", e.message().trim())))?;
     if let Some(sort) = &cfg.usage.sort {
         crate::usage::check_sort_order(sort)
@@ -473,6 +483,10 @@ pub fn check(text: &str) -> Result<Config> {
                 .map_err(|e| CliError::input(format!("profiles.{alias}.share_group: {e}")))?;
         }
     }
+    for (name, m) in &cfg.machines {
+        m.check(name)
+            .map_err(|m| CliError::input(format!("machines.{name}: {m}")))?;
+    }
     Ok(cfg)
 }
 
@@ -488,7 +502,7 @@ fn edit(paths: &Paths) -> Result<()> {
     });
     let copy = edit_copy_path(file);
     write_private(&copy, &start)?;
-    let edited = loop {
+    let (edited, cfg) = loop {
         if let Err(e) = run_editor(&copy) {
             let _ = std::fs::remove_file(&copy);
             return Err(e);
@@ -501,7 +515,7 @@ fn edit(paths: &Paths) -> Result<()> {
             return Ok(());
         }
         match check(&edited) {
-            Ok(_) => break edited,
+            Ok(cfg) => break (edited, cfg),
             Err(e) => {
                 let again = ui::is_interactive() && {
                     ui::error(&format!("{e:#}"), None);
@@ -537,6 +551,9 @@ fn edit(paths: &Paths) -> Result<()> {
     let _ = std::fs::remove_file(&copy);
     crate::log::write("INFO", "config: edited by hand with `mcc config edit`");
     ui::success(&format!("saved {}", paths.display(file)));
+    for warning in cfg.unknown_key_warnings(&paths.display(file)) {
+        ui::warn(&warning);
+    }
     Ok(())
 }
 
@@ -760,6 +777,32 @@ mod tests {
         assert!(check(profile).is_ok());
         assert!(check(&format!("{profile}share_group = \"../x\"\n")).is_err());
         assert!(check(&format!("{profile}label = \"\"\n")).is_err());
+    }
+
+    /// #130: `[machines.NAME]` is checked like the keys `set` checks, and
+    /// none of it can be set with `mcc config set`.
+    #[test]
+    fn check_rejects_a_malformed_machine() {
+        let machine = |body: &str| check(&format!("[machines.lab]\n{body}"));
+        assert!(machine("host = \"me@lab-box\"\n").is_ok());
+        assert!(machine("host = \"lab\"\nmcc = \"/opt/my tools/mcc\"\n").is_ok());
+        for bad in [
+            "host = \"-oProxyCommand=x\"\n",
+            "host = \"lab box\"\n",
+            "host = \"lab\\nbox\"\n",
+            "host = \"\"\n",
+            "host = \"lab\"\nmcc = \"\"\n",
+            "host = \"lab\"\nmcc = \"~/bin/mcc\"\n",
+        ] {
+            let err = format!("{:#}", machine(bad).unwrap_err());
+            assert!(err.starts_with("machines.lab: "), "{bad}: {err}");
+        }
+        // No host at all doesn't load.
+        assert!(machine("mcc = \"/usr/bin/mcc\"\n").is_err());
+        assert!(check("[machines.local]\nhost = \"x\"\n").is_err());
+        assert!(check("[machines.\"Bad Name\"]\nhost = \"x\"\n").is_err());
+        assert!(key("machines.lab.host").is_err());
+        assert!(key("usage.machines_disclosed_at").is_err());
     }
 
     #[test]

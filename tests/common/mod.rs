@@ -5,6 +5,8 @@
 //! unless a test starts a stub. Devin is not set up by default: no
 //! credentials file and no `devin` command, unless a test adds them
 //! ([`Sandbox::seed_devin_login`], [`Sandbox::install_fake_devin`]).
+//! `ssh` is a fake too ([`FAKE_SSH`]): another machine is another sandbox
+//! ([`Sandbox::add_machine`]).
 #![allow(dead_code)]
 
 use std::io::{BufRead, BufReader, Write};
@@ -167,6 +169,45 @@ echo "security: The specified item could not be found in the keychain." >&2
 exit 44
 "#;
 
+/// Fake `ssh` (#130). It checks the arguments mcc gives it (options first:
+/// `-o BatchMode=yes -o ConnectTimeout=N`, then `--` right before the host,
+/// then the remote command as one word) and exits 98 when they differ.
+/// Otherwise it runs the remote command with `sh -c`, as sshd has the
+/// user's shell do, in the sandbox `$HOME/ssh-hosts/<host>` names: HOME and
+/// MCC_HOME there, its fakes, the mcc under test on PATH ($HOME/ssh-bin),
+/// and this run's usage endpoints. Each run appends its arguments to
+/// $HOME/ssh.log, one line, tab-separated. Hosts `down` (unreachable: exit
+/// 255), `old` (an mcc without the machine protocol: clap's usage error,
+/// exit 2), `garbage` (an answer that isn't JSON) and `canned` (whatever
+/// $HOME/ssh-canned holds) need no sandbox; any other host without one
+/// can't be resolved (exit 255). A host whose name ends in `-flaky` is
+/// served from its sandbox, except a refresh (a command with `--only`),
+/// which can't connect (exit 255).
+const FAKE_SSH: &str = r#"#!/bin/sh
+tab=$(printf '\t'); line=ssh
+for a in "$@"; do line="$line$tab$a"; done
+printf '%s\n' "$line" >> "$HOME/ssh.log"
+if [ $# -ne 7 ] || [ "$1" != "-o" ] || [ "$2" != "BatchMode=yes" ] || [ "$3" != "-o" ] || [ "$5" != "--" ]; then
+  echo "fake ssh: unexpected arguments: $*" >&2; exit 98
+fi
+case "$4" in ConnectTimeout=[1-9]*) ;; *) echo "fake ssh: no ConnectTimeout: $4" >&2; exit 98 ;; esac
+host="$6"
+case "$host" in
+  down) echo "ssh: connect to host down port 22: Connection refused" >&2; exit 255 ;;
+  old) echo "error: unexpected argument '--machine-protocol' found" >&2; exit 2 ;;
+  garbage) echo "Welcome to garbage!"; exit 0 ;;
+  canned) cat "$HOME/ssh-canned"; exit 0 ;;
+  *-flaky) case "$7" in *"'--only'"*) echo "ssh: connect to host $host port 22: Connection refused" >&2; exit 255 ;; esac ;;
+esac
+[ -f "$HOME/ssh-hosts/$host" ] || { echo "ssh: Could not resolve hostname $host" >&2; exit 255; }
+root=$(cat "$HOME/ssh-hosts/$host")
+exec env -i HOME="$root" MCC_HOME="$root" PATH="$root/fakebin:$root/.local/bin:$HOME/ssh-bin:/usr/bin:/bin" \
+  SHELL=/bin/zsh TERM_PROGRAM=TestTerm USER=mcc-test NO_COLOR=1 MCC_NO_SHELL_PROBE=1 MCC_NON_INTERACTIVE=1 \
+  MCC_CLAUDE_BIN="$root/fakebin/claude" MCC_SECURITY_BIN="$root/fakebin/security" MCC_SSH_BIN="$root/fakebin/ssh" \
+  MCC_USAGE_URL="$MCC_USAGE_URL" MCC_DEVIN_API_URL="$MCC_DEVIN_API_URL" \
+  sh -c "$7"
+"#;
+
 /// Nothing listens on the discard port: connections are refused at once.
 pub const REFUSED_URL: &str = "http://127.0.0.1:9/api/oauth/usage";
 
@@ -203,6 +244,13 @@ impl Sandbox {
         let security = bin.join("security");
         std::fs::write(&security, FAKE_SECURITY).unwrap();
         chmod_x(&security);
+        let ssh = bin.join("ssh");
+        std::fs::write(&ssh, FAKE_SSH).unwrap();
+        chmod_x(&ssh);
+        // The mcc another machine runs: the one under test.
+        let remote_bin = tmp.path().join("ssh-bin");
+        std::fs::create_dir_all(&remote_bin).unwrap();
+        std::os::unix::fs::symlink(mcc_bin(), remote_bin.join("mcc")).unwrap();
         Self { tmp }
     }
 
@@ -245,6 +293,7 @@ impl Sandbox {
             ("TERM_PROGRAM", "TestTerm".into()),
             ("MCC_CLAUDE_BIN", home.join("fakebin/claude").into()),
             ("MCC_SECURITY_BIN", home.join("fakebin/security").into()),
+            ("MCC_SSH_BIN", home.join("fakebin/ssh").into()),
             ("MCC_USAGE_URL", REFUSED_URL.into()),
             ("MCC_DEVIN_API_URL", REFUSED_URL.into()),
             ("USER", "mcc-test".into()),
@@ -311,6 +360,39 @@ impl Sandbox {
 }
 
 impl Sandbox {
+    /// Set up `[machines.<name>]` (#130) with `host`, which the fake ssh
+    /// serves from `remote`'s sandbox (`None`: one of its built-in hosts,
+    /// or an unknown one), and `mcc` when given.
+    pub fn add_machine(&self, name: &str, host: &str, remote: Option<&Sandbox>, mcc: Option<&str>) {
+        if let Some(r) = remote {
+            self.write(
+                &format!("ssh-hosts/{host}"),
+                &r.home().display().to_string(),
+            );
+        }
+        let quoted = |v: &str| toml::Value::String(v.into()).to_string();
+        let mut table = format!("\n[machines.{name}]\nhost = {}\n", quoted(host));
+        if let Some(m) = mcc {
+            table.push_str(&format!("mcc = {}\n", quoted(m)));
+        }
+        let cfg = if self.exists(".mcc/config.toml") {
+            self.read(".mcc/config.toml")
+        } else {
+            String::new()
+        };
+        self.write(".mcc/config.toml", &format!("{cfg}{table}"));
+    }
+
+    /// The fake ssh's runs: one line each, its arguments tab-separated
+    /// after `ssh`. Empty when ssh never ran.
+    pub fn ssh_log(&self) -> Vec<String> {
+        std::fs::read_to_string(self.path("ssh.log"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
     /// Sign the Devin CLI in: its credentials file, as `devin auth login`
     /// writes it, holding `token` (a plainly fake value) under the legacy
     /// `windsurf_api_key` key, with the sibling keys custats ignores.
@@ -393,6 +475,11 @@ pub fn oauth_blob_with_deadline(
     format!(
         r#"{{"claudeAiOauth":{{"accessToken":"{token}","refreshToken":"refresh-{token}","expiresAt":{expires_at_ms}{deadline},"scopes":["user:inference","user:profile"],"subscriptionType":"max"}}}}"#
     )
+}
+
+/// The mcc binary under test.
+pub fn mcc_bin() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_mcc"))
 }
 
 pub fn now_ms() -> i64 {

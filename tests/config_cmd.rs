@@ -8,6 +8,7 @@ use std::os::fd::AsRawFd;
 use std::time::Duration;
 
 use common::{Sandbox, stdout_of, with_profile};
+use predicates::prelude::*;
 use predicates::str::contains;
 
 fn sandbox() -> Sandbox {
@@ -357,4 +358,92 @@ fn get_and_path_do_not_wait_for_the_lock() {
         .failure();
     drop(f);
     assert!(!sb.read(CONFIG).contains("live = true"));
+}
+
+/// #130: `[machines.NAME]` is added with `mcc config edit`, which refuses
+/// a host ssh could read as an option or as two words; `get` prints it.
+#[test]
+fn machines_are_edited_by_hand_and_checked() {
+    let sb = sandbox();
+    let before = sb.read(CONFIG);
+    for (host, msg) in [
+        ("-oProxyCommand=x", "starts with '-'"),
+        ("lab box", "contains a space"),
+    ] {
+        let ed = editor(
+            &sb,
+            &format!("printf '\\n[machines.lab]\\nhost = \"{host}\"\\n' >> \"$1\"\n"),
+        );
+        sb.mcc()
+            .args(["config", "edit"])
+            .env("EDITOR", ed)
+            .assert()
+            .failure()
+            .stderr(contains("machines.lab: host"))
+            .stderr(contains(msg));
+        assert_eq!(sb.read(CONFIG), before);
+        no_edit_copies(&sb);
+    }
+    let ed = editor(
+        &sb,
+        "printf '\\n# my build box\\n[machines.lab]\\nhost = \"me@lab-box\"\\nmcc = \"/opt/mcc/bin/mcc\"\\n' >> \"$1\"\n",
+    );
+    sb.mcc()
+        .args(["config", "edit"])
+        .env("EDITOR", ed)
+        .assert()
+        .success();
+    assert_eq!(
+        stdout_of(sb.mcc().args(["config", "get", "machines.lab.host"])),
+        "me@lab-box\n"
+    );
+    assert_eq!(
+        stdout_of(sb.mcc().args(["config", "get", "machines"])),
+        "[lab]\nhost = \"me@lab-box\"\nmcc = \"/opt/mcc/bin/mcc\"\n"
+    );
+    sb.mcc()
+        .args(["config", "set", "machines.lab.host", "other"])
+        .assert()
+        .code(2)
+        .stderr(contains("mcc config edit"));
+    // Other commands keep it, and its comment, when they save.
+    sb.mcc().args(["share", "work"]).assert().success();
+    let after = sb.read(CONFIG);
+    assert!(
+        after.contains("# my build box\n[machines.lab]\nhost = \"me@lab-box\"\n"),
+        "{after}"
+    );
+}
+
+/// A misspelled section (`[machine]` for `[machines]`) used to be ignored
+/// without a word. Now every command warns about it on stderr, with a
+/// hint, and keeps stdout clean; `config edit` warns once it saves.
+#[test]
+fn unknown_settings_are_warned_about() {
+    let sb = sandbox();
+    let ed = editor(
+        &sb,
+        "cat >> \"$1\" <<'EOF'\n\n[machine.lab]\nhost = \"lab\"\nEOF\n",
+    );
+    sb.mcc()
+        .args(["config", "edit"])
+        .env("EDITOR", ed)
+        .assert()
+        .success()
+        .stderr(contains("saved"))
+        .stderr(contains("doesn't know the setting `machine`"))
+        .stderr(contains("did you mean `machines`?"));
+    let out = sb.mcc().args(["usage", "--json-v2"]).output().unwrap();
+    assert!(out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("did you mean `machines`?"), "{err}");
+    common::json(&out.stdout);
+    // A known file stays quiet.
+    let clean = sandbox();
+    clean
+        .mcc()
+        .args(["list"])
+        .assert()
+        .success()
+        .stderr(contains("doesn't know").not());
 }

@@ -47,6 +47,98 @@ pub struct Config {
     /// starts there first. Left out of the file while empty.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub projects: BTreeMap<String, Project>,
+    /// `[machines.NAME]`: other machines whose usage `mcc usage` shows
+    /// next to this one's, read over SSH (#130). Opt-in, and left out of
+    /// the file while empty. Checked by `mcc config edit` and before each
+    /// use ([`Machine::check`]), never on load: a bad entry must not stop
+    /// every command.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub machines: BTreeMap<String, Machine>,
+    /// Keys the file sets that mcc doesn't know (a misspelled `[machine]`
+    /// for `[machines]`, say), by dotted path, sorted. Serde skips
+    /// them, so without this they would be dropped without a word; see
+    /// [`Config::unknown_key_warnings`]. Never written.
+    #[serde(skip)]
+    pub unknown_keys: Vec<String>,
+}
+
+/// The top-level keys of config.toml, for the "did you mean" hint of an
+/// unknown one ([`Config::unknown_key_warnings`]).
+const TOP_LEVEL_KEYS: &[&str] = &[
+    "default_profile",
+    "env",
+    "sync",
+    "usage",
+    "privacy",
+    "launch",
+    "profiles",
+    "projects",
+    "machines",
+];
+
+/// Another machine `mcc usage` reads (`[machines.NAME]`, #130).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Machine {
+    /// What `ssh` connects to: a host name, `user@host`, or a `Host`
+    /// alias of your own SSH config (ssh reads it; mcc never does).
+    pub host: String,
+    /// The `mcc` command there: a full path, since a non-interactive SSH
+    /// session may not load the PATH a login shell sets. Unset means `mcc`
+    /// on that PATH. Left out of the file while unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcc: Option<String>,
+}
+
+/// The name `mcc usage` gives this machine next to the configured ones,
+/// so no `[machines.NAME]` may take it.
+pub const LOCAL_MACHINE: &str = "local";
+
+impl Machine {
+    /// Why `[machines.<name>]` can't be used, if it can't: the name
+    /// follows the profile-name rules (and isn't [`LOCAL_MACHINE`]); the
+    /// host is one word ssh can't read as an option; the mcc path is
+    /// absolute or a bare command, never `~/…`, which a quoted word never
+    /// expands.
+    pub fn check(&self, name: &str) -> std::result::Result<(), String> {
+        if crate::validate::check_syntax(name).is_err() || name == LOCAL_MACHINE {
+            return Err(format!(
+                "\"{name}\" is not a valid machine name: use 1–32 characters, lowercase letters, digits, '-' or '_', starting with a letter (not \"{LOCAL_MACHINE}\", this machine's name)"
+            ));
+        }
+        let host = self.host.as_str();
+        if host.is_empty() {
+            return Err(
+                "host is empty: set it to what `ssh` connects to, e.g. host = \"me@build-box\""
+                    .into(),
+            );
+        }
+        if host.starts_with('-') {
+            return Err(format!(
+                "host \"{host}\" starts with '-', which ssh would read as an option"
+            ));
+        }
+        if host.chars().any(|c| c.is_whitespace() || c.is_control()) {
+            return Err(format!(
+                "host {host:?} contains a space or a control character: use a host name, user@host or a Host alias from your SSH config"
+            ));
+        }
+        if let Some(mcc) = &self.mcc {
+            if mcc.trim().is_empty() {
+                return Err("mcc is empty: leave it out to run `mcc` from the PATH there, or set the full path".into());
+            }
+            if mcc.starts_with('-') || mcc.chars().any(char::is_control) {
+                return Err(format!(
+                    "mcc {mcc:?} is not a command: set the full path to mcc on that machine"
+                ));
+            }
+            if mcc.starts_with('~') {
+                return Err(format!(
+                    "mcc \"{mcc}\" starts with '~', which is not expanded there: set the full path, e.g. \"/home/me/.cargo/bin/mcc\""
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -133,6 +225,11 @@ pub struct UsageConfig {
     /// file while unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sort: Option<String>,
+    /// When the note about reading other machines over SSH (#130) was
+    /// shown (RFC 3339): the first `mcc usage` that read `[machines]`.
+    /// Left out of the file until then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machines_disclosed_at: Option<String>,
 }
 
 impl UsageConfig {
@@ -452,7 +549,7 @@ impl Config {
         }
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        let mut cfg: Self = toml::from_str(&text).map_err(|e| -> anyhow::Error {
+        let mut cfg = Self::parse(&text).map_err(|e| -> anyhow::Error {
             CliError::input(format!(
                 "{} is not valid mcc config: {}",
                 path.display(),
@@ -467,6 +564,41 @@ impl Config {
             cfg.privacy.show_email = Some(true);
         }
         Ok(cfg)
+    }
+
+    /// Config text as `toml::from_str` reads it, plus the keys it skipped
+    /// ([`Config::unknown_keys`]).
+    pub fn parse(text: &str) -> std::result::Result<Self, toml::de::Error> {
+        let mut unknown = Vec::new();
+        let de = toml::Deserializer::parse(text)?;
+        let mut cfg: Self = serde_ignored::deserialize(de, |path| unknown.push(path.to_string()))?;
+        cfg.unknown_keys = unknown;
+        Ok(cfg)
+    }
+
+    /// One warning per key mcc doesn't know, naming the top-level key it
+    /// probably meant when one is close: `[machine.lab]` gets "did you mean
+    /// `machines`?". Empty when every key is known.
+    pub fn unknown_key_warnings(&self, file: &str) -> Vec<String> {
+        self.unknown_keys
+            .iter()
+            .map(|key| {
+                let hint = (!key.contains('.'))
+                    .then(|| {
+                        TOP_LEVEL_KEYS
+                            .iter()
+                            .map(|k| (strsim::damerau_levenshtein(key, k), k))
+                            .filter(|(d, _)| *d <= 2)
+                            .min()
+                            .map(|(_, k)| format!(" — did you mean `{k}`?"))
+                    })
+                    .flatten()
+                    .unwrap_or_default();
+                format!(
+                    "{file}: mcc doesn't know the setting `{key}`, so it ignores it and drops it the next time it saves the file{hint}"
+                )
+            })
+            .collect()
     }
 
     /// Whether launches catch the profile `alias` up with the default
@@ -812,6 +944,67 @@ mod tests {
         assert_eq!(back.profiles, cfg.profiles);
         assert_eq!(back.sync.exclude, vec!["plugins".to_string()]);
         assert!(back.show_email());
+    }
+
+    /// Keys mcc doesn't know are listed by path, the rest of the file
+    /// still loads, and a near-miss top-level key gets a "did you mean".
+    #[test]
+    fn unknown_keys_are_listed_with_a_hint() {
+        let cfg = Config::parse(
+            "[usage]\nlive = true\nlivee = true\n\n\
+             [machine.lab]\nhost = \"lab\"\n\n\
+             [machines.box]\nhost = \"box\"\nhots = \"x\"\n\n\
+             [nothing_like_it]\n",
+        )
+        .unwrap();
+        assert!(cfg.usage.live);
+        assert_eq!(cfg.machines["box"].host, "box");
+        assert_eq!(
+            cfg.unknown_keys,
+            [
+                "machine",
+                "machines.box.hots",
+                "nothing_like_it",
+                "usage.livee"
+            ]
+        );
+        let warnings = cfg.unknown_key_warnings("~/.mcc/config.toml");
+        assert_eq!(warnings.len(), 4);
+        assert!(warnings[0].contains("`machine`"), "{}", warnings[0]);
+        assert!(
+            warnings[0].ends_with("did you mean `machines`?"),
+            "{}",
+            warnings[0]
+        );
+        // No guess for a nested key or a name close to nothing.
+        for w in &warnings[1..] {
+            assert!(!w.contains("did you mean"), "{w}");
+        }
+    }
+
+    /// A file mcc wrote itself has no unknown keys, so no warning.
+    #[test]
+    fn a_saved_config_has_no_unknown_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut cfg = Config::default();
+        cfg.machines.insert(
+            "lab".into(),
+            Machine {
+                host: "lab".into(),
+                mcc: Some("/opt/mcc".into()),
+            },
+        );
+        cfg.privacy.show_email = Some(true);
+        cfg.save(&path).unwrap();
+        let back = Config::load(&path).unwrap();
+        assert!(back.unknown_keys.is_empty(), "{:?}", back.unknown_keys);
+        for key in toml::from_str::<toml::Table>(&std::fs::read_to_string(&path).unwrap())
+            .unwrap()
+            .keys()
+        {
+            assert!(TOP_LEVEL_KEYS.contains(&key.as_str()), "{key}");
+        }
     }
 
     /// A config written before session sharing existed: loads with sharing
@@ -1382,6 +1575,76 @@ mod tests {
             back.usage.live_disclosed_at.as_deref(),
             Some("2026-10-01T00:00:00Z")
         );
+    }
+
+    /// #130: `[machines.NAME]` round-trips, `mcc` only when set, and a
+    /// file without machines saves byte for byte (no `[machines]` table).
+    #[test]
+    fn machines_round_trip_and_stay_out_of_files_without_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let legacy = "# mine\n[sync]\nexclude = []\nextra = []\n\n[usage]\n\n[profiles]\n";
+        std::fs::write(&path, legacy).unwrap();
+        let mut cfg = Config::load(&path).unwrap();
+        assert!(cfg.machines.is_empty());
+        cfg.save(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), legacy);
+
+        cfg.machines.insert(
+            "lab".into(),
+            Machine {
+                host: "me@lab-box".into(),
+                mcc: None,
+            },
+        );
+        cfg.machines.insert(
+            "build".into(),
+            Machine {
+                host: "build".into(),
+                mcc: Some("/opt/my tools/mcc".into()),
+            },
+        );
+        cfg.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# mine\n"), "{text}");
+        assert!(
+            text.contains("[machines.lab]\nhost = \"me@lab-box\"\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("[machines.build]\nhost = \"build\"\nmcc = \"/opt/my tools/mcc\"\n"),
+            "{text}"
+        );
+        assert_eq!(Config::load(&path).unwrap().machines, cfg.machines);
+    }
+
+    #[test]
+    fn machine_check_refuses_what_ssh_could_misread() {
+        let m = |host: &str, mcc: Option<&str>| Machine {
+            host: host.into(),
+            mcc: mcc.map(str::to_string),
+        };
+        assert_eq!(m("me@lab-box", None).check("lab"), Ok(()));
+        assert_eq!(m("lab", Some("/opt/my tools/mcc")).check("lab-2"), Ok(()));
+        assert_eq!(m("lab", Some("mcc")).check("lab"), Ok(()));
+        for host in [
+            "",
+            "-oProxyCommand=touch /tmp/x",
+            "-p22",
+            "lab box",
+            "lab\tbox",
+            "lab\nbox",
+            "lab\u{1b}[2J",
+            " lab",
+        ] {
+            assert!(m(host, None).check("lab").is_err(), "{host:?}");
+        }
+        for mcc in ["", "  ", "~/bin/mcc", "-v", "/bin/mcc\n"] {
+            assert!(m("lab", Some(mcc)).check("lab").is_err(), "{mcc:?}");
+        }
+        for name in ["local", "Lab", "1lab", "lab;x", ""] {
+            assert!(m("lab", None).check(name).is_err(), "{name:?}");
+        }
     }
 
     #[test]

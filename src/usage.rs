@@ -64,7 +64,7 @@ const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 pub const LIVE_DISCLOSURE: &str = "⚠ Live usage lookup is on ([usage] live = true in ~/.mcc/config.toml): mcc reads each profile's Claude Code login (its OAuth access token, from .credentials.json or the macOS Keychain) and sends it to Anthropic's undocumented, rate-limited usage endpoint (https://api.anthropic.com/api/oauth/usage). Anthropic says third-party tools may not collect or intermediate Claude.ai credentials (https://code.claude.com/docs/en/legal-and-compliance), so use this at your own discretion. Set live = false to read usage only from the `mcc statusline` cache (`mcc usage --all` still looks it up live, with its own notice). This note is shown once.";
 
 /// Where a [`Usage`] came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Source {
     /// The rate limits `mcc statusline` (or the last `mcc usage --all`) cached.
@@ -73,7 +73,7 @@ pub enum Source {
     Live,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
     Ok,
@@ -87,7 +87,7 @@ pub enum Status {
 pub const DEVIN_LIVE_DISCLOSURE: &str = "⚠ Live usage lookup is on for Devin too ([usage] live = true in ~/.mcc/config.toml): mcc reads the Devin CLI's login (its session token, from Devin's credentials.toml, which mcc never changes) and sends it to Devin's quota API (https://app.devin.ai/api) to show Devin's daily and weekly usage. The token is never stored or logged by mcc. Set live = false to show only the Devin usage last looked up (`mcc usage --all` still looks it up live, with its own notice). This note is shown once.";
 
 /// Why usage is unavailable. Serialized as snake_case in the `--json` output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Reason {
     /// No OAuth access token for the profile (logged out, or an API-key login).
@@ -173,14 +173,16 @@ impl Reason {
 }
 
 /// One rate-limit window: percent used and when it resets.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Window {
     pub percent: f64,
-    #[serde(serialize_with = "ser_time")]
+    #[serde(serialize_with = "ser_time", deserialize_with = "de_time", default)]
     pub resets_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+/// A profile's 5-hour and weekly usage. Read back only from another
+/// machine's `mcc usage` (#130).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Usage {
     pub status: Status,
     pub reason: Option<Reason>,
@@ -188,8 +190,9 @@ pub struct Usage {
     pub weekly: Option<Window>,
     /// `None` when nothing was looked up (`disabled`).
     pub source: Option<Source>,
-    /// When these numbers were cached (`None` for live lookups).
-    #[serde(serialize_with = "ser_time")]
+    /// When these numbers were cached (`None` for live lookups, except
+    /// where machines compare them, #130: see [`stamp_live`]).
+    #[serde(serialize_with = "ser_time", deserialize_with = "de_time", default)]
     pub updated_at: Option<DateTime<Utc>>,
     /// Devin's daily window. Never set for Claude Code profiles, and left
     /// out of their JSON; never put in `five_hour`, which means 5 hours.
@@ -199,6 +202,12 @@ pub struct Usage {
     /// for Claude Code profiles, and left out of their JSON.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overage_usd: Option<f64>,
+    /// Set only when these numbers came from another machine (#130):
+    /// when the machine holding them last updated them itself (`None`
+    /// when it never had), so its own last update is never taken for
+    /// another machine's. Never part of this JSON.
+    #[serde(skip)]
+    pub own_updated_at: Option<Option<DateTime<Utc>>>,
 }
 
 impl Usage {
@@ -212,6 +221,7 @@ impl Usage {
             updated_at: None,
             daily: None,
             overage_usd: None,
+            own_updated_at: None,
         }
     }
 
@@ -225,6 +235,7 @@ impl Usage {
             updated_at: None,
             daily: None,
             overage_usd: None,
+            own_updated_at: None,
         }
     }
 
@@ -310,6 +321,36 @@ fn ser_time<S: Serializer>(t: &Option<DateTime<Utc>>, s: S) -> Result<S::Ok, S::
         Some(t) => s.serialize_str(&t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
         None => s.serialize_none(),
     }
+}
+
+/// The other way round from [`ser_time`]: an RFC 3339 string or null.
+pub(crate) fn de_time<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<DateTime<Utc>>, D::Error> {
+    match Option::<String>::deserialize(d)? {
+        None => Ok(None),
+        Some(s) => DateTime::parse_from_rfc3339(&s)
+            .map(|t| Some(t.with_timezone(&Utc)))
+            .map_err(serde::de::Error::custom),
+    }
+}
+
+/// An account as machines compare it (#130): the hex SHA-256 of its
+/// email (trimmed and lowercased) and, when known, its organization's
+/// UUID, so the same login matches across machines without its email
+/// leaving any of them. The organization keeps a personal plan and a work
+/// seat on one email apart, as [`crate::config::Account::same_seat`]
+/// does: they have limits of their own.
+pub fn account_id(email: &str, organization_uuid: Option<&str>) -> String {
+    let mut key = email.trim().to_lowercase();
+    if let Some(org) = organization_uuid.map(str::trim).filter(|o| !o.is_empty()) {
+        key.push('\n');
+        key.push_str(org);
+    }
+    Sha256::digest(key.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// An OAuth access token. Deliberately has no `Display`; `Debug` is redacted.
@@ -487,7 +528,7 @@ pub fn token_state(config_dir: &Path, is_default: bool) -> TokenState {
 pub const ACCESS_REFRESH_MARGIN_MS: i64 = 300_000;
 
 /// Where a login deadline was read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeadlineSource {
     /// `<config dir>/.credentials.json`.
@@ -845,7 +886,74 @@ fn read_cached(path: &Path, now: DateTime<Utc>) -> Usage {
     }
     let mut u = Usage::ok(five_hour, weekly).with_source(Source::Cache);
     u.updated_at = updated_at;
+    // Numbers another machine had (#130): this machine's own time is kept
+    // beside them.
+    if let Some(own) = v.get(OWN_UPDATED_AT) {
+        u.own_updated_at = Some(timestamp(own));
+    }
     u
+}
+
+/// Give each live result with usage the time it was looked up (`at`), so
+/// it can be compared with numbers cached elsewhere (#130). Only where
+/// machines compare points: the default output keeps `updated_at` null
+/// for live lookups.
+pub fn stamp_live(all: &mut [Usage], at: DateTime<Utc>) {
+    for u in all {
+        if u.status == Status::Ok && u.source == Some(Source::Live) && u.updated_at.is_none() {
+            u.updated_at = Some(at);
+        }
+    }
+}
+
+/// The cache key (#130) beside numbers from another machine: when this
+/// machine last updated the profile itself. The status line's own write
+/// replaces the whole record, and drops it.
+const OWN_UPDATED_AT: &str = "own_updated_at";
+
+/// Save `u`, the newest numbers of `name`'s account (looked up on another
+/// machine or for another profile, #130), to `name`'s statusline cache
+/// with their own time, so `mcc list`, `mcc run` and the status line show
+/// them too. Only when they are newer than what is cached there: an older
+/// point is never written over a newer one, nor given a newer time.
+/// Numbers from another machine keep this machine's own time beside them
+/// ([`Usage::own_updated_at`]). `true` when saved; a failed write is
+/// logged.
+pub fn save_point(paths: &Paths, name: &str, u: &Usage) -> bool {
+    let Some(at) = u.updated_at.filter(|_| u.status == Status::Ok) else {
+        return false;
+    };
+    let path = paths.profile_state_dir(name).join(USAGE_FILE);
+    let cached = std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .and_then(|v| v.get("updated_at").and_then(timestamp));
+    if cached.is_some_and(|c| c >= at) {
+        return false;
+    }
+    let Some(mut record) = cache_record(name, u, at) else {
+        return false;
+    };
+    if let (Some(own), Some(map)) = (u.own_updated_at, record.as_object_mut()) {
+        let own = own.map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+        map.insert(OWN_UPDATED_AT.into(), serde_json::json!(own));
+    }
+    match crate::commands::statusline::write_json(&path, &record) {
+        Ok(()) => {
+            crate::log::write(
+                "INFO",
+                &format!("usage {name}: newer numbers of its account saved to the cache"),
+            );
+            true
+        }
+        Err(e) => {
+            crate::log::write(
+                "WARN",
+                &format!("usage {name}: not saved to the cache: {e:#}"),
+            );
+            false
+        }
+    }
 }
 
 /// Save each live result that has usage to the statusline cache
@@ -1274,6 +1382,24 @@ mod tests {
         assert!(
             err.contains("\"bogus\"") && err.contains("weekly-reset"),
             "{err}"
+        );
+    }
+
+    #[test]
+    fn account_ids_match_the_same_seat_only() {
+        let id = account_id("Ann@Example.com ", Some("org-1"));
+        assert_eq!(id.len(), 64);
+        assert!(
+            id.bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        );
+        assert_eq!(id, account_id("ann@example.com", Some(" org-1")));
+        assert_ne!(id, account_id("ann@example.com", Some("org-2")));
+        assert_ne!(id, account_id("ann@example.com", None));
+        assert_ne!(id, account_id("bob@example.com", Some("org-1")));
+        assert_eq!(
+            account_id("ann@example.com", None),
+            account_id("ANN@example.com", Some(""))
         );
     }
 
@@ -1796,6 +1922,34 @@ mod tests {
         );
         assert_eq!(u.weekly.as_ref().unwrap().percent, 18.0);
         assert_eq!(u.age(now).as_deref(), Some("12m ago"));
+        // The status line's own record: this machine's own numbers.
+        assert_eq!(u.own_updated_at, None);
+    }
+
+    #[test]
+    fn numbers_from_another_machine_keep_this_ones_own_time() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("usage.json");
+        let now = at("2026-10-10T12:00:00Z");
+        let window = r#"{"used_percentage":18,"resets_at":null}"#;
+        for (own, expected) in [
+            (
+                r#""2026-10-10T10:00:00Z""#,
+                Some(at("2026-10-10T10:00:00Z")),
+            ),
+            ("null", None),
+        ] {
+            std::fs::write(
+                &path,
+                format!(
+                    r#"{{"profile":"work","updated_at":"2026-10-10T11:48:00Z","five_hour":null,"seven_day":{window},"own_updated_at":{own}}}"#
+                ),
+            )
+            .unwrap();
+            let u = read_cached(&path, now);
+            assert_eq!(u.updated_at, Some(at("2026-10-10T11:48:00Z")));
+            assert_eq!(u.own_updated_at, Some(expected));
+        }
     }
 
     #[test]
