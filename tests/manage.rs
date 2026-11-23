@@ -2437,11 +2437,13 @@ fn legacy_record(sb: &Sandbox, p: &str) {
 
 /// The first sync after upgrading (#129): records from before per-key
 /// settings, a shared secret set differently in each profile, and a basic
-/// key in one, while the default changed too. Which side changed a key
-/// can't be told, so nothing is taken into the default (a conflict, also
-/// on the next sync); the secret is never spread, and no prompt is needed.
+/// key in one (the issue's code mode in csdaisy), while the default
+/// changed too. Whether the basic key is new in csdaisy or one the default
+/// dropped can't be told, so it is taken only once confirmed at a
+/// terminal: without one it is skipped, with a hint saying how to take it.
+/// The secret is never spread.
 #[test]
-fn first_sync_after_upgrade_never_spreads_secrets_nor_guesses() {
+fn first_sync_after_upgrade_asks_before_taking_a_key_only_a_profile_has() {
     let sb = Sandbox::new();
     sb.seed_default();
     set_env(&sb, ".claude", "TAVILY_API_KEY", "tvly-default");
@@ -2458,22 +2460,35 @@ fn first_sync_after_upgrade_never_spreads_secrets_nor_guesses() {
     sb.write(".claude/settings.json", &d.to_string());
     let default_before = sb.read(".claude/settings.json");
 
-    let err = sync_stderr(&sb, &["--all"]);
+    let err = sync_stderr(&sb, &["--all", "--dry-run"]);
     assert!(
         err.contains(&format!(
-            "env.{CODE_MODE}: basic · from \"csdaisy\" · conflict: changed differently in the default and the profile"
+            "env.{CODE_MODE}: basic · from \"csdaisy\" · would be asked about"
         )),
         "{err}"
     );
-    assert!(
-        err.contains("env.TAVILY_API_KEY: shared secret · from \"lab\", \"work\" · conflict"),
-        "{err}"
-    );
-    assert!(
-        !err.contains("would be asked") && !err.contains("agree at a terminal"),
-        "{err}"
-    );
-    assert_eq!(sb.read(".claude/settings.json"), default_before);
+    for args in [&["--all"][..], &["--all", "--yes"]] {
+        let err = sync_stderr(&sb, args);
+        assert!(
+            err.contains(&format!(
+                "env.{CODE_MODE}: basic · from \"csdaisy\" · skipped (needs confirmation)"
+            )),
+            "{err}"
+        );
+        assert!(
+            err.contains(
+                "run `mcc sync` at a terminal, without --yes, or add it to ~/.claude/settings.json"
+            ),
+            "{err}"
+        );
+        assert!(
+            err.contains("env.TAVILY_API_KEY: shared secret · from \"lab\", \"work\" · conflict: changed differently in the default and the profile"),
+            "{err}"
+        );
+        assert!(err.contains("a conflict stays until"), "{err}");
+        assert!(!err.contains("agree at a terminal"), "{err}");
+        assert_eq!(sb.read(".claude/settings.json"), default_before, "{args:?}");
+    }
     for (p, tavily, code) in [
         ("work", "tvly-work", None),
         ("lab", "tvly-lab", None),
@@ -2488,24 +2503,17 @@ fn first_sync_after_upgrade_never_spreads_secrets_nor_guesses() {
         );
         assert_eq!(s["effortLevel"], "high", "{p}");
     }
-    // The records are per key now, and the conflict stays one.
-    let err = sync_stderr(&sb, &["--all"]);
-    assert!(
-        err.contains(&format!(
-            "env.{CODE_MODE}: basic · from \"csdaisy\" · conflict"
-        )),
-        "{err}"
-    );
-    assert_eq!(sb.read(".claude/settings.json"), default_before);
+    // Per key now: the key waits in csdaisy for a confirmation.
     let m = json(sb.read(".mcc/profiles/csdaisy/.mcc-sync.json").as_bytes());
-    assert_eq!(m["settings"][format!("env.{CODE_MODE}")], "unknown", "{m}");
+    assert_eq!(m["settings"][format!("env.{CODE_MODE}")], "proposed", "{m}");
     assert!(m["items"].as_array().unwrap().contains(&":settings".into()));
 }
 
 /// #129 review: after upgrading, a profile edited since its last sync
 /// still holds the default's older statusLine, and the default changed
 /// it since (`mcc statusline install`) and dropped a key. Neither the
-/// stale value nor the dropped key goes back into the default.
+/// stale value nor the dropped key goes back into the default without a
+/// confirmation at a terminal.
 #[test]
 fn first_sync_after_upgrade_never_reverts_the_default() {
     let sb = three_profiles();
@@ -2521,9 +2529,15 @@ fn first_sync_after_upgrade_never_reverts_the_default() {
     let default_before = sb.read(".claude/settings.json");
     for _ in 0..2 {
         let err = sync_stderr(&sb, &["--all", "--yes"]);
-        for key in ["statusLine", "enabledPlugins"] {
+        assert!(
+            err.contains("statusLine: basic · from \"work\" · conflict: changed differently in the default and the profile"),
+            "{err}"
+        );
+        for key in ["enabledPlugins", "env.MINE"] {
             assert!(
-                err.contains(&format!("{key}: basic · from \"work\" · conflict")),
+                err.contains(&format!(
+                    "{key}: basic · from \"work\" · skipped (needs confirmation)"
+                )),
                 "{key}: {err}"
             );
         }

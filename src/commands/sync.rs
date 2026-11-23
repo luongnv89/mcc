@@ -28,7 +28,39 @@ use crate::{fsutil, ui};
 /// backed up as well (see [`backup`]).
 const BACKED_UP: &[&str] = &["settings.json", "settings.local.json", ".claude.json"];
 
+/// How `mcc sync` asks the user to confirm a setting it takes into the
+/// default: at the terminal, or scripted in tests.
+pub(crate) trait Ask {
+    /// Whether there is someone to ask.
+    fn interactive(&self) -> bool;
+    /// Ask `prompt`; no by default.
+    fn confirm(&mut self, prompt: &str) -> Result<bool>;
+}
+
+/// [`Ask`] at the terminal.
+struct Terminal;
+
+impl Ask for Terminal {
+    fn interactive(&self) -> bool {
+        ui::is_interactive()
+    }
+
+    fn confirm(&mut self, prompt: &str) -> Result<bool> {
+        ui::confirm(prompt, false, "")
+    }
+}
+
 pub fn run(paths: &Paths, cfg: &mut Config, args: &SyncArgs) -> Result<()> {
+    run_with(paths, cfg, args, &mut Terminal)
+}
+
+/// [`run`], asking through `ask`.
+pub(crate) fn run_with(
+    paths: &Paths,
+    cfg: &mut Config,
+    args: &SyncArgs,
+    ask: &mut dyn Ask,
+) -> Result<()> {
     if !paths.default_dir.is_dir() {
         return Err(CliError::runtime(format!(
             "the default profile {} does not exist, so there is nothing to sync from",
@@ -58,7 +90,7 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &SyncArgs) -> Result<()> {
         return Ok(());
     }
     let spec = copy::spec(args.only.as_deref(), &cfg.sync)?;
-    gather_settings(paths, cfg, &spec, args)?;
+    gather_settings(paths, cfg, &spec, args, ask)?;
 
     let mut failed = Vec::new();
     for (i, alias) in targets.iter().enumerate() {
@@ -125,13 +157,21 @@ struct SettingsSource {
 /// when the user agrees at a terminal (never with `--yes`, and a declined
 /// value is not asked about again); account-bound keys never; a key
 /// removed in a profile only once the user confirms it at a terminal
-/// (never with `--yes`). A profile without a settings.json of its own (or
+/// (never with `--yes`); a key only a profile has, from before per-key
+/// records while the default changed since ([`Verdict::Propose`]), the
+/// same way (a declined value is not asked about again). A profile without a settings.json of its own (or
 /// one that isn't a JSON object, or is the default's own file through a
 /// symlink) is never a source. Each key is
 /// reported with its category and what happened, never its value. The
 /// default's settings.json is backed up before it is first written, and
 /// written through a symlink (dotfiles). A dry run reports only.
-fn gather_settings(paths: &Paths, cfg: &Config, spec: &Spec, args: &SyncArgs) -> Result<()> {
+fn gather_settings(
+    paths: &Paths,
+    cfg: &Config,
+    spec: &Spec,
+    args: &SyncArgs,
+    ask: &mut dyn Ask,
+) -> Result<()> {
     let Some(item) = spec
         .items
         .iter()
@@ -206,6 +246,8 @@ fn gather_settings(paths: &Paths, cfg: &Config, spec: &Spec, args: &SyncArgs) ->
     ui::header("Settings changed in profiles");
     let (mut set, mut remove) = (Vec::new(), Vec::new());
     let mut unconfirmed = false;
+    let mut unconfirmed_proposal = false;
+    let (mut conflict_default, mut conflict_profiles) = (false, false);
     for d in decisions {
         let outcome = match d.verdict {
             Verdict::AccountBound => {
@@ -214,13 +256,26 @@ fn gather_settings(paths: &Paths, cfg: &Config, spec: &Spec, args: &SyncArgs) ->
             Verdict::Unmappable => Outcome::Skipped(
                 "it holds paths of the profile that can't be mapped to the default's",
             ),
-            Verdict::Conflict { with_default } => Outcome::Conflict { with_default },
+            Verdict::Conflict {
+                with_default,
+                default_has,
+            } => {
+                conflict_default |= with_default;
+                conflict_profiles |= !with_default;
+                Outcome::Conflict {
+                    with_default,
+                    default_has,
+                }
+            }
             Verdict::Set(value) if d.category == Category::Basic => {
                 set.push(value);
                 Outcome::Synced
             }
-            Verdict::Set(value) => {
-                // A shared secret: the value each source has, by hash.
+            // A shared secret, or a key only a profile has that the default
+            // may have dropped: taken only once the user agrees.
+            Verdict::Set(value) | Verdict::Propose(value) => {
+                let secret = d.category != Category::Basic;
+                // The value each source has, by hash.
                 let hashes: Vec<(&SettingsSource, Option<String>)> = sources
                     .iter()
                     .filter(|s| d.sources.contains(&s.alias))
@@ -232,22 +287,31 @@ fn gather_settings(paths: &Paths, cfg: &Config, spec: &Spec, args: &SyncArgs) ->
                         .and_then(|m| m.declined_secrets.get(&d.key))
                         == h.as_ref()
                 });
-                if declined {
-                    Outcome::Declined { earlier: true }
-                } else if args.dry_run {
-                    Outcome::Asked
-                } else if !ui::is_interactive() {
-                    Outcome::Skipped("a shared secret is only synced once you agree at a terminal")
-                } else if ui::confirm(
-                    &format!(
+                let prompt = if secret {
+                    format!(
                         "Sync {} ({}) from {} to the default and every profile? Its value is not shown.",
                         d.key,
                         d.category.as_str(),
                         quoted(&d.sources)
-                    ),
-                    false,
-                    "",
-                )? {
+                    )
+                } else {
+                    format!(
+                        "Take {} ({}) from {} into the default? Only that profile has it: it may be new there, or one the default dropped. Its value is not shown.",
+                        d.key,
+                        d.category.as_str(),
+                        quoted(&d.sources)
+                    )
+                };
+                if declined {
+                    Outcome::Declined { earlier: true }
+                } else if args.dry_run {
+                    Outcome::Asked
+                } else if !secret && (args.yes || !ask.interactive()) {
+                    unconfirmed_proposal = true;
+                    Outcome::Skipped("needs confirmation")
+                } else if !ask.interactive() {
+                    Outcome::Skipped("a shared secret is only synced once you agree at a terminal")
+                } else if ask.confirm(&prompt)? {
                     set.push(value);
                     Outcome::Approved
                 } else {
@@ -263,21 +327,17 @@ fn gather_settings(paths: &Paths, cfg: &Config, spec: &Spec, args: &SyncArgs) ->
             // A real sync removes it only once the user confirms it at a
             // terminal: --yes never does (the profile may have lost it).
             Verdict::Remove(_) if args.dry_run => Outcome::Asked,
-            Verdict::Remove(_) if args.yes || !ui::is_interactive() => {
+            Verdict::Remove(_) if args.yes || !ask.interactive() => {
                 unconfirmed = true;
                 Outcome::Skipped("needs confirmation")
             }
             Verdict::Remove(key) => {
-                if ui::confirm(
-                    &format!(
-                        "Remove {} ({}) from the default and every profile? It was removed in {}",
-                        d.key,
-                        d.category.as_str(),
-                        quoted(&d.sources)
-                    ),
-                    false,
-                    "",
-                )? {
+                if ask.confirm(&format!(
+                    "Remove {} ({}) from the default and every profile? It was removed in {}",
+                    d.key,
+                    d.category.as_str(),
+                    quoted(&d.sources)
+                ))? {
                     remove.push(key);
                     Outcome::Removed
                 } else {
@@ -296,6 +356,21 @@ fn gather_settings(paths: &Paths, cfg: &Config, spec: &Spec, args: &SyncArgs) ->
     if unconfirmed {
         ui::hint(
             "a key removed in a profile leaves the default only once you confirm it: run `mcc sync` at a terminal, without --yes",
+        );
+    }
+    if unconfirmed_proposal {
+        ui::hint(
+            "a key only a profile has (recorded by an older mcc, and the default changed since) goes into the default only once you confirm it: run `mcc sync` at a terminal, without --yes, or add it to ~/.claude/settings.json yourself",
+        );
+    }
+    if conflict_default {
+        ui::hint(
+            "a conflict stays until the profile and the default agree on the key: give it the same value in both (or remove it from both), or run `mcc sync ALIAS --force` to give the profile the default's (backed up first)",
+        );
+    }
+    if conflict_profiles {
+        ui::hint(
+            "a key changed differently in several profiles stays as it is until they agree: give it the same value in each",
         );
     }
     if set.is_empty() && remove.is_empty() {
@@ -1140,6 +1215,211 @@ fn new_backup_dir_as(dir: &Path, suffix: &str) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [`Ask`] with scripted answers, recording every prompt; asking past
+    /// the script fails the test.
+    struct Scripted {
+        answers: Vec<bool>,
+        prompts: Vec<String>,
+    }
+
+    impl Scripted {
+        fn new(answers: &[bool]) -> Self {
+            Self {
+                answers: answers.to_vec(),
+                prompts: Vec::new(),
+            }
+        }
+    }
+
+    impl Ask for Scripted {
+        fn interactive(&self) -> bool {
+            true
+        }
+
+        fn confirm(&mut self, prompt: &str) -> Result<bool> {
+            self.prompts.push(prompt.to_string());
+            assert!(!self.answers.is_empty(), "asked once too often: {prompt}");
+            Ok(self.answers.remove(0))
+        }
+    }
+
+    const PROFILES: [&str; 3] = ["work", "lab", "csdaisy"];
+
+    /// A default with settings, and `work`, `lab` and `csdaisy` synced
+    /// from it once.
+    fn synced() -> (tempfile::TempDir, Paths, Config) {
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths::new(d.path().to_path_buf());
+        std::fs::create_dir_all(&paths.default_dir).unwrap();
+        write(&paths.default_dir, serde_json::json!({"model": "opus"}));
+        let mut cfg = Config::default();
+        for a in PROFILES {
+            let dir = paths.profile_dir(a);
+            std::fs::create_dir_all(&dir).unwrap();
+            let p = toml::from_str(&format!(
+                "dir = {:?}\nmode = \"clone\"\ncreated_at = \"2026-01-01T00:00:00Z\"",
+                dir.display().to_string()
+            ))
+            .unwrap();
+            cfg.profiles.insert(a.into(), p);
+        }
+        sync(&paths, &mut cfg, &mut Scripted::new(&[]));
+        (d, paths, cfg)
+    }
+
+    fn sync(paths: &Paths, cfg: &mut Config, ask: &mut dyn Ask) {
+        let args = SyncArgs {
+            alias: None,
+            all: true,
+            dry_run: false,
+            prune: false,
+            force: false,
+            only: Some(vec!["settings".into()]),
+            yes: false,
+        };
+        run_with(paths, cfg, &args, ask).unwrap();
+    }
+
+    fn write(dir: &Path, v: serde_json::Value) {
+        std::fs::write(dir.join(copy::SETTINGS_FILE), v.to_string()).unwrap();
+    }
+
+    fn settings(dir: &Path) -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(dir.join(copy::SETTINGS_FILE)).unwrap()).unwrap()
+    }
+
+    fn record(dir: &Path) -> Manifest {
+        manifest::load(dir).manifest().cloned().unwrap()
+    }
+
+    /// The upgrade case of #129: records from an older mcc (the whole
+    /// file's hash only), a key set in csdaisy, and the default changed
+    /// since. Which side the key is new on can't be told, so it is asked.
+    fn upgraded_with_codemode(value: &str) -> (tempfile::TempDir, Paths, Config) {
+        let (d, paths, cfg) = synced();
+        for a in PROFILES {
+            let dir = paths.profile_dir(a);
+            let mut m = record(&dir);
+            m.items.remove(manifest::SETTINGS_ITEM);
+            m.settings.clear();
+            m.save(&dir).unwrap();
+        }
+        let cs = paths.profile_dir("csdaisy");
+        let mut s = settings(&cs);
+        s["env"] = serde_json::json!({"CODE_MODE": value});
+        write(&cs, s);
+        let mut s = settings(&paths.default_dir);
+        s["effortLevel"] = "high".into();
+        write(&paths.default_dir, s);
+        (d, paths, cfg)
+    }
+
+    #[test]
+    fn a_confirmed_proposal_reaches_every_profile_and_is_not_asked_again() {
+        let (_d, paths, mut cfg) = upgraded_with_codemode("codemode-on");
+        let mut ask = Scripted::new(&[true]);
+        sync(&paths, &mut cfg, &mut ask);
+        assert_eq!(ask.prompts.len(), 1, "{:?}", ask.prompts);
+        let prompt = &ask.prompts[0];
+        assert!(
+            prompt.starts_with("Take env.CODE_MODE (basic) from \"csdaisy\" into the default?"),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("codemode-on"), "{prompt}");
+        assert_eq!(
+            settings(&paths.default_dir)["env"]["CODE_MODE"],
+            "codemode-on"
+        );
+        let real = manifest::hash_json(&serde_json::json!("codemode-on"));
+        for a in PROFILES {
+            let dir = paths.profile_dir(a);
+            assert_eq!(settings(&dir)["env"]["CODE_MODE"], "codemode-on", "{a}");
+            assert_eq!(record(&dir).settings["env.CODE_MODE"], real, "{a}");
+            let text = std::fs::read_to_string(dir.join(manifest::FILE)).unwrap();
+            assert!(!text.contains(settings_sync::PROPOSED_BASE), "{a}: {text}");
+        }
+        // Quiet from then on: nothing to ask, the default left as it is.
+        let before = std::fs::read(paths.default_dir.join(copy::SETTINGS_FILE)).unwrap();
+        for _ in 0..2 {
+            sync(&paths, &mut cfg, &mut Scripted::new(&[]));
+        }
+        assert_eq!(
+            std::fs::read(paths.default_dir.join(copy::SETTINGS_FILE)).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn a_declined_proposal_is_not_asked_again_until_its_value_changes() {
+        let (_d, paths, mut cfg) = upgraded_with_codemode("codemode-on");
+        let mut ask = Scripted::new(&[false]);
+        sync(&paths, &mut cfg, &mut ask);
+        assert_eq!(ask.prompts.len(), 1);
+        assert!(
+            settings(&paths.default_dir)["env"]
+                .get("CODE_MODE")
+                .is_none()
+        );
+        let cs = paths.profile_dir("csdaisy");
+        let m = record(&cs);
+        assert_eq!(
+            m.declined_secrets["env.CODE_MODE"],
+            manifest::hash_json(&serde_json::json!("codemode-on"))
+        );
+        // Kept in csdaisy as a pending proposal, not reached elsewhere.
+        assert_eq!(m.settings["env.CODE_MODE"], settings_sync::PROPOSED_BASE);
+        assert_eq!(settings(&cs)["env"]["CODE_MODE"], "codemode-on");
+        assert!(settings(&paths.profile_dir("work")).get("env").is_none());
+        let before = std::fs::read(paths.default_dir.join(copy::SETTINGS_FILE)).unwrap();
+        sync(&paths, &mut cfg, &mut Scripted::new(&[]));
+        assert_eq!(
+            std::fs::read(paths.default_dir.join(copy::SETTINGS_FILE)).unwrap(),
+            before
+        );
+        // A new value is asked about again.
+        let mut s = settings(&cs);
+        s["env"]["CODE_MODE"] = "codemode-two".into();
+        write(&cs, s);
+        let mut ask = Scripted::new(&[false]);
+        sync(&paths, &mut cfg, &mut ask);
+        assert_eq!(ask.prompts.len(), 1);
+    }
+
+    /// Shared secrets: an approved one reaches the default and every
+    /// profile; a declined one is recorded by hash and not asked again.
+    #[test]
+    fn shared_secrets_are_synced_only_once_approved() {
+        let (_d, paths, mut cfg) = synced();
+        let cs = paths.profile_dir("csdaisy");
+        let mut s = settings(&cs);
+        s["env"] =
+            serde_json::json!({"TAVILY_API_KEY": "tvly-approved", "OTHER_TOKEN": "tok-declined"});
+        write(&cs, s);
+        // Keys in order: env.OTHER_TOKEN, then env.TAVILY_API_KEY.
+        let mut ask = Scripted::new(&[false, true]);
+        sync(&paths, &mut cfg, &mut ask);
+        assert_eq!(ask.prompts.len(), 2, "{:?}", ask.prompts);
+        for p in &ask.prompts {
+            assert!(p.contains("(shared secret)"), "{p}");
+            assert!(
+                !p.contains("tvly-approved") && !p.contains("tok-declined"),
+                "{p}"
+            );
+        }
+        let d = settings(&paths.default_dir);
+        assert_eq!(d["env"]["TAVILY_API_KEY"], "tvly-approved");
+        assert!(d["env"].get("OTHER_TOKEN").is_none());
+        assert_eq!(
+            settings(&paths.profile_dir("work"))["env"]["TAVILY_API_KEY"],
+            "tvly-approved"
+        );
+        assert_eq!(
+            record(&cs).declined_secrets["env.OTHER_TOKEN"],
+            manifest::hash_json(&serde_json::json!("tok-declined"))
+        );
+        sync(&paths, &mut cfg, &mut Scripted::new(&[]));
+    }
 
     #[test]
     fn only_auto_sync_backups_are_pruned_and_the_latest_kept() {

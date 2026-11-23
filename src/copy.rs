@@ -18,7 +18,7 @@ use crate::error::CliError;
 use crate::fsutil;
 use crate::manifest::{self, Manifest};
 use crate::paths::Paths;
-use crate::settings_sync::{self, Classifier, KeyBase, SettingsView};
+use crate::settings_sync::{self, Classifier, KeyBase, KeyState, SettingsView};
 
 /// One whitelisted path inside a config dir.
 #[derive(Debug, Clone)]
@@ -1546,49 +1546,33 @@ fn plan_settings(
         } else if rw.classifier.is_account_bound(&k) || w == p {
             false
         } else {
-            match &view.base {
-                KeyBase::TwoWay if w.is_none() => {
+            // The same reading `mcc sync` takes profile changes by.
+            match settings_sync::key_state(&view.base, &k, w, p) {
+                KeyState::Theirs => true,
+                KeyState::Ours { base } | KeyState::Lost { base } => {
+                    if let Some(h) = base {
+                        s.kept_base.insert(k.clone(), h);
+                    }
                     s.local.push(k.clone());
                     false
                 }
-                KeyBase::TwoWay => true,
-                KeyBase::Keys(b) => {
-                    let last = b.get(&k).map(String::as_str);
-                    if settings_sync::hash(p).as_deref() == last {
-                        true
-                    } else if settings_sync::hash(w).as_deref() == last {
-                        s.local.push(k.clone());
-                        false
-                    } else if force {
-                        s.forced.push(k.clone());
-                        true
-                    } else {
-                        s.conflicts.push(k.clone());
-                        false
-                    }
+                KeyState::Untracked => {
+                    s.local.push(k.clone());
+                    false
                 }
-                KeyBase::Guess { default_unchanged } => {
-                    if *default_unchanged {
-                        // What the default gives is what mcc wrote.
-                        if let Some(h) = settings_sync::hash(w) {
-                            s.kept_base.insert(k.clone(), h);
-                        }
-                        s.local.push(k.clone());
-                        false
-                    } else if p.is_none() {
-                        true
-                    } else if force {
-                        s.forced.push(k.clone());
-                        true
-                    } else {
-                        // The profile's value may be the stale one, and a
-                        // key only it has may be one the default dropped:
-                        // a conflict, kept one by its unknown base.
-                        s.kept_base
-                            .insert(k.clone(), settings_sync::UNKNOWN_BASE.into());
-                        s.conflicts.push(k.clone());
-                        false
-                    }
+                KeyState::Proposed => {
+                    s.kept_base
+                        .insert(k.clone(), settings_sync::PROPOSED_BASE.into());
+                    s.local.push(k.clone());
+                    false
+                }
+                KeyState::Both if force => {
+                    s.forced.push(k.clone());
+                    true
+                }
+                KeyState::Both => {
+                    s.conflicts.push(k.clone());
+                    false
                 }
             }
         };
@@ -2775,8 +2759,9 @@ mod tests {
 
     /// A record from before per-key settings holds only the whole file's
     /// hash: an untouched profile takes every default change; an edited
-    /// one gets new keys, and keys it has otherwise conflict (#129 review:
-    /// a key only the profile has may be one the default dropped).
+    /// one gets new keys, keys both have otherwise conflict, and a key only
+    /// the profile has is kept as a pending proposal (it may be new there,
+    /// or one the default dropped; `mcc sync` asks before taking it).
     #[test]
     fn settings_with_a_whole_file_record_are_planned_per_key() {
         let (_d, paths, dst) = setup();
@@ -2810,27 +2795,40 @@ mod tests {
         let p = plan3(&paths, &dst, &m, false);
         let st = p.settings.as_ref().unwrap();
         assert_eq!(st.added, vec!["newKey".to_string()]);
-        assert!(st.local.is_empty(), "{st:?}");
+        assert_eq!(st.local, vec!["env.CODE".to_string()]);
         assert_eq!(
             st.conflicts,
-            vec![
-                "model".to_string(),
-                "env.TAVILY_API_KEY".to_string(),
-                "env.CODE".to_string()
-            ]
+            vec!["model".to_string(), "env.TAVILY_API_KEY".to_string()]
         );
-        // Once synced, the record is per key and still keeps the conflicts:
-        // their base is unknown, so it matches neither side.
+        // --force gives the profile the default's side of a conflict, but
+        // leaves a proposal alone.
+        let forced = plan3(&paths, &dst, &m, true);
+        let st = forced.settings.as_ref().unwrap();
+        assert_eq!(st.local, vec!["env.CODE".to_string()]);
+        assert_eq!(st.forced.len(), 2);
+        // Once synced, the record is per key: the conflicts, with no base,
+        // stay conflicts; the proposal stays one.
         let rw = Rewriter::new(&paths, &dst, &SyncConfig::default());
         apply(&p, &paths.default_dir, &dst, &rw, false).unwrap();
         let m2 = p.manifest(Some(&m));
         assert!(m2.items.contains(manifest::SETTINGS_ITEM));
-        assert_eq!(m2.settings["model"], settings_sync::UNKNOWN_BASE);
-        assert_eq!(m2.settings["env.CODE"], settings_sync::UNKNOWN_BASE);
+        assert!(!m2.settings.contains_key("model"));
+        assert_eq!(m2.settings["env.CODE"], settings_sync::PROPOSED_BASE);
         let p = plan3(&paths, &dst, &m2, false);
         let st = p.settings.as_ref().unwrap();
         assert!(st.is_empty(), "{st:?}");
-        assert_eq!(st.conflicts.len(), 3);
+        assert_eq!(st.conflicts.len(), 2);
+        assert_eq!(st.local, vec!["env.CODE".to_string()]);
+        // Once the default has it too, the record holds its real hash.
+        let mut d = read_settings(&src);
+        d["env"]["CODE"] = "1".into();
+        write_settings(&src, d);
+        let p = plan3(&paths, &dst, &m2, false);
+        let m3 = p.manifest(Some(&m2));
+        assert_eq!(
+            m3.settings["env.CODE"],
+            manifest::hash_json(&serde_json::json!("1"))
+        );
         assert_eq!(read_settings(&dst)["env"]["TAVILY_API_KEY"], "t1");
         assert_eq!(read_settings(&dst)["env"]["CODE"], "1");
     }

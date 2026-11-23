@@ -43,9 +43,10 @@ pub struct Manifest {
     /// is in `items`; manifests from before keep only the whole file's hash.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub settings: BTreeMap<String, String>,
-    /// Shared secrets of this profile's `settings.json` the user chose not
-    /// to sync: key → hash of the value declined (never the value), so it
-    /// is not asked about again until the value changes.
+    /// Shared secrets of this profile's `settings.json`, and keys only it
+    /// had that `mcc sync` proposed taking into the default, the user chose
+    /// not to sync: key → hash of the value declined (never the value), so
+    /// it is not asked about again until the value changes.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub declined_secrets: BTreeMap<String, String>,
 }

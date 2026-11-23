@@ -313,19 +313,89 @@ pub enum KeyBase {
     Keys(BTreeMap<String, String>),
     /// Only the whole file's hash, from before per-key records, and the
     /// profile has edited the file since: which side changed a key is
-    /// guessed. `default_unchanged`: the default still gives what mcc
-    /// wrote, so every key that differs was changed in the profile.
-    /// Never a removal: a key the profile lacks may have been lost rather
-    /// than removed. With the default changed too, every key the profile
-    /// has otherwise is a conflict: the profile's value may be the stale
-    /// one, and a key only it has may be one the default dropped.
+    /// guessed ([`key_state`]). `default_unchanged`: the default still
+    /// gives what mcc wrote, so every key that differs was changed in the
+    /// profile.
     Guess { default_unchanged: bool },
 }
 
-/// The base recorded for a key whose last value is unknown (a conflict
-/// found by guess): it matches no value, so the key stays a conflict until
-/// both sides agree or `--force` settles it.
-pub const UNKNOWN_BASE: &str = "unknown";
+/// The base recorded for a key only the profile has, from a guess
+/// ([`KeyState::Proposed`]): it stays a proposal, taken into the default
+/// only once the user confirms it, until both sides agree on it.
+pub const PROPOSED_BASE: &str = "proposed";
+
+/// Where a key differs between the default's side (`w`) and the
+/// profile's (`p`), who changed it since the record: what both
+/// [`decide`] (taking profile changes into the default) and the profile's
+/// plan (`copy::plan_with`) act on, so the two never disagree.
+#[derive(Debug, Clone, PartialEq)]
+pub enum KeyState {
+    /// Only the default changed it (or no record says otherwise): the
+    /// profile takes the default's.
+    Theirs,
+    /// Only the profile changed it, the default is as recorded: the
+    /// profile keeps it (recording `base` when the record has none) and
+    /// [`decide`] takes it into the default.
+    Ours { base: Option<String> },
+    /// The profile lacks it, but whether it removed or lost it can't be
+    /// told (a guess): the profile keeps it as it is (recording `base`);
+    /// never taken into the default.
+    Lost { base: Option<String> },
+    /// No record: the profile's own key, kept; never taken.
+    Untracked,
+    /// Only the profile has it and the default changed since a whole-file
+    /// record: added in the profile, or dropped by the default? The
+    /// profile keeps it ([`PROPOSED_BASE`]) and the user is asked whether
+    /// the default should take it.
+    Proposed,
+    /// Changed on both sides: a conflict (`--force` gives the profile the
+    /// default's side).
+    Both,
+}
+
+/// The [`KeyState`] of `key`, which the default's side has as `w` and the
+/// profile as `p` (they differ), against the record `base`.
+pub fn key_state(base: &KeyBase, key: &str, w: Option<&Value>, p: Option<&Value>) -> KeyState {
+    match base {
+        KeyBase::TwoWay if w.is_none() => KeyState::Untracked,
+        KeyBase::TwoWay => KeyState::Theirs,
+        KeyBase::Keys(b) => {
+            let last = b.get(key).map(String::as_str);
+            if last == Some(PROPOSED_BASE) {
+                match (w, p) {
+                    (None, _) => KeyState::Proposed,
+                    (Some(_), None) => KeyState::Theirs,
+                    (Some(_), Some(_)) => KeyState::Both,
+                }
+            } else if hash(p).as_deref() == last {
+                KeyState::Theirs
+            } else if hash(w).as_deref() == last {
+                KeyState::Ours { base: None }
+            } else {
+                KeyState::Both
+            }
+        }
+        // The default is as mcc wrote it: the profile changed the key. A
+        // key it lacks may have been lost rather than removed.
+        KeyBase::Guess {
+            default_unchanged: true,
+        } => {
+            let base = hash(w);
+            if p.is_some() {
+                KeyState::Ours { base }
+            } else {
+                KeyState::Lost { base }
+            }
+        }
+        KeyBase::Guess {
+            default_unchanged: false,
+        } => match (w, p) {
+            (_, None) => KeyState::Theirs,
+            (None, Some(_)) => KeyState::Proposed,
+            (Some(_), Some(_)) => KeyState::Both,
+        },
+    }
+}
 
 /// A profile's `settings.json` next to the default's, key by key.
 #[derive(Debug, Clone)]
@@ -377,10 +447,9 @@ impl SettingsView {
         keys
     }
 
-    /// Whether the profile changed `key` since its record, and if so
-    /// whether the default did too (`Some(true)`, a conflict). Profiles
-    /// without a record are never sources; neither is a key the overlay
-    /// sets, or one that already matches the default.
+    /// Whether the profile changed `key` ([`key_state`]), and how.
+    /// Profiles without a record are never sources; neither is a key the
+    /// overlay sets, or one that already matches the default.
     fn changed(&self, key: &str) -> Option<Change> {
         if self.overlaid(key) {
             return None;
@@ -389,34 +458,23 @@ impl SettingsView {
         if w == p {
             return None;
         }
-        match &self.base {
-            KeyBase::TwoWay => None,
-            KeyBase::Keys(b) => {
-                let last = b.get(key).map(String::as_str);
-                (hash(p).as_deref() != last).then(|| Change::Exact {
-                    default_changed: hash(w).as_deref() != last,
-                })
-            }
-            // Never a removal by guess ([`KeyBase::Guess`]).
-            KeyBase::Guess {
-                default_unchanged: true,
-            } => p.is_some().then_some(Change::Exact {
-                default_changed: false,
-            }),
-            KeyBase::Guess {
-                default_unchanged: false,
-            } => p.is_some().then_some(Change::Guessed),
+        match key_state(&self.base, key, w, p) {
+            KeyState::Theirs | KeyState::Lost { .. } | KeyState::Untracked => None,
+            KeyState::Ours { .. } => Some(Change::Profile),
+            KeyState::Proposed => Some(Change::Proposed),
+            KeyState::Both => Some(Change::Both),
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Change {
-    /// Known from the record.
-    Exact { default_changed: bool },
-    /// Guessed: the record holds only the whole file's hash, and the
-    /// default changed since: always a conflict.
-    Guessed,
+    /// Only the profile changed it.
+    Profile,
+    /// Only the profile has it; it may be one the default dropped.
+    Proposed,
+    /// Changed on both sides.
+    Both,
 }
 
 /// One profile, as a source of settings changes for [`decide`].
@@ -437,9 +495,17 @@ pub enum Verdict {
     Remove(SharedKey),
     /// Account-bound: never taken.
     AccountBound,
+    /// Only a profile has it, and the default changed since that
+    /// profile's whole-file record: it may be new there, or one the
+    /// default dropped. Taken only once the user confirms it.
+    Propose(Shareable),
     /// Changed differently in several places (`with_default`: the default
-    /// among them): nothing is taken.
-    Conflict { with_default: bool },
+    /// among them; `default_has`: the default has a value for it): nothing
+    /// is taken.
+    Conflict {
+        with_default: bool,
+        default_has: bool,
+    },
     /// The profile's value holds paths that can't be mapped to the
     /// default's: nothing is taken.
     Unmappable,
@@ -459,10 +525,11 @@ pub struct Decision {
 /// default (`default`, flattened, as it is on disk) should take. A key
 /// changed in one place since its record is taken; changed differently
 /// in two or more (the default included), it is a conflict. Without a
-/// per-key record ([`KeyBase::Guess`]), a key is taken only while the
-/// default is unchanged since that record; otherwise it is a conflict.
-/// A removal is returned as [`Verdict::Remove`]; `mcc sync` carries it
-/// into the default only once the user confirms it.
+/// per-key record ([`KeyBase::Guess`]) and with the default changed
+/// since, a key the profile alone has is a [`Verdict::Propose`], one both
+/// have differently a conflict. A removal is returned as
+/// [`Verdict::Remove`]; `mcc sync` carries it, or a proposal, into the
+/// default only once the user confirms it.
 pub fn decide(c: &Classifier, default: &Map<String, Value>, sources: &[Source]) -> Vec<Decision> {
     let mut keys = BTreeSet::new();
     for s in sources {
@@ -521,22 +588,18 @@ pub fn decide(c: &Classifier, default: &Map<String, Value>, sources: &[Source]) 
         }
         let proposals: BTreeSet<Option<String>> =
             cands.iter().map(|(_, v, _)| hash(v.as_ref())).collect();
-        let with_default = cands.iter().any(|(_, _, ch)| {
-            matches!(
-                ch,
-                Change::Exact {
-                    default_changed: true
-                }
-            )
-        });
-        let guessed = cands.iter().any(|(_, _, ch)| *ch == Change::Guessed);
-        let conflict = proposals.len() > 1 || with_default || guessed;
-        let verdict = if conflict {
+        let with_default = cands.iter().any(|(_, _, ch)| *ch == Change::Both);
+        let proposed = cands.iter().any(|(_, _, ch)| *ch == Change::Proposed);
+        let verdict = if proposals.len() > 1 || with_default {
             Verdict::Conflict {
-                with_default: with_default || guessed,
+                with_default,
+                default_has: default.contains_key(&key),
             }
         } else {
             match cands[0].1.clone() {
+                Some(v) if proposed => {
+                    Verdict::Propose(c.shareable(&key, v).expect("not account-bound"))
+                }
                 Some(v) => Verdict::Set(c.shareable(&key, v).expect("not account-bound")),
                 None => Verdict::Remove(c.removable(&key).expect("not account-bound")),
             }
@@ -556,17 +619,21 @@ pub fn decide(c: &Classifier, default: &Map<String, Value>, sources: &[Source]) 
 pub enum Outcome {
     /// Copied to the default, and from there to every profile.
     Synced,
-    /// A shared secret, or a removal, a real sync would ask about at a
-    /// terminal (dry run).
+    /// A shared secret, a proposal or a removal a real sync would ask
+    /// about at a terminal (dry run).
     Asked,
-    /// A shared secret the user agreed to sync.
+    /// A shared secret or a proposal the user agreed to sync.
     Approved,
-    /// A shared secret the user declined (`earlier`: in a previous sync).
+    /// A shared secret or a proposal the user declined (`earlier`: in a
+    /// previous sync).
     Declined { earlier: bool },
     /// Left as it is, for this reason.
     Skipped(&'static str),
     /// Changed differently in several places; left as it is.
-    Conflict { with_default: bool },
+    Conflict {
+        with_default: bool,
+        default_has: bool,
+    },
     /// Removed from the default, and from there from every profile.
     Removed,
 }
@@ -586,17 +653,24 @@ impl Outcome {
                 "declined earlier (not asked again until its value changes)".into()
             }
             Outcome::Skipped(why) => format!("skipped ({why})"),
-            Outcome::Conflict { with_default } => format!(
-                "conflict: changed differently in {}; skipped{}",
-                if with_default {
-                    "the default and the profile"
+            Outcome::Conflict {
+                with_default: false,
+                ..
+            } => "conflict: changed differently in several profiles; skipped".into(),
+            Outcome::Conflict {
+                with_default: true,
+                default_has,
+            } => format!(
+                "conflict: {}; skipped{}",
+                if default_has {
+                    "changed differently in the default and the profile"
                 } else {
-                    "several profiles"
+                    "changed in the profile, removed from the default"
                 },
-                if force {
-                    " (--force keeps the default's value)"
-                } else {
-                    ""
+                match (force, default_has) {
+                    (false, _) => "",
+                    (true, true) => " (--force keeps the default's value)",
+                    (true, false) => " (--force removes it from the profile)",
                 }
             ),
             Outcome::Removed => would("removed", "would be removed"),
@@ -896,7 +970,8 @@ mod tests {
                 (
                     "model".into(),
                     Verdict::Conflict {
-                        with_default: false
+                        with_default: false,
+                        default_has: true
                     },
                     vec!["three".into(), "four".into()]
                 ),
@@ -912,7 +987,10 @@ mod tests {
             run(json!({"model": "fast"}), &[("p", &moved)]),
             vec![(
                 "model".into(),
-                Verdict::Conflict { with_default: true },
+                Verdict::Conflict {
+                    with_default: true,
+                    default_has: true
+                },
                 vec!["p".into()]
             )]
         );
@@ -946,18 +1024,18 @@ mod tests {
     }
 
     /// The first sync after upgrading: whole-file records only. With the
-    /// default changed since, every key a profile has otherwise is a
-    /// conflict (its value may be the stale one, and a key only it has may
-    /// be one the default dropped); never a removal.
+    /// default changed since, a key only the profile has is a proposal
+    /// (new there, or dropped by the default?), one both have otherwise a
+    /// conflict; never a removal.
     #[test]
-    fn guessing_never_spreads_a_secret_nor_removes() {
+    fn guessing_proposes_what_only_a_profile_has_and_never_removes() {
         let guess = KeyBase::Guess {
             default_unchanged: false,
         };
         let d = json!({"env.TAVILY_API_KEY": "t0", "model": "opus", "statusLine": "new"});
         let a = view(
             d.clone(),
-            json!({"env.TAVILY_API_KEY": "t1", "env.CODE": "1", "model": "opus", "statusLine": "old"}),
+            json!({"env.TAVILY_API_KEY": "t1", "env.CODE": "1", "env.NEW_TOKEN": "x", "model": "opus", "statusLine": "old"}),
             guess.clone(),
         );
         let b = view(
@@ -966,11 +1044,24 @@ mod tests {
             guess.clone(),
         );
         let got = run(d.clone(), &[("a", &a), ("b", &b)]);
-        let conflict = Verdict::Conflict { with_default: true };
+        let c = classifier();
+        let conflict = Verdict::Conflict {
+            with_default: true,
+            default_has: true,
+        };
         assert_eq!(
             got,
             vec![
-                ("env.CODE".into(), conflict.clone(), vec!["a".into()]),
+                (
+                    "env.CODE".into(),
+                    Verdict::Propose(c.shareable("env.CODE", json!("1")).unwrap()),
+                    vec!["a".into()]
+                ),
+                (
+                    "env.NEW_TOKEN".into(),
+                    Verdict::Propose(c.shareable("env.NEW_TOKEN", json!("x")).unwrap()),
+                    vec!["a".into()]
+                ),
                 (
                     "env.TAVILY_API_KEY".into(),
                     conflict.clone(),
@@ -981,8 +1072,28 @@ mod tests {
         );
         // Two profiles agreeing on a value the default has otherwise.
         let x = view(d.clone(), json!({"model": "haiku"}), guess.clone());
-        let y = view(d.clone(), json!({"model": "haiku"}), guess);
+        let y = view(d.clone(), json!({"model": "haiku"}), guess.clone());
         assert_eq!(run(d.clone(), &[("x", &x), ("y", &y)])[0].1, conflict);
+        // One proposal for every profile that has the same value; values
+        // that differ are a conflict among the profiles.
+        let x = view(json!({}), json!({"env.CODE": "1"}), guess.clone());
+        let y = view(json!({}), json!({"env.CODE": "1"}), guess.clone());
+        let z = view(json!({}), json!({"env.CODE": "2"}), guess.clone());
+        assert_eq!(
+            run(json!({}), &[("x", &x), ("y", &y)]),
+            vec![(
+                "env.CODE".into(),
+                Verdict::Propose(c.shareable("env.CODE", json!("1")).unwrap()),
+                vec!["x".into(), "y".into()]
+            )]
+        );
+        assert_eq!(
+            run(json!({}), &[("x", &x), ("z", &z)])[0].1,
+            Verdict::Conflict {
+                with_default: false,
+                default_has: false
+            }
+        );
 
         // The default unchanged since the record: a key the profile changed
         // or added is taken, but one it lacks is never removed.
@@ -994,7 +1105,6 @@ mod tests {
             json!({"env.TAVILY_API_KEY": "t0", "model": "sonnet", "env.CODE": "1"}),
             same,
         );
-        let c = classifier();
         assert_eq!(
             run(d.clone(), &[("p", &p)]),
             vec![
@@ -1010,12 +1120,84 @@ mod tests {
                 ),
             ]
         );
-        // The base recorded for a guessed conflict keeps it one next time.
+        // A proposal recorded as such stays one next time.
         let next = view(
             json!({}),
             json!({"env.CODE": "1"}),
-            KeyBase::Keys([("env.CODE".to_string(), UNKNOWN_BASE.to_string())].into()),
+            KeyBase::Keys([("env.CODE".to_string(), PROPOSED_BASE.to_string())].into()),
         );
-        assert_eq!(run(json!({}), &[("p", &next)])[0].1, conflict);
+        assert_eq!(
+            run(json!({}), &[("p", &next)])[0].1,
+            Verdict::Propose(c.shareable("env.CODE", json!("1")).unwrap())
+        );
+    }
+
+    /// A conflict says what `--force` does: keep the default's value, or,
+    /// when the default has none, remove the key from the profile.
+    #[test]
+    fn conflicts_say_what_force_does() {
+        let c = |with_default, default_has| Outcome::Conflict {
+            with_default,
+            default_has,
+        };
+        assert_eq!(
+            c(true, true).describe(false, true),
+            "conflict: changed differently in the default and the profile; skipped (--force keeps the default's value)"
+        );
+        assert_eq!(
+            c(true, false).describe(false, true),
+            "conflict: changed in the profile, removed from the default; skipped (--force removes it from the profile)"
+        );
+        assert_eq!(
+            c(true, false).describe(false, false),
+            "conflict: changed in the profile, removed from the default; skipped"
+        );
+        // --force doesn't settle a conflict among profiles.
+        assert_eq!(
+            c(false, true).describe(false, true),
+            "conflict: changed differently in several profiles; skipped"
+        );
+    }
+
+    /// Every record against every shape of a differing key: the reading
+    /// `decide` and the profile's plan share ([`key_state`]).
+    #[test]
+    fn key_states_cover_every_record() {
+        use KeyState::*;
+        let (a, b) = (json!("a"), json!("b"));
+        let h = |v: &Value| manifest::hash_json(v);
+        let keys = |base: Option<String>| {
+            KeyBase::Keys(base.into_iter().map(|b| ("k".to_string(), b)).collect())
+        };
+        let guess = |default_unchanged| KeyBase::Guess { default_unchanged };
+        let cases: Vec<(KeyBase, Option<&Value>, Option<&Value>, KeyState)> = vec![
+            (KeyBase::TwoWay, Some(&a), Some(&b), Theirs),
+            (KeyBase::TwoWay, Some(&a), None, Theirs),
+            (KeyBase::TwoWay, None, Some(&b), Untracked),
+            // A real base.
+            (keys(Some(h(&b))), Some(&a), Some(&b), Theirs),
+            (keys(Some(h(&a))), Some(&a), Some(&b), Ours { base: None }),
+            (keys(Some(h(&a))), Some(&a), None, Ours { base: None }),
+            (keys(Some(h(&a))), None, Some(&b), Both),
+            (keys(Some(h(&json!("c")))), Some(&a), Some(&b), Both),
+            // No entry: the default's new key, or the profile's.
+            (keys(None), Some(&a), None, Theirs),
+            (keys(None), None, Some(&b), Ours { base: None }),
+            (keys(None), Some(&a), Some(&b), Both),
+            // A pending proposal: never a conflict while the default lacks it.
+            (keys(Some(PROPOSED_BASE.into())), None, Some(&b), Proposed),
+            (keys(Some(PROPOSED_BASE.into())), Some(&a), None, Theirs),
+            (keys(Some(PROPOSED_BASE.into())), Some(&a), Some(&b), Both),
+            // Whole-file records.
+            (guess(true), Some(&a), Some(&b), Ours { base: Some(h(&a)) }),
+            (guess(true), None, Some(&b), Ours { base: None }),
+            (guess(true), Some(&a), None, Lost { base: Some(h(&a)) }),
+            (guess(false), Some(&a), Some(&b), Both),
+            (guess(false), None, Some(&b), Proposed),
+            (guess(false), Some(&a), None, Theirs),
+        ];
+        for (base, w, p, want) in cases {
+            assert_eq!(key_state(&base, "k", w, p), want, "{base:?} {w:?} {p:?}");
+        }
     }
 }
