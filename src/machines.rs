@@ -13,11 +13,11 @@
 //!
 //! The other machine answers in the machine protocol (`mcc usage --json-v2
 //! --machine-protocol`): the schema-2 envelope, marked with [`PROTOCOL`],
-//! each row carrying `account_id`, the SHA-256 of the account's email
-//! ([`crate::usage::account_id`]). That is how the same account is matched
-//! across machines: [`select`] picks one row per account to look up live
-//! (`mcc usage --all`), and [`newest`] finds the latest numbers each
-//! account has on any machine.
+//! each row carrying `account_id`, the SHA-256 of the account's email and
+//! organization ([`crate::usage::account_id`]). That is how the same
+//! account is matched across machines: [`select`] picks one row per
+//! account to look up live (`mcc usage --all`), and [`newest`] finds the
+//! latest numbers each account has on any machine.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;

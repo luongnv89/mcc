@@ -328,10 +328,18 @@ pub(crate) fn de_time<'de, D: serde::Deserializer<'de>>(
 }
 
 /// An account as machines compare it (#130): the hex SHA-256 of its
-/// email, trimmed and lowercased, so the same login matches across
-/// machines without its email leaving any of them.
-pub fn account_id(email: &str) -> String {
-    Sha256::digest(email.trim().to_lowercase().as_bytes())
+/// email (trimmed and lowercased) and, when known, its organization's
+/// UUID, so the same login matches across machines without its email
+/// leaving any of them. The organization keeps a personal plan and a work
+/// seat on one email apart, as [`crate::config::Account::same_seat`]
+/// does: they have limits of their own.
+pub fn account_id(email: &str, organization_uuid: Option<&str>) -> String {
+    let mut key = email.trim().to_lowercase();
+    if let Some(org) = organization_uuid.map(str::trim).filter(|o| !o.is_empty()) {
+        key.push('\n');
+        key.push_str(org);
+    }
+    Sha256::digest(key.as_bytes())
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
@@ -1350,6 +1358,24 @@ mod tests {
         assert!(
             err.contains("\"bogus\"") && err.contains("weekly-reset"),
             "{err}"
+        );
+    }
+
+    #[test]
+    fn account_ids_match_the_same_seat_only() {
+        let id = account_id("Ann@Example.com ", Some("org-1"));
+        assert_eq!(id.len(), 64);
+        assert!(
+            id.bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        );
+        assert_eq!(id, account_id("ann@example.com", Some(" org-1")));
+        assert_ne!(id, account_id("ann@example.com", Some("org-2")));
+        assert_ne!(id, account_id("ann@example.com", None));
+        assert_ne!(id, account_id("bob@example.com", Some("org-1")));
+        assert_eq!(
+            account_id("ann@example.com", None),
+            account_id("ANN@example.com", Some(""))
         );
     }
 

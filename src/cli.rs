@@ -70,7 +70,7 @@ pub(crate) use usage_all_machines_note;
 /// it was. A macro so the help text below can include it verbatim.
 macro_rules! machines_disclosure {
     () => {
-        "ⓘ mcc usage reads the other machines set up under [machines] in ~/.mcc/config.toml: it runs `mcc usage` on each over SSH (ssh -o BatchMode=yes, with your own SSH keys and config) and shows their tables after this machine's. No login or token leaves any machine; an account on several machines is matched by a SHA-256 of its email, never the email itself. This note is shown once."
+        "ⓘ mcc usage reads the other machines set up under [machines] in ~/.mcc/config.toml: it runs `mcc usage` on each over SSH (ssh -o BatchMode=yes, with your own SSH keys and config) and shows their tables after this machine's. No login or token leaves any machine; an account on several machines is matched by a SHA-256 of its email and organization, never the email itself. This note is shown once."
     };
 }
 pub(crate) use machines_disclosure;
@@ -254,7 +254,8 @@ pub enum Command {
         "machine after this one's (`local`), each headed by its name and when its\n",
         "numbers were last updated, or by why it couldn't be read; a machine that\n",
         "fails never fails the command. ALSO ON names the other machines an\n",
-        "account is signed in on (matched by a SHA-256 of the email), and every\n",
+        "account is signed in on (matched by a SHA-256 of its email and\n",
+        "organization: a personal plan and a work seat stay apart), and every\n",
         "row of that account shows its newest numbers from any machine, which\n",
         "are saved to this machine's cache too. --sort orders each table. Each\n",
         "machine needs this version of mcc or newer; set `mcc` to its full path\n",

@@ -157,13 +157,16 @@ fn ser_time<S: serde::Serializer>(t: &Option<DateTime<Utc>>, s: S) -> Result<S::
 
 impl Entry {
     fn new(name: &str, command: &str, is_default: bool, dir: &Path, state_json: &Path) -> Self {
-        let account = metrics::account_email(state_json);
+        let seat = metrics::account_info(state_json).unwrap_or_default();
         Self {
             name: name.to_string(),
             command: command.to_string(),
             is_default,
-            account_id: account.as_deref().map(usage::account_id),
-            account,
+            account: metrics::account_email(state_json),
+            account_id: seat
+                .email
+                .as_deref()
+                .map(|e| usage::account_id(e, seat.organization_uuid.as_deref())),
             also_on: None,
             usage: Usage::default(),
             last_activity: metrics::last_activity(dir).map(DateTime::<Utc>::from),
@@ -204,6 +207,16 @@ impl Entry {
             account_id: self.account_id.as_deref(),
             login_ok: self.login_expires_at.is_none_or(|t| t > now),
         }
+    }
+
+    /// A row as another machine sent it, kept to what this machine checks
+    /// and shows: no account text (another machine never sends an email,
+    /// and a changed one could send terminal escapes), nor its own
+    /// `also_on`, which [`merge_accounts`] sets here.
+    fn received(mut self) -> Self {
+        self.account = None;
+        self.also_on = None;
+        self
     }
 
     /// What the usage lookup needs of this profile.
@@ -570,7 +583,7 @@ fn lookup_with_machines(
         .zip(machines::ask_all::<Entry>(&first, machines::READ_TIMEOUT))
         .map(|((name, m), answer)| {
             let (profiles, error) = match answer {
-                Ok(rows) => (rows, None),
+                Ok(rows) => (rows.into_iter().map(Entry::received).collect(), None),
                 Err(e) => (Vec::new(), Some(e)),
             };
             MachineView {
@@ -655,7 +668,7 @@ fn lookup_with_machines(
             };
             match answer {
                 Ok(rows) => {
-                    for row in rows {
+                    for row in rows.into_iter().map(Entry::received) {
                         if let Some(old) = view.profiles.iter_mut().find(|e| e.name == row.name) {
                             *old = row;
                         }

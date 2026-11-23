@@ -683,3 +683,74 @@ fn another_machines_devin_row_is_shown_as_it_was_read() {
     assert!(lab_part.contains("\n# PROVIDER  "), "{out}");
     assert!(lab_part.contains("\n2 devin     — (not looked up"), "{out}");
 }
+
+#[test]
+fn the_same_email_in_another_organization_is_another_account() {
+    // A personal plan here and a work seat on lab, on one email: limits of
+    // their own, so each is looked up, and neither shows the other's.
+    let local = machine(Some(("ann@example.com", "tok-personal")), &[]);
+    let lab = machine(Some(("ann@example.com", "tok-work")), &[]);
+    for (sb, org) in [(&local, "org-personal"), (&lab, "org-acme")] {
+        sb.write(
+            ".claude.json",
+            &format!(r#"{{"oauthAccount":{{"emailAddress":"ann@example.com","organizationUuid":"{org}"}}}}"#),
+        );
+    }
+    seed_usage_cache(&local, "default", None, Some((20.0, 86400)), 30 * 60);
+    seed_usage_cache(&lab, "default", None, Some((70.0, 86400)), 60);
+    local.add_machine("lab", "lab-host", Some(&lab), None);
+    let stub = stub(&[]);
+    let before = local.read(".mcc/state/default/usage.json");
+
+    let v = v2(&local, &stub, &[]);
+    let (here, there) = (
+        by_name(rows(&v), "default"),
+        by_name(rows(machine_of(&v, "lab")), "default"),
+    );
+    assert_ne!(here["account_id"], there["account_id"]);
+    assert_eq!(here["also_on"], serde_json::json!([]));
+    assert_eq!(weekly(here), 20.0);
+    assert_eq!(weekly(there), 70.0);
+    assert_eq!(local.read(".mcc/state/default/usage.json"), before);
+    run(&local, &stub, &["usage", "--all"]);
+    assert_eq!(stub.tokens(), ["tok-personal", "tok-work"]);
+}
+
+#[test]
+fn what_another_machine_sends_is_never_shown_raw() {
+    // A changed mcc there could send an account (an email, or terminal
+    // escapes) and its own also_on: neither is kept.
+    let local = machine(Some(("ann@example.com", "tok-1")), &[]);
+    let reply = serde_json::json!({
+        "schema": 2,
+        "protocol": "mcc-machines/1",
+        "profiles": [{
+            "name": "work", "command": "work", "is_default": false,
+            "account": "evil@example.com\u{1b}]0;pwned\u{7}\u{1b}[2J",
+            "usage": {"status": "unavailable", "reason": "no_data", "five_hour": null,
+                      "weekly": null, "source": "cache", "updated_at": null},
+            "last_activity": null, "login_expires_at": null, "login_expires_source": null,
+            "login_warning": false, "is_global_default": false, "provider": "claude",
+            "account_id": null, "also_on": ["\u{1b}[31mred"]
+        }, {
+            "name": "devin", "command": "devin", "is_default": false, "account": null,
+            "usage": {"status": "unavailable", "reason": "not_looked_up", "five_hour": null,
+                      "weekly": null, "source": null, "updated_at": null},
+            "last_activity": null, "login_expires_at": null, "login_expires_source": null,
+            "login_warning": false, "is_global_default": false, "provider": "devin",
+            "account_id": null, "also_on": ["local"]
+        }]
+    });
+    local.write("ssh-canned", &reply.to_string());
+    local.add_machine("box", "canned", None, None);
+    let stub = stub(&[]);
+    let out = run(&local, &stub, &["usage", "--show-email"]);
+    assert!(out.contains("box (canned) · updated —"), "{out}");
+    assert!(!out.contains('\u{1b}') && !out.contains("evil"), "{out:?}");
+    let v = v2(&local, &stub, &["--show-email"]);
+    let row = by_name(rows(machine_of(&v, "box")), "work");
+    assert_eq!(row["account"], serde_json::Value::Null);
+    assert_eq!(row["also_on"], serde_json::json!([]));
+    let devin = by_name(rows(machine_of(&v, "box")), "devin");
+    assert!(devin.get("also_on").is_none(), "{devin}");
+}
