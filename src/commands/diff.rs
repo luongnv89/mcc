@@ -1,7 +1,7 @@
 //! `mcc diff` — how a profile differs from the default profile's setup, path
 //! by path, classified as `mcc sync` would (see `copy::plan_with`). Read-only.
 //! `settings.json` is compared key by key, with the values of secret keys
-//! hidden.
+//! hidden; so are they in `settings.local.json`.
 
 use std::io::Write;
 use std::path::Path;
@@ -201,6 +201,9 @@ fn file_diff(
         format!("default/{rel}")
     };
     let to = format!("{alias}/{rel}");
+    if rel == copy::LOCAL_SETTINGS_FILE {
+        return local_settings_diff(out, &from, &to, &a, &b, rw);
+    }
     match (a, b) {
         (Side::Text(a), Side::Text(b)) => text_diff(out, &from, &to, &a, &b)?,
         (Side::Text(a), Side::Missing) => text_diff(out, &from, &to, &a, "")?,
@@ -251,6 +254,57 @@ fn settings_diff(
     )
 }
 
+/// `settings.local.json` on both sides, as JSON with the value of every
+/// secret key hidden ([`settings_sync::Classifier::masked`]); not shown
+/// at all when a side is something else than a JSON object (or missing).
+fn local_settings_diff(
+    out: &mut impl Write,
+    from: &str,
+    to: &str,
+    a: &Side,
+    b: &Side,
+    rw: &Rewriter,
+) -> Result<()> {
+    let flat = |s: &Side| -> Option<Map<String, Value>> {
+        match s {
+            Side::Missing => Some(Map::new()),
+            Side::Text(t) => match serde_json::from_str::<Value>(t) {
+                Ok(Value::Object(m)) => Some(settings_sync::flatten(&m)),
+                _ => None,
+            },
+            _ => None,
+        }
+    };
+    let (Some(fa), Some(fb)) = (flat(a), flat(b)) else {
+        if let (Side::Link(_) | Side::Dir, _) | (_, Side::Link(_) | Side::Dir) = (a, b) {
+            writeln!(out, "  {from}: {}", a.describe())?;
+            writeln!(out, "  {to}: {}", b.describe())?;
+        } else {
+            writeln!(
+                out,
+                "  (not shown: one side is not a JSON object, and {} may hold secrets)",
+                copy::LOCAL_SETTINGS_FILE
+            )?;
+        }
+        return Ok(());
+    };
+    let c = rw.classifier();
+    let text = |side: &Side, flat: &Map<String, Value>, other: &Map<String, Value>, mark| {
+        if *side == Side::Missing {
+            return Ok::<_, anyhow::Error>(String::new());
+        }
+        let shown = settings_sync::unflatten(&c.masked(flat, other, mark));
+        Ok(serde_json::to_string_pretty(&Value::Object(shown))? + "\n")
+    };
+    text_diff(
+        out,
+        from,
+        to,
+        &text(a, &fa, &fb, false)?,
+        &text(b, &fb, &fa, true)?,
+    )
+}
+
 #[derive(PartialEq)]
 enum Side {
     Missing,
@@ -277,8 +331,9 @@ fn side(p: &Path, rewrite: Option<(bool, &Rewriter)>) -> Result<Side> {
     let Ok(meta) = std::fs::symlink_metadata(p) else {
         return Ok(Side::Missing);
     };
-    let overlaid = rewrite.is_some_and(|(_, rw)| rw.overlays(p));
-    if meta.file_type().is_symlink() && !overlaid {
+    // The default's settings files are written as files, even from a link.
+    let as_file = rewrite.is_some_and(|(_, rw)| rw.settings_like(p));
+    if meta.file_type().is_symlink() && !as_file {
         let target = std::fs::read_link(p).unwrap_or_default();
         return Ok(Side::Link(target.display().to_string()));
     }

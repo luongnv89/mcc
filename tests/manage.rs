@@ -2248,28 +2248,69 @@ fn a_key_changed_differently_in_two_profiles_is_a_conflict() {
     assert_eq!(settings_of(&sb, ".mcc/profiles/csdaisy")["model"], "opus");
 }
 
+/// #129 review: a key removed in a profile leaves the default only once
+/// the user confirms it at a terminal. `--yes` never confirms it (the
+/// profile may have lost it), nor does a run without a terminal.
 #[test]
-fn a_basic_setting_removed_in_a_profile_is_removed_everywhere_with_yes() {
+fn a_setting_removed_in_a_profile_leaves_the_default_only_once_confirmed() {
     let sb = three_profiles();
     let mut s = settings_of(&sb, ".mcc/profiles/lab");
     s.as_object_mut().unwrap().remove("statusLine");
     sb.write(".mcc/profiles/lab/settings.json", &s.to_string());
-    // Without --yes (and no terminal to ask at) the removal is skipped.
-    let err = sync_stderr(&sb, &["work"]);
+    let default_before = sb.read(".claude/settings.json");
+    let err = sync_stderr(&sb, &["--all", "--dry-run"]);
     assert!(
-        err.contains(
-            "statusLine: basic · from \"lab\" · skipped (removing it needs --yes or a terminal)"
-        ),
+        err.contains("statusLine: basic · from \"lab\" · would be asked about"),
         "{err}"
     );
-    assert!(settings_of(&sb, ".claude").get("statusLine").is_some());
-    let err = sync_stderr(&sb, &["--all", "--yes"]);
+    for args in [
+        &["work"][..],
+        &["--all", "--yes"],
+        &["--all", "--prune", "--yes"],
+    ] {
+        let err = sync_stderr(&sb, args);
+        assert!(
+            err.contains("statusLine: basic · from \"lab\" · skipped (needs confirmation)"),
+            "{args:?}: {err}"
+        );
+        assert!(err.contains("without --yes"), "{args:?}: {err}");
+        assert_eq!(sb.read(".claude/settings.json"), default_before, "{args:?}");
+    }
+    assert!(!sb.exists(".claude/.mcc-backup"));
+    // The other profiles keep it, also after a launch catches them up; lab
+    // keeps its removal as a local edit.
+    let o = sb.launcher("work").args(["-p", "hi"]).output().unwrap();
+    assert!(o.status.success(), "{o:?}");
+    assert_eq!(sb.read(".claude/settings.json"), default_before);
+    for p in ["work", "csdaisy"] {
+        let dir = format!(".mcc/profiles/{p}");
+        assert!(settings_of(&sb, &dir).get("statusLine").is_some(), "{p}");
+    }
     assert!(
-        err.contains("statusLine: basic · from \"lab\" · removed"),
-        "{err}"
+        settings_of(&sb, ".mcc/profiles/lab")
+            .get("statusLine")
+            .is_none()
     );
-    for dir in [".claude", ".mcc/profiles/work", ".mcc/profiles/csdaisy"] {
-        assert!(settings_of(&sb, dir).get("statusLine").is_none(), "{dir}");
+}
+
+/// #129 review: a profile whose settings.json is missing or emptied is not
+/// one that removed every key: `--yes` (with or without `--prune`) leaves
+/// the default's settings.json byte for byte as it is.
+#[test]
+fn a_missing_or_emptied_profile_settings_never_empties_the_default() {
+    let sb = three_profiles();
+    let default_before = sb.read(".claude/settings.json");
+    std::fs::remove_file(sb.path(".mcc/profiles/lab/settings.json")).unwrap();
+    sb.write(".mcc/profiles/csdaisy/settings.json", "{}");
+    for args in [&["--all", "--yes"][..], &["--all", "--prune", "--yes"]] {
+        let err = sync_stderr(&sb, args);
+        assert!(!err.contains("· removed"), "{args:?}: {err}");
+        assert!(!err.contains("from \"lab\""), "{args:?}: {err}");
+        assert_eq!(sb.read(".claude/settings.json"), default_before, "{args:?}");
+        let work = settings_of(&sb, ".mcc/profiles/work");
+        for key in ["hooks", "enabledPlugins", "statusLine", "model"] {
+            assert!(work.get(key).is_some(), "{args:?}: {key}: {work}");
+        }
     }
 }
 
@@ -2381,27 +2422,32 @@ fn a_shared_secret_is_only_synced_once_agreed_to() {
     assert!(err.contains("· skipped (a shared secret"), "{err}");
 }
 
+/// As an older mcc recorded `p`'s sync: the whole file's hash only.
+fn legacy_record(sb: &Sandbox, p: &str) {
+    let path = format!(".mcc/profiles/{p}/.mcc-sync.json");
+    let mut m = json(sb.read(&path).as_bytes());
+    let m = m.as_object_mut().unwrap();
+    m.remove("settings");
+    m["items"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|i| i != ":settings");
+    sb.write(&path, &serde_json::Value::Object(m.clone()).to_string());
+}
+
 /// The first sync after upgrading (#129): records from before per-key
 /// settings, a shared secret set differently in each profile, and a basic
-/// key in one. The basic key is synced; the secret is never spread, and
-/// no prompt is needed for it.
+/// key in one, while the default changed too. Which side changed a key
+/// can't be told, so nothing is taken into the default (a conflict, also
+/// on the next sync); the secret is never spread, and no prompt is needed.
 #[test]
-fn first_sync_after_upgrade_syncs_basic_keys_and_never_spreads_secrets() {
+fn first_sync_after_upgrade_never_spreads_secrets_nor_guesses() {
     let sb = Sandbox::new();
     sb.seed_default();
     set_env(&sb, ".claude", "TAVILY_API_KEY", "tvly-default");
     for p in ["work", "lab", "csdaisy"] {
         with_profile(&sb, p, "--clone");
-        // As an older mcc recorded it: the whole file's hash only.
-        let path = format!(".mcc/profiles/{p}/.mcc-sync.json");
-        let mut m = json(sb.read(&path).as_bytes());
-        let m = m.as_object_mut().unwrap();
-        m.remove("settings");
-        m["items"]
-            .as_array_mut()
-            .unwrap()
-            .retain(|i| i != ":settings");
-        sb.write(&path, &serde_json::Value::Object(m.clone()).to_string());
+        legacy_record(&sb, p);
     }
     set_env(&sb, ".mcc/profiles/work", "TAVILY_API_KEY", "tvly-work");
     set_env(&sb, ".mcc/profiles/lab", "TAVILY_API_KEY", "tvly-lab");
@@ -2410,11 +2456,12 @@ fn first_sync_after_upgrade_syncs_basic_keys_and_never_spreads_secrets() {
     let mut d = settings_of(&sb, ".claude");
     d["effortLevel"] = "high".into();
     sb.write(".claude/settings.json", &d.to_string());
+    let default_before = sb.read(".claude/settings.json");
 
     let err = sync_stderr(&sb, &["--all"]);
     assert!(
         err.contains(&format!(
-            "env.{CODE_MODE}: basic · from \"csdaisy\" · synced"
+            "env.{CODE_MODE}: basic · from \"csdaisy\" · conflict: changed differently in the default and the profile"
         )),
         "{err}"
     );
@@ -2426,25 +2473,68 @@ fn first_sync_after_upgrade_syncs_basic_keys_and_never_spreads_secrets() {
         !err.contains("would be asked") && !err.contains("agree at a terminal"),
         "{err}"
     );
-    assert_eq!(
-        settings_of(&sb, ".claude")["env"]["TAVILY_API_KEY"],
-        "tvly-default"
-    );
-    for (p, tavily) in [
-        ("work", "tvly-work"),
-        ("lab", "tvly-lab"),
-        ("csdaisy", "tvly-default"),
+    assert_eq!(sb.read(".claude/settings.json"), default_before);
+    for (p, tavily, code) in [
+        ("work", "tvly-work", None),
+        ("lab", "tvly-lab", None),
+        ("csdaisy", "tvly-default", Some("1")),
     ] {
         let s = settings_of(&sb, &format!(".mcc/profiles/{p}"));
         assert_eq!(s["env"]["TAVILY_API_KEY"], tavily, "{p}");
-        assert_eq!(s["env"][CODE_MODE], "1", "{p}");
+        assert_eq!(
+            s["env"].get(CODE_MODE).and_then(|v| v.as_str()),
+            code,
+            "{p}"
+        );
         assert_eq!(s["effortLevel"], "high", "{p}");
     }
-    // The records are per key now: the next sync has nothing new to say.
+    // The records are per key now, and the conflict stays one.
     let err = sync_stderr(&sb, &["--all"]);
-    assert!(!err.contains(&format!("env.{CODE_MODE}:")), "{err}");
+    assert!(
+        err.contains(&format!(
+            "env.{CODE_MODE}: basic · from \"csdaisy\" · conflict"
+        )),
+        "{err}"
+    );
+    assert_eq!(sb.read(".claude/settings.json"), default_before);
     let m = json(sb.read(".mcc/profiles/csdaisy/.mcc-sync.json").as_bytes());
-    assert!(m["settings"][format!("env.{CODE_MODE}")].is_string(), "{m}");
+    assert_eq!(m["settings"][format!("env.{CODE_MODE}")], "unknown", "{m}");
+    assert!(m["items"].as_array().unwrap().contains(&":settings".into()));
+}
+
+/// #129 review: after upgrading, a profile edited since its last sync
+/// still holds the default's older statusLine, and the default changed
+/// it since (`mcc statusline install`) and dropped a key. Neither the
+/// stale value nor the dropped key goes back into the default.
+#[test]
+fn first_sync_after_upgrade_never_reverts_the_default() {
+    let sb = three_profiles();
+    for p in ["work", "lab", "csdaisy"] {
+        legacy_record(&sb, p);
+    }
+    // Some other edit, so the whole-file record no longer matches.
+    set_env(&sb, ".mcc/profiles/work", "MINE", "1");
+    let mut d = settings_of(&sb, ".claude");
+    d["statusLine"] = serde_json::json!({"type": "command", "command": "mcc statusline"});
+    d.as_object_mut().unwrap().remove("enabledPlugins");
+    sb.write(".claude/settings.json", &d.to_string());
+    let default_before = sb.read(".claude/settings.json");
+    for _ in 0..2 {
+        let err = sync_stderr(&sb, &["--all", "--yes"]);
+        for key in ["statusLine", "enabledPlugins"] {
+            assert!(
+                err.contains(&format!("{key}: basic · from \"work\" · conflict")),
+                "{key}: {err}"
+            );
+        }
+        assert_eq!(sb.read(".claude/settings.json"), default_before);
+    }
+    // The profiles not edited since take the default's new statusLine.
+    for p in ["lab", "csdaisy"] {
+        let s = settings_of(&sb, &format!(".mcc/profiles/{p}"));
+        assert_eq!(s["statusLine"]["command"], "mcc statusline", "{p}: {s}");
+        assert!(s.get("enabledPlugins").is_none(), "{p}: {s}");
+    }
 }
 
 /// No secret value is ever shown or logged: not by a sync, a dry run,
@@ -2545,4 +2635,158 @@ fn a_profile_with_unreadable_settings_never_gets_account_bound_keys() {
     }
     let log = sb.read(".mcc/logs/mcc.log");
     assert!(!log.contains(&key) && !log.contains(&tavily));
+}
+
+/// The settings.local.json at `dir` (a profile dir, or `.claude`).
+fn local_settings_of(sb: &Sandbox, dir: &str) -> serde_json::Value {
+    json(sb.read(&format!("{dir}/settings.local.json")).as_bytes())
+}
+
+/// #129 review: settings.local.json is synced as a whole file, but the
+/// default's account-bound keys never reach a profile (on `add --clone`,
+/// `sync` or a launch), a profile keeps its own, and `mcc diff` hides
+/// secret values in it.
+#[test]
+fn account_bound_keys_of_settings_local_json_never_reach_a_profile() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    // Built at run time, so the source holds no token-shaped literal.
+    let key = ["sk", "ant", "LEAKCHECK", "local0123456789"].join("-");
+    let token = ["tok", "LEAKCHECK", "local0123456789"].join("-");
+    sb.write(
+        ".claude/settings.local.json",
+        &serde_json::json!({
+            "env": {"ANTHROPIC_API_KEY": key, "ANTHROPIC_BASE_URL": "https://default.example.invalid", "LOCAL_FLAG": "1"},
+            "apiKeyHelper": "/bin/default-helper",
+            "permissions": {"allow": ["Bash(ls)"]}
+        })
+        .to_string(),
+    );
+    let no_default_keys = |s: &serde_json::Value, p: &str| {
+        assert!(s["env"].get("ANTHROPIC_API_KEY").is_none(), "{p}: {s}");
+        assert_ne!(
+            s["env"]["ANTHROPIC_BASE_URL"], "https://default.example.invalid",
+            "{p}: {s}"
+        );
+        assert_ne!(s["apiKeyHelper"], "/bin/default-helper", "{p}: {s}");
+    };
+    with_profile(&sb, "work", "--clone");
+    with_profile(&sb, "lab", "--clone");
+    for p in ["work", "lab"] {
+        let s = local_settings_of(&sb, &format!(".mcc/profiles/{p}"));
+        no_default_keys(&s, p);
+        assert_eq!(s["env"]["LOCAL_FLAG"], "1", "{p}: {s}");
+        assert_eq!(s["permissions"]["allow"][0], "Bash(ls)", "{p}: {s}");
+    }
+
+    // lab has its own provider; the default changes a basic key.
+    let mut lab = local_settings_of(&sb, ".mcc/profiles/lab");
+    lab["env"]["ANTHROPIC_BASE_URL"] = "https://lab.example.invalid".into();
+    lab["apiKeyHelper"] = "/bin/lab-helper".into();
+    sb.write(".mcc/profiles/lab/settings.local.json", &lab.to_string());
+    let mut d = local_settings_of(&sb, ".claude");
+    d["permissions"]["allow"] = serde_json::json!(["Bash(ls)", "Bash(pwd)"]);
+    sb.write(".claude/settings.local.json", &d.to_string());
+    let err = sync_stderr(&sb, &["--all"]);
+    assert!(!err.contains(&key), "{err}");
+    for p in ["work", "lab"] {
+        let s = local_settings_of(&sb, &format!(".mcc/profiles/{p}"));
+        no_default_keys(&s, p);
+        assert_eq!(s["permissions"]["allow"][1], "Bash(pwd)", "{p}: {s}");
+    }
+    let lab = local_settings_of(&sb, ".mcc/profiles/lab");
+    assert_eq!(
+        lab["env"]["ANTHROPIC_BASE_URL"],
+        "https://lab.example.invalid"
+    );
+    assert_eq!(lab["apiKeyHelper"], "/bin/lab-helper");
+    // Nothing left to sync: the profile's own keys are not a difference.
+    let err = sync_stderr(&sb, &["--all"]);
+    assert!(!err.contains("settings.local.json"), "{err}");
+
+    // mcc diff shows a new secret of the default's by name, never by value.
+    let mut d = local_settings_of(&sb, ".claude");
+    d["env"]["SEARCH_TOKEN"] = token.as_str().into();
+    sb.write(".claude/settings.local.json", &d.to_string());
+    let o = sb.mcc().args(["diff", "lab"]).output().unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        out.contains("SEARCH_TOKEN") && out.contains("<hidden>"),
+        "{out}"
+    );
+    for secret in [&key, &token] {
+        assert!(!out.contains(secret.as_str()), "{out}");
+    }
+    assert!(!out.contains("https://lab.example.invalid"), "{out}");
+
+    // A launch catches work up the same way.
+    let o = sb.launcher("work").args(["-p", "hi"]).output().unwrap();
+    assert!(o.status.success(), "{o:?}");
+    let s = local_settings_of(&sb, ".mcc/profiles/work");
+    assert_eq!(s["env"]["SEARCH_TOKEN"], token.as_str(), "{s}");
+    no_default_keys(&s, "work");
+    let log = sb.read(".mcc/logs/mcc.log");
+    assert!(!log.contains(&key) && !log.contains(&token));
+}
+
+/// #129 review: a profile's settings files left by an older mcc as links
+/// to the default's own (dotfiles) files are replaced by files without the
+/// default's account-bound keys, by `mcc sync` and by a launch; they are
+/// never read as the profile's own settings.
+#[test]
+fn a_profile_settings_link_to_the_default_is_replaced_without_its_account_keys() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    let key = ["sk", "ant", "LEAKCHECK", "linked0123456789"].join("-");
+    set_env(&sb, ".claude", "ANTHROPIC_API_KEY", &key);
+    sb.write(
+        ".claude/settings.local.json",
+        &serde_json::json!({"env": {"ANTHROPIC_API_KEY": key}, "x": 1}).to_string(),
+    );
+    let files = ["settings.json", "settings.local.json"];
+    for f in files {
+        sb.write(&format!("dotfiles/{f}"), &sb.read(&format!(".claude/{f}")));
+        std::fs::remove_file(sb.path(&format!(".claude/{f}"))).unwrap();
+        std::os::unix::fs::symlink(
+            sb.path(&format!("dotfiles/{f}")),
+            sb.path(&format!(".claude/{f}")),
+        )
+        .unwrap();
+    }
+    with_profile(&sb, "work", "--clone");
+    with_profile(&sb, "lab", "--clone");
+    // As an older mcc left them: links to the default's real files.
+    for p in ["work", "lab"] {
+        for f in files {
+            let rel = format!(".mcc/profiles/{p}/{f}");
+            std::fs::remove_file(sb.path(&rel)).unwrap();
+            std::os::unix::fs::symlink(sb.path(&format!("dotfiles/{f}")), sb.path(&rel)).unwrap();
+        }
+    }
+    let default_before = sb.read("dotfiles/settings.json");
+    let check = |p: &str| {
+        for f in files {
+            let rel = format!(".mcc/profiles/{p}/{f}");
+            assert!(!sb.path(&rel).is_symlink(), "{rel}");
+            assert!(!sb.read(&rel).contains(&key), "{rel}");
+        }
+    };
+    let err = sync_stderr(&sb, &["work", "--yes"]);
+    assert!(!err.contains(&key), "{err}");
+    check("work");
+    assert_eq!(sb.read("dotfiles/settings.json"), default_before);
+    assert!(sb.read("dotfiles/settings.json").contains(&key));
+
+    // A change in the default, so a launch catches lab up.
+    let mut d = settings_of(&sb, ".claude");
+    d["alwaysThinkingEnabled"] = true.into();
+    sb.write("dotfiles/settings.json", &d.to_string());
+    let o = sb.launcher("lab").args(["-p", "hi"]).output().unwrap();
+    assert!(o.status.success(), "{o:?}");
+    check("lab");
+    assert_eq!(
+        settings_of(&sb, ".mcc/profiles/lab")["alwaysThinkingEnabled"],
+        true
+    );
+    assert!(sb.read("dotfiles/settings.json").contains(&key));
 }

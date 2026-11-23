@@ -1,4 +1,4 @@
-//! `mcc sync` — one-way copy of the default profile's setup into profiles,
+//! `mcc sync` — copy of the default profile's setup into profiles,
 //! three-way against the profile's sync manifest (`.mcc-sync.json`): changes
 //! in the default are copied, edits made in the profile are kept, and paths
 //! changed on both sides are conflicts, kept unless `--force`.
@@ -124,7 +124,10 @@ struct SettingsSource {
 /// [`settings_sync::decide`]). Basic keys are taken; a shared secret only
 /// when the user agrees at a terminal (never with `--yes`, and a declined
 /// value is not asked about again); account-bound keys never; a key
-/// removed in a profile only with `--yes` or a confirmation. Each key is
+/// removed in a profile only once the user confirms it at a terminal
+/// (never with `--yes`). A profile without a settings.json of its own (or
+/// one that isn't a JSON object, or is the default's own file through a
+/// symlink) is never a source. Each key is
 /// reported with its category and what happened, never its value. The
 /// default's settings.json is backed up before it is first written, and
 /// written through a symlink (dotfiles). A dry run reports only.
@@ -163,17 +166,16 @@ fn gather_settings(paths: &Paths, cfg: &Config, spec: &Spec, args: &SyncArgs) ->
                 force: false,
             };
             let dst = p.dir.join(copy::SETTINGS_FILE);
-            Ok(
-                copy::settings_view(&src, &dst, item.rewrite, &rw, &base)?.map(|view| {
-                    SettingsSource {
-                        alias: alias.clone(),
-                        dir: p.dir.clone(),
-                        rw,
-                        view,
-                        manifest,
-                    }
-                }),
-            )
+            Ok(copy::settings_view(&src, &dst, item.rewrite, &rw, &base)?
+                // A missing file is not a profile that removed every key.
+                .filter(|view| view.have_obj.is_some() && !view.linked)
+                .map(|view| SettingsSource {
+                    alias: alias.clone(),
+                    dir: p.dir.clone(),
+                    rw,
+                    view,
+                    manifest,
+                }))
         };
         match read() {
             Ok(Some(s)) => sources.push(s),
@@ -203,6 +205,7 @@ fn gather_settings(paths: &Paths, cfg: &Config, spec: &Spec, args: &SyncArgs) ->
     }
     ui::header("Settings changed in profiles");
     let (mut set, mut remove) = (Vec::new(), Vec::new());
+    let mut unconfirmed = false;
     for d in decisions {
         let outcome = match d.verdict {
             Verdict::AccountBound => {
@@ -257,29 +260,28 @@ fn gather_settings(paths: &Paths, cfg: &Config, spec: &Spec, args: &SyncArgs) ->
                     Outcome::Declined { earlier: false }
                 }
             }
-            // A real sync removes it only with --yes or a confirmation.
-            Verdict::Remove(_) if args.dry_run && !args.yes => Outcome::Asked,
+            // A real sync removes it only once the user confirms it at a
+            // terminal: --yes never does (the profile may have lost it).
+            Verdict::Remove(_) if args.dry_run => Outcome::Asked,
+            Verdict::Remove(_) if args.yes || !ui::is_interactive() => {
+                unconfirmed = true;
+                Outcome::Skipped("needs confirmation")
+            }
             Verdict::Remove(key) => {
-                let ok = args.dry_run
-                    || args.yes
-                    || (ui::is_interactive()
-                        && ui::confirm(
-                            &format!(
-                                "Remove {} ({}) from the default and every profile? It was removed in {}",
-                                d.key,
-                                d.category.as_str(),
-                                quoted(&d.sources)
-                            ),
-                            false,
-                            "",
-                        )?);
-                if ok {
+                if ui::confirm(
+                    &format!(
+                        "Remove {} ({}) from the default and every profile? It was removed in {}",
+                        d.key,
+                        d.category.as_str(),
+                        quoted(&d.sources)
+                    ),
+                    false,
+                    "",
+                )? {
                     remove.push(key);
                     Outcome::Removed
-                } else if ui::is_interactive() {
-                    Outcome::Skipped("removal not confirmed")
                 } else {
-                    Outcome::Skipped("removing it needs --yes or a terminal")
+                    Outcome::Skipped("removal not confirmed")
                 }
             }
         };
@@ -290,6 +292,11 @@ fn gather_settings(paths: &Paths, cfg: &Config, spec: &Spec, args: &SyncArgs) ->
             quoted(&d.sources),
             outcome.describe(args.dry_run, args.force)
         ));
+    }
+    if unconfirmed {
+        ui::hint(
+            "a key removed in a profile leaves the default only once you confirm it: run `mcc sync` at a terminal, without --yes",
+        );
     }
     if set.is_empty() && remove.is_empty() {
         return Ok(());

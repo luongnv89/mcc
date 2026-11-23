@@ -35,12 +35,19 @@ const ACCOUNT_KEYS: &[&str] = &[
 ];
 
 /// An `env` variable named like a secret: one of these words, as a whole
-/// `_`-separated part of the name (so `MAX_THINKING_TOKENS` is not one).
+/// `_`-separated part of the name (so `MAX_THINKING_TOKENS` is not one),
+/// or `KEY` as its last part (`SERPAPI_KEY`).
 static SECRET_NAME: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)(?:^|_)(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|PRIVATE_KEY|ACCESS_KEY|AUTH)(?:_|$)",
+        r"(?i)(?:^|_)(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|PRIVATE_KEY|ACCESS_KEY|AUTH)(?:_|$)|(?i)(?:^|_)KEY$",
     )
     .expect("static regex")
+});
+
+/// A run of 32 or more hex digits standing alone: in an `env` value, an
+/// API key more likely than a hash (SerpAPI keys are 64 lowercase hex).
+static HEX_RUN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:^|[^A-Za-z0-9])[0-9A-Fa-f]{32,}(?:$|[^A-Za-z0-9])").expect("static regex")
 });
 
 /// Text shaped like a well-known token, wherever it is.
@@ -161,6 +168,11 @@ fn holds_token(v: &Value) -> bool {
     }
 }
 
+/// Whether the `env` value `v` holds a long run of hex digits ([`HEX_RUN`]).
+fn holds_hex(v: &Value) -> bool {
+    matches!(v, Value::String(s) if HEX_RUN.is_match(s))
+}
+
 /// Sorts `settings.json` keys into [`Category`]s: the built-in rules plus
 /// `[sync] account_keys` and `secret_keys`.
 #[derive(Debug, Clone, Default)]
@@ -186,15 +198,16 @@ impl Classifier {
     }
 
     /// The category of `key` holding `value`. Account-bound wins over a
-    /// shared secret.
+    /// shared secret. A long hex run is a secret only in an `env` value:
+    /// elsewhere it is more likely a commit or a hash.
     pub fn category(&self, key: &str, value: Option<&Value>) -> Category {
+        let env_name = key.strip_prefix(ENV_PREFIX);
         if self.is_account_bound(key) {
             Category::AccountBound
         } else if self.secret.iter().any(|k| k == key)
-            || key
-                .strip_prefix(ENV_PREFIX)
-                .is_some_and(|name| SECRET_NAME.is_match(name))
+            || env_name.is_some_and(|name| SECRET_NAME.is_match(name))
             || value.is_some_and(holds_token)
+            || (env_name.is_some() && value.is_some_and(holds_hex))
         {
             Category::SharedSecret
         } else {
@@ -302,8 +315,17 @@ pub enum KeyBase {
     /// profile has edited the file since: which side changed a key is
     /// guessed. `default_unchanged`: the default still gives what mcc
     /// wrote, so every key that differs was changed in the profile.
+    /// Never a removal: a key the profile lacks may have been lost rather
+    /// than removed. With the default changed too, every key the profile
+    /// has otherwise is a conflict: the profile's value may be the stale
+    /// one, and a key only it has may be one the default dropped.
     Guess { default_unchanged: bool },
 }
+
+/// The base recorded for a key whose last value is unknown (a conflict
+/// found by guess): it matches no value, so the key stays a conflict until
+/// both sides agree or `--force` settles it.
+pub const UNKNOWN_BASE: &str = "unknown";
 
 /// A profile's `settings.json` next to the default's, key by key.
 #[derive(Debug, Clone)]
@@ -320,6 +342,11 @@ pub struct SettingsView {
     pub overlay_keys: BTreeSet<String>,
     /// The overlay replaces `env` whole: every `env.NAME` is its own.
     pub overlay_env: bool,
+    /// The profile's settings.json is the default's own file (a symlink
+    /// to it, as an older mcc left it): `have` is read through it, without
+    /// the default's account-bound keys; it is always replaced by a file,
+    /// and is never a source of changes for the default.
+    pub linked: bool,
 }
 
 impl SettingsView {
@@ -370,12 +397,12 @@ impl SettingsView {
                     default_changed: hash(w).as_deref() != last,
                 })
             }
+            // Never a removal by guess ([`KeyBase::Guess`]).
             KeyBase::Guess {
                 default_unchanged: true,
-            } => Some(Change::Exact {
+            } => p.is_some().then_some(Change::Exact {
                 default_changed: false,
             }),
-            // Never a removal by guess: the default may have added it.
             KeyBase::Guess {
                 default_unchanged: false,
             } => p.is_some().then_some(Change::Guessed),
@@ -387,7 +414,8 @@ impl SettingsView {
 enum Change {
     /// Known from the record.
     Exact { default_changed: bool },
-    /// Guessed: the record holds only the whole file's hash.
+    /// Guessed: the record holds only the whole file's hash, and the
+    /// default changed since: always a conflict.
     Guessed,
 }
 
@@ -431,9 +459,10 @@ pub struct Decision {
 /// default (`default`, flattened, as it is on disk) should take. A key
 /// changed in one place since its record is taken; changed differently
 /// in two or more (the default included), it is a conflict. Without a
-/// per-key record ([`KeyBase::Guess`]), a key is taken only when one
-/// profile has it differently, or the default lacks it and the profiles
-/// that have it agree; a shared secret is then never taken (a conflict).
+/// per-key record ([`KeyBase::Guess`]), a key is taken only while the
+/// default is unchanged since that record; otherwise it is a conflict.
+/// A removal is returned as [`Verdict::Remove`]; `mcc sync` carries it
+/// into the default only once the user confirms it.
 pub fn decide(c: &Classifier, default: &Map<String, Value>, sources: &[Source]) -> Vec<Decision> {
     let mut keys = BTreeSet::new();
     for s in sources {
@@ -501,11 +530,7 @@ pub fn decide(c: &Classifier, default: &Map<String, Value>, sources: &[Source]) 
             )
         });
         let guessed = cands.iter().any(|(_, _, ch)| *ch == Change::Guessed);
-        let conflict = proposals.len() > 1
-            || with_default
-            || (guessed
-                && (category == Category::SharedSecret
-                    || (cands.len() > 1 && default.contains_key(&key))));
+        let conflict = proposals.len() > 1 || with_default || guessed;
         let verdict = if conflict {
             Verdict::Conflict {
                 with_default: with_default || guessed,
@@ -531,8 +556,8 @@ pub fn decide(c: &Classifier, default: &Map<String, Value>, sources: &[Source]) 
 pub enum Outcome {
     /// Copied to the default, and from there to every profile.
     Synced,
-    /// A shared secret, or a removal without `--yes`, a real sync would
-    /// ask about (dry run).
+    /// A shared secret, or a removal, a real sync would ask about at a
+    /// terminal (dry run).
     Asked,
     /// A shared secret the user agreed to sync.
     Approved,
@@ -644,6 +669,10 @@ mod tests {
             "DB_PASSWORD",
             "my_credentials",
             "BASIC_AUTH",
+            "SERPAPI_KEY",
+            "GEMINI_KEY",
+            "linear_key",
+            "KEY",
         ] {
             assert_eq!(
                 basic(&format!("env.{name}"), json!("x")),
@@ -676,6 +705,33 @@ mod tests {
             ),
             Category::SharedSecret
         );
+        // Names with KEY not as their last part, or inside a word, are not.
+        for name in [
+            "KEYBOARD_LAYOUT",
+            "MONKEY",
+            "KEY_PATH",
+            "MAX_THINKING_TOKENS",
+        ] {
+            assert_eq!(
+                basic(&format!("env.{name}"), json!("x")),
+                Category::Basic,
+                "{name}"
+            );
+        }
+        // A long hex run in an env value is a secret (a 64-hex SerpAPI key),
+        // whatever the variable's name.
+        let hex64 = "0123456789abcdef".repeat(4);
+        assert_eq!(basic("env.SEARCH", json!(hex64)), Category::SharedSecret);
+        assert_eq!(
+            basic("env.SEARCH", json!("0123456789ABCDEF".repeat(2))),
+            Category::SharedSecret
+        );
+        // Shorter, or not in env: not.
+        assert_eq!(
+            basic("env.SEARCH", json!("0123456789abcdef")),
+            Category::Basic
+        );
+        assert_eq!(basic("pinned", json!(hex64)), Category::Basic);
         // Paths, UUIDs and hex hashes are not.
         assert_eq!(
             basic(
@@ -690,6 +746,10 @@ mod tests {
         );
         assert_eq!(
             basic("x", json!("3f786850e387550fdab836ed7e6dc881de23001b")),
+            Category::Basic
+        );
+        assert_eq!(
+            basic("env.RUN_ID", json!("0d5b1f6e-8a3c-4b7e-9f21-6c3d2e1a0b9f")),
             Category::Basic
         );
         // Config overrides; account-bound wins.
@@ -761,6 +821,7 @@ mod tests {
             base,
             overlay_keys: BTreeSet::new(),
             overlay_env: false,
+            linked: false,
         }
     }
 
@@ -884,16 +945,19 @@ mod tests {
         assert_eq!(got[1].2, vec!["p".to_string()]);
     }
 
-    /// The first sync after upgrading: whole-file records only.
+    /// The first sync after upgrading: whole-file records only. With the
+    /// default changed since, every key a profile has otherwise is a
+    /// conflict (its value may be the stale one, and a key only it has may
+    /// be one the default dropped); never a removal.
     #[test]
     fn guessing_never_spreads_a_secret_nor_removes() {
         let guess = KeyBase::Guess {
             default_unchanged: false,
         };
-        let d = json!({"env.TAVILY_API_KEY": "t0", "model": "opus"});
+        let d = json!({"env.TAVILY_API_KEY": "t0", "model": "opus", "statusLine": "new"});
         let a = view(
             d.clone(),
-            json!({"env.TAVILY_API_KEY": "t1", "env.CODE": "1", "model": "opus"}),
+            json!({"env.TAVILY_API_KEY": "t1", "env.CODE": "1", "model": "opus", "statusLine": "old"}),
             guess.clone(),
         );
         let b = view(
@@ -902,28 +966,56 @@ mod tests {
             guess.clone(),
         );
         let got = run(d.clone(), &[("a", &a), ("b", &b)]);
-        let c = classifier();
+        let conflict = Verdict::Conflict { with_default: true };
         assert_eq!(
             got,
             vec![
-                (
-                    "env.CODE".into(),
-                    Verdict::Set(c.shareable("env.CODE", json!("1")).unwrap()),
-                    vec!["a".into()]
-                ),
+                ("env.CODE".into(), conflict.clone(), vec!["a".into()]),
                 (
                     "env.TAVILY_API_KEY".into(),
-                    Verdict::Conflict { with_default: true },
+                    conflict.clone(),
                     vec!["a".into()]
                 ),
+                ("statusLine".into(), conflict.clone(), vec!["a".into()]),
             ]
         );
         // Two profiles agreeing on a value the default has otherwise.
         let x = view(d.clone(), json!({"model": "haiku"}), guess.clone());
         let y = view(d.clone(), json!({"model": "haiku"}), guess);
-        assert_eq!(
-            run(d.clone(), &[("x", &x), ("y", &y)])[0].1,
-            Verdict::Conflict { with_default: true }
+        assert_eq!(run(d.clone(), &[("x", &x), ("y", &y)])[0].1, conflict);
+
+        // The default unchanged since the record: a key the profile changed
+        // or added is taken, but one it lacks is never removed.
+        let same = KeyBase::Guess {
+            default_unchanged: true,
+        };
+        let p = view(
+            d.clone(),
+            json!({"env.TAVILY_API_KEY": "t0", "model": "sonnet", "env.CODE": "1"}),
+            same,
         );
+        let c = classifier();
+        assert_eq!(
+            run(d.clone(), &[("p", &p)]),
+            vec![
+                (
+                    "env.CODE".into(),
+                    Verdict::Set(c.shareable("env.CODE", json!("1")).unwrap()),
+                    vec!["p".into()]
+                ),
+                (
+                    "model".into(),
+                    Verdict::Set(c.shareable("model", json!("sonnet")).unwrap()),
+                    vec!["p".into()]
+                ),
+            ]
+        );
+        // The base recorded for a guessed conflict keeps it one next time.
+        let next = view(
+            json!({}),
+            json!({"env.CODE": "1"}),
+            KeyBase::Keys([("env.CODE".to_string(), UNKNOWN_BASE.to_string())].into()),
+        );
+        assert_eq!(run(json!({}), &[("p", &next)])[0].1, conflict);
     }
 }
