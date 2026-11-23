@@ -169,7 +169,9 @@ fn json_v2_adds_each_machine_with_its_own_update_time() {
 
     let v = v2(&local, &stub, &[]);
     let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
-    assert_eq!(keys, ["schema", "profiles", "machines"]);
+    assert_eq!(keys, ["schema", "profiles", "updated_at", "machines"]);
+    // Nothing cached here: this machine has no update time of its own.
+    assert_eq!(v["updated_at"], serde_json::Value::Null);
     let m = machine_of(&v, "lab");
     let keys: Vec<&str> = m.as_object().unwrap().keys().map(String::as_str).collect();
     assert_eq!(keys, ["name", "host", "updated_at", "error", "profiles"]);
@@ -753,4 +755,133 @@ fn what_another_machine_sends_is_never_shown_raw() {
     assert_eq!(row["also_on"], serde_json::json!([]));
     let devin = by_name(rows(machine_of(&v, "box")), "devin");
     assert!(devin.get("also_on").is_none(), "{devin}");
+}
+
+#[test]
+fn this_machines_heading_shows_its_own_update_time() {
+    // AC2: ann's newest numbers are lab's, a minute old, and every row of
+    // hers shows them; this machine's heading (and `updated_at`) still
+    // says when its own numbers are from, 30 minutes ago.
+    let local = machine(Some(("ann@example.com", "tok-1")), &[]);
+    let lab = machine(Some(("ann@example.com", "tok-2")), &[]);
+    seed_usage_cache(&lab, "default", None, Some((70.0, 86400)), 60);
+    local.add_machine("lab", "lab-host", Some(&lab), None);
+    let stub = stub(&[]);
+
+    seed_usage_cache(&local, "default", None, Some((20.0, 86400)), 30 * 60);
+    let out = run(&local, &stub, &["usage"]);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines[0], "local · updated 30m ago", "{out}");
+    assert!(
+        lines[2].contains(" 70% ") && lines[2].ends_with("1m ago"),
+        "{out}"
+    );
+    assert!(
+        out.lines().any(|l| l == "lab (lab-host) · updated 1m ago"),
+        "{out}"
+    );
+
+    // The merge saved lab's point here: put this machine's own back.
+    seed_usage_cache(&local, "default", None, Some((20.0, 86400)), 30 * 60);
+    let own = json(local.read(".mcc/state/default/usage.json").as_bytes());
+    let v = v2(&local, &stub, &[]);
+    assert_eq!(weekly(by_name(rows(&v), "default")), 70.0);
+    assert_eq!(v["updated_at"], own["updated_at"], "{v}");
+    assert_ne!(v["updated_at"], machine_of(&v, "lab")["updated_at"]);
+}
+
+#[test]
+fn a_time_ahead_of_this_clock_never_wins() {
+    // Another machine whose clock is ahead (or that sends a year-9999
+    // time) can't pass its numbers off as the newest: this machine's
+    // fresher point is shown everywhere and its cache is left alone.
+    let local = machine(Some(("ann@example.com", "tok-1")), &[]);
+    seed_usage_cache(&local, "default", None, Some((20.0, 86400)), 5 * 60);
+    // What this machine answers, as another one would send it, with
+    // ann's numbers changed and dated in the future.
+    let mut reply = json(
+        stdout_of(
+            local
+                .mcc()
+                .args(["usage", "--json-v2", "--machine-protocol"]),
+        )
+        .as_bytes(),
+    );
+    let mine = reply["profiles"][0].clone();
+    assert_eq!(
+        mine["account_id"].as_str().map(str::len),
+        Some(64),
+        "{mine}"
+    );
+    let mut rows_there = Vec::new();
+    for (name, at) in [
+        ("work", rfc3339_in(86400)),
+        ("side", "9999-12-31T23:59:59Z".to_string()),
+    ] {
+        let mut row = mine.clone();
+        row["name"] = name.into();
+        row["command"] = name.into();
+        row["is_default"] = false.into();
+        row["is_global_default"] = false.into();
+        row["usage"]["weekly"]["percent"] = 99.0.into();
+        row["usage"]["updated_at"] = at.into();
+        rows_there.push(row);
+    }
+    reply["profiles"] = rows_there.into();
+    local.write("ssh-canned", &reply.to_string());
+    local.add_machine("box", "canned", None, None);
+    let stub = stub(&[]);
+    let before = local.read(".mcc/state/default/usage.json");
+
+    let v = v2(&local, &stub, &[]);
+    assert_eq!(weekly(by_name(rows(&v), "default")), 20.0, "{v}");
+    let box_v = machine_of(&v, "box");
+    for name in ["work", "side"] {
+        assert_eq!(weekly(by_name(rows(box_v), name)), 20.0, "{v}");
+    }
+    // Its own times weren't believed, so it has none.
+    assert_eq!(box_v["updated_at"], serde_json::Value::Null, "{v}");
+    assert_eq!(local.read(".mcc/state/default/usage.json"), before);
+    let out = run(&local, &stub, &["usage"]);
+    assert!(out.starts_with("local · updated 5m ago\n"), "{out}");
+    assert!(out.contains("box (canned) · updated —"), "{out}");
+    assert_eq!(local.read(".mcc/state/default/usage.json"), before);
+}
+
+#[test]
+fn a_machine_that_fails_to_refresh_keeps_what_it_had() {
+    // dan is on aa (first in the config, a minute-old 70%) and on box (a
+    // two-hour-old 40%). --all asks aa to look dan up, and that run
+    // can't connect: aa says why, keeps its cached rows, and dan's row on
+    // box still shows aa's newer numbers.
+    let local = machine(Some(("ann@example.com", "tok-ann")), &[]);
+    let aa = machine(Some(("dan@example.com", "tok-dan-aa")), &[]);
+    let box_ = machine(Some(("dan@example.com", "tok-dan-box")), &[]);
+    seed_usage_cache(&aa, "default", None, Some((70.0, 86400)), 60);
+    seed_usage_cache(&box_, "default", None, Some((40.0, 86400)), 2 * 3600);
+    local.add_machine("aa", "aa-flaky", Some(&aa), None);
+    local.add_machine("box", "box-host", Some(&box_), None);
+    let stub = stub(&[]);
+
+    let v = v2(&local, &stub, &["--all"]);
+    assert_eq!(
+        commands_to(&local, "aa-flaky"),
+        [
+            "'mcc' 'usage' '--json-v2' '--machine-protocol'",
+            "'mcc' 'usage' '--all' '--json-v2' '--machine-protocol' '--only' 'default'"
+        ]
+    );
+    assert_eq!(commands_to(&local, "box-host").len(), 1);
+    let aa_v = machine_of(&v, "aa");
+    assert_eq!(aa_v["error"], "unreachable", "{v}");
+    assert_eq!(weekly(by_name(rows(aa_v), "default")), 70.0, "{v}");
+    assert_eq!(aa_v["updated_at"].as_str().map(str::len), Some(20), "{v}");
+    assert_eq!(
+        weekly(by_name(rows(machine_of(&v, "box")), "default")),
+        70.0,
+        "{v}"
+    );
+    assert_eq!(machine_of(&v, "box")["error"], serde_json::Value::Null);
+    // Only ann was looked up, here; dan's lookup never ran.
+    assert_eq!(stub.tokens(), ["tok-ann"]);
 }

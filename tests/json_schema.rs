@@ -186,7 +186,8 @@ fn usage_json_only_gains_the_login_fields() {
 #[test]
 fn usage_json_v2_gains_machines_only_when_they_are_set_up() {
     // #130: no [machines], no `machines` key and no new row field; with
-    // one, `machines` follows `profiles` and rows carry `account_id`.
+    // one, this machine's own `updated_at` and `machines` follow
+    // `profiles`, and rows carry `account_id`.
     let sb = sandbox();
     let keys =
         |v: &serde_json::Value| -> Vec<String> { v.as_object().unwrap().keys().cloned().collect() };
@@ -199,7 +200,7 @@ fn usage_json_v2_gains_machines_only_when_they_are_set_up() {
     lab.seed_default();
     sb.add_machine("lab", "lab-host", Some(&lab), None);
     let v = json(stdout_of(sb.mcc().args(["usage", "--json-v2"])).as_bytes());
-    assert_eq!(keys(&v), ["schema", "profiles", "machines"]);
+    assert_eq!(keys(&v), ["schema", "profiles", "updated_at", "machines"]);
     let default = &v["profiles"][0];
     assert_eq!(default["name"], "default");
     assert_eq!(

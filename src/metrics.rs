@@ -95,16 +95,6 @@ pub struct ProfileMetrics {
     pub warnings: Vec<String>,
 }
 
-/// Where Claude Code's state file keeps the logged-in account's email.
-const ACCOUNT_EMAIL: &str = "/oauthAccount/emailAddress";
-
-/// The account email in a Claude Code state file (`~/.claude.json`, or
-/// `<profile>/.claude.json`); `None` when logged out or unreadable.
-pub fn account_email(state_json: &Path) -> Option<String> {
-    let state: Value = serde_json::from_slice(&std::fs::read(state_json).ok()?).ok()?;
-    state.pointer(ACCOUNT_EMAIL)?.as_str().map(str::to_string)
-}
-
 /// The logged-in account in a Claude Code state file (its `oauthAccount`);
 /// `None` when logged out or unreadable. `recorded_at` is left unset.
 pub fn account_info(state_json: &Path) -> Option<Account> {
@@ -619,15 +609,22 @@ mod tests {
 
     #[test]
     fn account_email_reads_the_state_file() {
+        // `mcc usage` takes the email from `account_info` (one read of the
+        // state file): none when logged out, unreadable or not a string.
+        let email = |p: &Path| account_info(p).and_then(|a| a.email);
         let d = tempfile::tempdir().unwrap();
         let state = d.path().join(".claude.json");
-        assert_eq!(account_email(&state), None);
+        assert_eq!(email(&state), None);
         std::fs::write(&state, "{nope").unwrap();
-        assert_eq!(account_email(&state), None);
+        assert_eq!(email(&state), None);
         std::fs::write(&state, r#"{"oauthAccount":{}}"#).unwrap();
-        assert_eq!(account_email(&state), None);
+        assert_eq!(email(&state), None);
+        std::fs::write(&state, r#"{"oauthAccount":"me@x.io"}"#).unwrap();
+        assert_eq!(email(&state), None);
+        std::fs::write(&state, r#"{"oauthAccount":{"emailAddress":5}}"#).unwrap();
+        assert_eq!(email(&state), None);
         std::fs::write(&state, r#"{"oauthAccount":{"emailAddress":"me@x.io"}}"#).unwrap();
-        assert_eq!(account_email(&state).as_deref(), Some("me@x.io"));
+        assert_eq!(email(&state).as_deref(), Some("me@x.io"));
     }
 
     #[test]

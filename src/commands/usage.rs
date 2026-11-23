@@ -162,7 +162,7 @@ impl Entry {
             name: name.to_string(),
             command: command.to_string(),
             is_default,
-            account: metrics::account_email(state_json),
+            account: seat.email.clone(),
             account_id: seat
                 .email
                 .as_deref()
@@ -212,10 +212,20 @@ impl Entry {
     /// A row as another machine sent it, kept to what this machine checks
     /// and shows: no account text (another machine never sends an email,
     /// and a changed one could send terminal escapes), nor its own
-    /// `also_on`, which [`merge_accounts`] sets here.
-    fn received(mut self) -> Self {
+    /// `also_on`, which [`merge_accounts`] sets here; and no time of its
+    /// numbers later than this machine's clock ([`machines::drop_future_time`]).
+    fn received(mut self, machine: &str, now: DateTime<Utc>) -> Self {
         self.account = None;
         self.also_on = None;
+        if machines::drop_future_time(&mut self.usage, now) {
+            crate::log::write(
+                "WARN",
+                &format!(
+                    "machine {machine}: {}'s usage time is ahead of this clock; not used as newest",
+                    self.name
+                ),
+            );
+        }
         self
     }
 
@@ -318,11 +328,16 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
     }
 
     let mut machines: Option<Vec<MachineView>> = None;
+    // This machine's own last update, from its own numbers (#130): taken
+    // before the merge puts other machines' newer numbers into its rows.
+    let mut local_updated = None;
     if usage::disabled_by_env() {
         crate::log::write("INFO", "usage not fetched: MCC_NO_USAGE is set");
     } else if fan_out {
-        let (views, stopped) = lookup_with_machines(paths, cfg, args, &mut entries, with_devin);
+        let (views, own, stopped) =
+            lookup_with_machines(paths, cfg, args, &mut entries, with_devin);
         machines = Some(views);
+        local_updated = own;
         interrupted = stopped;
     } else {
         // `--all`: every account looked up live for this run only, the
@@ -369,6 +384,9 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
         Entry::devin(devin::lookup(paths, how).usage)
     });
 
+    // Devin is never merged with another machine: its time is its own.
+    let local_updated = local_updated.max(devin.as_ref().and_then(|d| machines::time_of(&d.usage)));
+
     let mut out = std::io::stdout().lock();
     if args.json || args.json_v2 {
         let rows: Vec<&Entry> = entries.iter().chain(devin.as_ref()).collect();
@@ -377,16 +395,14 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
             extra.push(("protocol", serde_json::json!(machines::PROTOCOL)));
         }
         if let Some(views) = &machines {
+            // Only with machines: this machine's own last update, as
+            // each of `machines[]` has its own.
+            let at = local_updated.map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+            extra.push(("updated_at", serde_json::json!(at)));
             extra.push(("machines", serde_json::to_value(views)?));
         }
         super::write_json_with(&mut out, "profiles", &rows, args.json_v2, &extra)?;
     } else {
-        // This machine's own last update, from its own numbers.
-        let local_updated = entries
-            .iter()
-            .chain(devin.as_ref())
-            .filter_map(|e| machines::time_of(&e.usage))
-            .max();
         // Each line, and whether it counts for the layout's width: a
         // machine's heading doesn't (its error may be long).
         let lines = |l: Layout| {
@@ -553,14 +569,15 @@ fn ser_error<S: serde::Serializer>(e: &Option<MachineError>, s: S) -> Result<S::
 /// --all --only …` there, while this machine's lookups run. Then each row
 /// of an account gets its newest numbers from any machine, which are saved
 /// to this machine's cache when newer. Returns the other machines' tables,
-/// and whether Ctrl+C stopped a refresh here.
+/// this machine's own last update (from its own numbers, before any are
+/// replaced), and whether Ctrl+C stopped a refresh here.
 fn lookup_with_machines(
     paths: &Paths,
     cfg: &Config,
     args: &UsageArgs,
     entries: &mut [Entry],
     with_devin: bool,
-) -> (Vec<MachineView>, bool) {
+) -> (Vec<MachineView>, Option<DateTime<Utc>>, bool) {
     if args.all {
         eprintln!("{USAGE_ALL_NOTE}");
         if with_devin {
@@ -583,7 +600,12 @@ fn lookup_with_machines(
         .zip(machines::ask_all::<Entry>(&first, machines::READ_TIMEOUT))
         .map(|((name, m), answer)| {
             let (profiles, error) = match answer {
-                Ok(rows) => (rows.into_iter().map(Entry::received).collect(), None),
+                Ok(rows) => (
+                    rows.into_iter()
+                        .map(|e| e.received(name, Utc::now()))
+                        .collect(),
+                    None,
+                ),
                 Err(e) => (Vec::new(), Some(e)),
             };
             MachineView {
@@ -668,7 +690,7 @@ fn lookup_with_machines(
             };
             match answer {
                 Ok(rows) => {
-                    for row in rows.into_iter().map(Entry::received) {
+                    for row in rows.into_iter().map(|e| e.received(req.name, Utc::now())) {
                         if let Some(old) = view.profiles.iter_mut().find(|e| e.name == row.name) {
                             *old = row;
                         }
@@ -695,8 +717,14 @@ fn lookup_with_machines(
             .filter_map(|e| machines::time_of(&e.usage))
             .max();
     }
+    // This machine's own last update, before another machine's newer
+    // numbers replace any of its own.
+    let local_updated = entries
+        .iter()
+        .filter_map(|e| machines::time_of(&e.usage))
+        .max();
     merge_accounts(paths, entries, &mut views);
-    (views, interrupted)
+    (views, local_updated, interrupted)
 }
 
 /// Every row of an account, on any machine, gets the account's newest

@@ -399,6 +399,23 @@ pub fn time_of(u: &Usage) -> Option<DateTime<Utc>> {
     u.updated_at.filter(|_| u.status == Status::Ok)
 }
 
+/// How far ahead of this machine's clock another machine's time may be
+/// and still be believed: clocks a little apart are normal.
+pub const CLOCK_TOLERANCE: chrono::Duration = chrono::Duration::seconds(60);
+
+/// Forget the time of usage another machine sent when it is later than
+/// `now` (plus [`CLOCK_TOLERANCE`]): a clock set ahead, or a broken
+/// answer, would otherwise make older numbers look newest everywhere and
+/// overwrite this machine's cache with them. The numbers stay, with no
+/// time, so they never compete in [`newest`]. `true` when it was dropped.
+pub fn drop_future_time(u: &mut Usage, now: DateTime<Utc>) -> bool {
+    let future = u.updated_at.is_some_and(|t| t > now + CLOCK_TOLERANCE);
+    if future {
+        u.updated_at = None;
+    }
+    future
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -628,5 +645,28 @@ mod tests {
         assert_eq!(best["a"].weekly.as_ref().unwrap().percent, 70.0);
         assert_eq!(best["b"].weekly.as_ref().unwrap().percent, 10.0);
         assert!(!best.contains_key("c"));
+    }
+
+    #[test]
+    fn a_time_later_than_this_machines_clock_is_dropped() {
+        let now = at("2026-10-10T12:00:00Z");
+        let point = |t: &str| {
+            let mut u = Usage::ok(None, None);
+            u.updated_at = Some(at(t));
+            let dropped = drop_future_time(&mut u, now);
+            (dropped, u.updated_at)
+        };
+        // Within the tolerance, or in the past: kept.
+        assert_eq!(
+            point("2026-10-10T12:01:00Z"),
+            (false, Some(at("2026-10-10T12:01:00Z")))
+        );
+        assert_eq!(
+            point("2026-10-10T11:00:00Z"),
+            (false, Some(at("2026-10-10T11:00:00Z")))
+        );
+        // Beyond it: no time left, so it never competes.
+        assert_eq!(point("2026-10-10T12:01:01Z"), (true, None));
+        assert_eq!(point("9999-12-31T23:59:59Z"), (true, None));
     }
 }

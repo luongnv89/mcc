@@ -180,7 +180,9 @@ exit 44
 /// 255), `old` (an mcc without the machine protocol: clap's usage error,
 /// exit 2), `garbage` (an answer that isn't JSON) and `canned` (whatever
 /// $HOME/ssh-canned holds) need no sandbox; any other host without one
-/// can't be resolved (exit 255).
+/// can't be resolved (exit 255). A host whose name ends in `-flaky` is
+/// served from its sandbox, except a refresh (a command with `--only`),
+/// which can't connect (exit 255).
 const FAKE_SSH: &str = r#"#!/bin/sh
 tab=$(printf '\t'); line=ssh
 for a in "$@"; do line="$line$tab$a"; done
@@ -195,6 +197,7 @@ case "$host" in
   old) echo "error: unexpected argument '--machine-protocol' found" >&2; exit 2 ;;
   garbage) echo "Welcome to garbage!"; exit 0 ;;
   canned) cat "$HOME/ssh-canned"; exit 0 ;;
+  *-flaky) case "$7" in *"'--only'"*) echo "ssh: connect to host $host port 22: Connection refused" >&2; exit 255 ;; esac ;;
 esac
 [ -f "$HOME/ssh-hosts/$host" ] || { echo "ssh: Could not resolve hostname $host" >&2; exit 255; }
 root=$(cat "$HOME/ssh-hosts/$host")
