@@ -39,17 +39,23 @@ use crate::error::CliError;
 /// either shape bumps this number (and gets a flag of its own).
 pub const JSON_SCHEMA: u32 = 2;
 
-/// `{"schema": JSON_SCHEMA, key: items}`, with `schema` first.
+/// `{"schema": JSON_SCHEMA, key: items, ...extra}`, with `schema` first.
+/// `extra` holds keys a schema-2 envelope gains (additive, #130: `mcc
+/// usage`'s `machines`); empty for every other command.
 struct Envelope<'a, T: ?Sized> {
     key: &'a str,
     items: &'a T,
+    extra: &'a [(&'a str, serde_json::Value)],
 }
 
 impl<T: Serialize + ?Sized> Serialize for Envelope<'_, T> {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        let mut map = s.serialize_map(Some(2))?;
+        let mut map = s.serialize_map(Some(2 + self.extra.len()))?;
         map.serialize_entry("schema", &JSON_SCHEMA)?;
         map.serialize_entry(self.key, self.items)?;
+        for (k, v) in self.extra {
+            map.serialize_entry(k, v)?;
+        }
         map.end()
     }
 }
@@ -62,8 +68,20 @@ pub fn write_json<T: Serialize + ?Sized>(
     items: &T,
     envelope: bool,
 ) -> Result<()> {
+    write_json_with(out, key, items, envelope, &[])
+}
+
+/// [`write_json`], with `extra` keys after `key` in the envelope (never in
+/// the bare array).
+pub fn write_json_with<T: Serialize + ?Sized>(
+    out: &mut impl Write,
+    key: &str,
+    items: &T,
+    envelope: bool,
+    extra: &[(&str, serde_json::Value)],
+) -> Result<()> {
     if envelope {
-        serde_json::to_writer_pretty(&mut *out, &Envelope { key, items })?;
+        serde_json::to_writer_pretty(&mut *out, &Envelope { key, items, extra })?;
     } else {
         serde_json::to_writer_pretty(&mut *out, items)?;
     }

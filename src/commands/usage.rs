@@ -5,20 +5,29 @@
 //! lookup finds its token expired, then looks it up again (#106; see
 //! [`crate::refresh::refresh_expired`]). Its notices go to stderr, so
 //! `--json` stays as it was.
+//!
+//! With other machines set up (`[machines.NAME]`, #130), it also reads
+//! each of them over SSH ([`crate::machines`]) and shows one table per
+//! machine. Every row of an account then shows that account's newest
+//! numbers from any machine, saved to this machine's cache too, and
+//! `--all` looks each account up live once, on one machine. Without
+//! machines, nothing of this runs and the output is as it was.
 
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use console::{measure_text_width, style};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::cli::UsageArgs;
-use crate::config::Config;
+use crate::config::{Config, LOCAL_MACHINE};
 use crate::devin;
 use crate::error::{CliError, EXIT_INTERRUPTED};
+use crate::machines::{self, MachineError};
 use crate::metrics::{self, Provider};
 use crate::paths::Paths;
 use crate::ui;
@@ -31,6 +40,14 @@ pub const USAGE_ALL_NOTE: &str = crate::cli::usage_all_note!();
 /// Printed on its own line after [`USAGE_ALL_NOTE`] when Devin is set up
 /// here (#124): `--all` looks Devin's usage up live too.
 pub const USAGE_ALL_DEVIN_NOTE: &str = crate::cli::usage_all_devin_note!();
+
+/// Printed on its own line after [`USAGE_ALL_NOTE`] when other machines
+/// are set up (#130): `--all` refreshes them too.
+pub const USAGE_ALL_MACHINES_NOTE: &str = crate::cli::usage_all_machines_note!();
+
+/// Printed on stderr the first time `mcc usage` reads other machines
+/// (#130); `[usage] machines_disclosed_at` records that it was.
+pub const MACHINES_DISCLOSURE: &str = crate::cli::machines_disclosure!();
 
 /// How the table is laid out: the bar width of the usage cells (0 = no bar),
 /// whether the absolute reset time follows the relative one, and whether
@@ -85,8 +102,9 @@ const LAYOUTS: [Layout; 6] = [
 const NO_DATA_CELL: &str = "— (no usage cached; run /usage)";
 
 /// One profile's usage, as printed and as serialized by `--json`. The fields
-/// after `usage` were added in #100 (schema 1 only gains fields).
-#[derive(Debug, Serialize)]
+/// after `usage` were added in #100 (schema 1 only gains fields). Read back
+/// from another machine's `mcc usage` (#130).
+#[derive(Debug, Serialize, Deserialize)]
 struct Entry {
     name: String,
     command: String,
@@ -95,10 +113,18 @@ struct Entry {
     usage: Usage,
     /// When the profile was last used for a conversation (its history or
     /// transcripts); null when unknown.
-    #[serde(serialize_with = "ser_time")]
+    #[serde(
+        serialize_with = "ser_time",
+        deserialize_with = "usage::de_time",
+        default
+    )]
     last_activity: Option<DateTime<Utc>>,
     /// When the login needs a new sign-in; null when unknown.
-    #[serde(serialize_with = "ser_time")]
+    #[serde(
+        serialize_with = "ser_time",
+        deserialize_with = "usage::de_time",
+        default
+    )]
     login_expires_at: Option<DateTime<Utc>>,
     /// Where that was read: `credentials_file` or `keychain`.
     login_expires_source: Option<DeadlineSource>,
@@ -109,6 +135,15 @@ struct Entry {
     is_global_default: bool,
     /// `claude` for a Claude Code profile, `devin` for Devin. Added in #124.
     provider: Provider,
+    /// The account as machines match it ([`usage::account_id`]), never
+    /// the email. Only where machines are compared (#130): left out of
+    /// the JSON otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    account_id: Option<String>,
+    /// The other machines this account is signed in on (#130), `local`
+    /// for this one. Only with machines set up; left out otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    also_on: Option<Vec<String>>,
     #[serde(skip)]
     config_dir: PathBuf,
 }
@@ -122,11 +157,14 @@ fn ser_time<S: serde::Serializer>(t: &Option<DateTime<Utc>>, s: S) -> Result<S::
 
 impl Entry {
     fn new(name: &str, command: &str, is_default: bool, dir: &Path, state_json: &Path) -> Self {
+        let account = metrics::account_email(state_json);
         Self {
             name: name.to_string(),
             command: command.to_string(),
             is_default,
-            account: metrics::account_email(state_json),
+            account_id: account.as_deref().map(usage::account_id),
+            account,
+            also_on: None,
             usage: Usage::default(),
             last_activity: metrics::last_activity(dir).map(DateTime::<Utc>::from),
             login_expires_at: None,
@@ -152,7 +190,28 @@ impl Entry {
             login_warning: false,
             is_global_default: false,
             provider: Provider::Devin,
+            account_id: None,
+            also_on: None,
             config_dir: PathBuf::new(),
+        }
+    }
+
+    /// This row as [`machines::select`] weighs it: its login is fine
+    /// unless known to have run out.
+    fn candidate(&self, local: bool, now: DateTime<Utc>) -> machines::Candidate<'_> {
+        machines::Candidate {
+            local,
+            account_id: self.account_id.as_deref(),
+            login_ok: self.login_expires_at.is_none_or(|t| t > now),
+        }
+    }
+
+    /// What the usage lookup needs of this profile.
+    fn target(&self) -> usage::Target {
+        usage::Target {
+            name: self.name.clone(),
+            config_dir: self.config_dir.clone(),
+            is_default: self.is_default,
         }
     }
 
@@ -189,8 +248,11 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
         .hint("sign the Devin CLI in with `devin auth login` (or `mcc devin -- auth login`)")
         .into());
     }
-    let with_devin = (args.profile.is_none() || devin_only) && devin::detected(paths);
-    let mut entries = match args.profile.as_deref() {
+    let protocol = args.machine_protocol;
+    // `--only` names profiles of this machine alone: Devin is left out.
+    let with_devin =
+        (args.profile.is_none() || devin_only) && args.only.is_none() && devin::detected(paths);
+    let mut entries: Vec<Entry> = match args.profile.as_deref() {
         None => std::iter::once(default())
             .chain(cfg.profiles.iter().map(|(n, p)| profile(n, &p.dir)))
             .collect(),
@@ -201,12 +263,24 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
             None => return Err(super::unknown_profile(name)),
         },
     };
+    if let Some(only) = &args.only {
+        entries = only_these(entries, only);
+    }
 
     for e in &mut entries {
         e.is_global_default = e.is_default;
     }
 
-    let show_email = (cfg.show_email() || args.show_email) && !args.hide_email;
+    // Accounts are matched across machines (#130) only where machines are
+    // read, or for the machine reading this one; nowhere else.
+    let fan_out = fans_out(cfg, args);
+    if !fan_out && !protocol {
+        for e in &mut entries {
+            e.account_id = None;
+        }
+    }
+    // Another machine gets the account's hash, never its email.
+    let show_email = (cfg.show_email() || args.show_email) && !args.hide_email && !protocol;
     if !show_email {
         for e in &mut entries {
             e.account = None;
@@ -220,14 +294,23 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
     // Ctrl+C while Claude Code refreshed a token: the table is still shown,
     // then mcc exits 130.
     let mut interrupted = false;
-    let allow_keychain = (cfg.usage.live || args.all) && !usage::disabled_by_env();
+    // Another machine reading this one gets the cache unless it asks for
+    // --all, whatever `[usage] live` says here (#130): its read never
+    // looks an account up live by accident.
+    let live = args.all || (cfg.usage.live && !protocol);
+    let allow_keychain = live && !usage::disabled_by_env();
     for e in &mut entries {
         let times = usage::login_times(&e.config_dir, e.is_default, allow_keychain);
         e.set_login(times.deadline, now, window_days);
     }
 
+    let mut machines: Option<Vec<MachineView>> = None;
     if usage::disabled_by_env() {
         crate::log::write("INFO", "usage not fetched: MCC_NO_USAGE is set");
+    } else if fan_out {
+        let (views, stopped) = lookup_with_machines(paths, cfg, args, &mut entries, with_devin);
+        machines = Some(views);
+        interrupted = stopped;
     } else {
         // `--all`: every account looked up live for this run only, the
         // default included, whatever `[usage] live` says.
@@ -238,15 +321,7 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
             }
             crate::log::write("INFO", "mcc usage --all: live lookup for every profile");
         }
-        let live = cfg.usage.live || args.all;
-        let targets: Vec<usage::Target> = entries
-            .iter()
-            .map(|e| usage::Target {
-                name: e.name.clone(),
-                config_dir: e.config_dir.clone(),
-                is_default: e.is_default,
-            })
-            .collect();
+        let targets: Vec<usage::Target> = entries.iter().map(Entry::target).collect();
         let mut found = usage::lookup(paths, &targets, live);
         if args.all {
             // Only --all refreshes, and only expired tokens (#106); the
@@ -256,6 +331,10 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
             // So that `mcc usage` without --all shows these numbers next time.
             usage::save_to_cache(paths, &targets, &found);
         }
+        if protocol {
+            // So the machine reading this one can tell which numbers are newer.
+            usage::stamp_live(&mut found, Utc::now());
+        }
         for (e, u) in entries.iter_mut().zip(found) {
             e.usage = u;
         }
@@ -263,30 +342,90 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
     // The row order (#126): --sort for this run, else [usage] sort, else
     // weekly usage least to most. Devin's block below is appended after
     // the table, never part of this sort.
-    sort_entries(&mut entries, args.sort.unwrap_or_else(|| cfg.usage.sort()));
+    let order = args.sort.unwrap_or_else(|| cfg.usage.sort());
+    sort_entries(&mut entries, order);
+    for v in machines.iter_mut().flatten() {
+        sort_entries(&mut v.profiles, order);
+        // Another machine's Devin row follows its table, as this one's does.
+        v.profiles.sort_by_key(|e| e.provider == Provider::Devin);
+    }
     // Devin: looked up live only as the profiles are (`[usage] live`, or
     // --all), never with MCC_NO_USAGE; else its last lookup.
     let devin = with_devin.then(|| {
-        let how = devin::Lookup::of(cfg.usage.live || args.all);
+        let how = devin::Lookup::of(live);
         Entry::devin(devin::lookup(paths, how).usage)
     });
 
     let mut out = std::io::stdout().lock();
     if args.json || args.json_v2 {
         let rows: Vec<&Entry> = entries.iter().chain(devin.as_ref()).collect();
-        super::write_json(&mut out, "profiles", &rows, args.json_v2)?;
+        let mut extra = Vec::new();
+        if protocol {
+            extra.push(("protocol", serde_json::json!(machines::PROTOCOL)));
+        }
+        if let Some(views) = &machines {
+            extra.push(("machines", serde_json::to_value(views)?));
+        }
+        super::write_json_with(&mut out, "profiles", &rows, args.json_v2, &extra)?;
     } else {
+        // This machine's own last update, from its own numbers.
+        let local_updated = entries
+            .iter()
+            .chain(devin.as_ref())
+            .filter_map(|e| machines::time_of(&e.usage))
+            .max();
+        // Each line, and whether it counts for the layout's width: a
+        // machine's heading doesn't (its error may be long).
         let lines = |l: Layout| {
-            let mut lines = if entries.is_empty() {
-                Vec::new()
-            } else {
-                render(&entries, l, show_email, now)
-            };
+            let mut lines: Vec<(String, bool)> = Vec::new();
+            if machines.is_some() {
+                lines.push((
+                    heading(LOCAL_MACHINE, None, local_updated, None, now),
+                    false,
+                ));
+            }
+            if !entries.is_empty() {
+                lines.extend(
+                    render(&entries, l, show_email, now)
+                        .into_iter()
+                        .map(|t| (t, true)),
+                );
+            }
             if let Some(d) = &devin {
-                if !lines.is_empty() {
-                    lines.push(String::new());
+                if !entries.is_empty() {
+                    lines.push((String::new(), false));
                 }
-                lines.extend(render_devin(d, entries.len(), l, now));
+                lines.extend(
+                    render_devin(d, entries.len(), l, now)
+                        .into_iter()
+                        .map(|t| (t, true)),
+                );
+            }
+            for v in machines.iter().flatten() {
+                lines.push((String::new(), false));
+                lines.push((
+                    heading(&v.name, Some(&v.host), v.updated_at, v.error.as_ref(), now),
+                    false,
+                ));
+                let n = v
+                    .profiles
+                    .iter()
+                    .take_while(|e| e.provider == Provider::Claude)
+                    .count();
+                let (profiles, devins) = v.profiles.split_at(n);
+                if !profiles.is_empty() {
+                    lines.extend(
+                        render(profiles, l, show_email, now)
+                            .into_iter()
+                            .map(|t| (t, true)),
+                    );
+                }
+                for d in devins {
+                    if !profiles.is_empty() {
+                        lines.push((String::new(), false));
+                    }
+                    lines.extend(render_devin(d, n, l, now).into_iter().map(|t| (t, true)));
+                }
             }
             lines
         };
@@ -296,12 +435,13 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
             |l| {
                 lines(l)
                     .iter()
-                    .map(|line| measure_text_width(line))
+                    .filter(|(_, counts)| *counts)
+                    .map(|(line, _)| measure_text_width(line))
                     .max()
                     .unwrap_or(0)
             },
         );
-        for line in lines(layout) {
+        for (line, _) in lines(layout) {
             writeln!(out, "{line}")?;
         }
         drop(out);
@@ -333,6 +473,312 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
         .into());
     }
     Ok(())
+}
+
+/// Whether this `mcc usage` reads the other machines set up (#130): every
+/// profile of this machine as a table or `--json-v2`, usage not turned
+/// off. `mcc usage PROFILE`, `--only`, `--json` (schema 1) and another
+/// machine's own read (the machine protocol) read this machine alone.
+pub(crate) fn fans_out(cfg: &Config, args: &UsageArgs) -> bool {
+    !cfg.machines.is_empty()
+        && args.profile.is_none()
+        && args.only.is_none()
+        && !args.json
+        && !args.machine_protocol
+        && !usage::disabled_by_env()
+}
+
+/// The entries `--only` names (`claude` stands for the default). A name
+/// that is no profile here is skipped, and logged: it may have been
+/// removed since the machine reading this one listed it.
+fn only_these(entries: Vec<Entry>, only: &[String]) -> Vec<Entry> {
+    let wanted = |name: &str| {
+        only.iter()
+            .any(|o| o == name || (o == "claude" && name == "default"))
+    };
+    for o in only {
+        if !entries
+            .iter()
+            .any(|e| e.name == *o || (o == "claude" && e.name == "default"))
+        {
+            crate::log::write(
+                "INFO",
+                &format!("usage --only: no profile named {o}; skipped"),
+            );
+        }
+    }
+    entries.into_iter().filter(|e| wanted(&e.name)).collect()
+}
+
+/// Another machine's table (#130), as shown and as `--json-v2`'s
+/// `machines[]`.
+#[derive(Debug, Serialize)]
+struct MachineView {
+    name: String,
+    host: String,
+    /// The newest of its own numbers (before any newer ones from another
+    /// machine replace them); null when it has none.
+    #[serde(serialize_with = "ser_time")]
+    updated_at: Option<DateTime<Utc>>,
+    /// Why it couldn't be read (or refreshed), as a code; null when it was.
+    #[serde(serialize_with = "ser_error")]
+    error: Option<MachineError>,
+    profiles: Vec<Entry>,
+}
+
+fn ser_error<S: serde::Serializer>(e: &Option<MachineError>, s: S) -> Result<S::Ok, S::Error> {
+    match e {
+        Some(e) => s.serialize_str(e.code()),
+        None => s.serialize_none(),
+    }
+}
+
+/// Usage with other machines (#130): read each of them over SSH, and this
+/// machine's profiles as `[usage] live` says. With `--all`, look each
+/// account up live once ([`machines::select`]): this machine's accounts
+/// here, every other account on one machine that has it, with `mcc usage
+/// --all --only …` there, while this machine's lookups run. Then each row
+/// of an account gets its newest numbers from any machine, which are saved
+/// to this machine's cache when newer. Returns the other machines' tables,
+/// and whether Ctrl+C stopped a refresh here.
+fn lookup_with_machines(
+    paths: &Paths,
+    cfg: &Config,
+    args: &UsageArgs,
+    entries: &mut [Entry],
+    with_devin: bool,
+) -> (Vec<MachineView>, bool) {
+    if args.all {
+        eprintln!("{USAGE_ALL_NOTE}");
+        if with_devin {
+            eprintln!("{USAGE_ALL_DEVIN_NOTE}");
+        }
+        eprintln!("{USAGE_ALL_MACHINES_NOTE}");
+        crate::log::write(
+            "INFO",
+            "mcc usage --all: live lookup for every account, on this machine and the others",
+        );
+    }
+    let configured: Vec<(&str, &crate::config::Machine)> =
+        cfg.machines.iter().map(|(n, m)| (n.as_str(), m)).collect();
+    let first: Vec<machines::Request> = configured
+        .iter()
+        .map(|&(name, m)| machines::Request::new(name, m, None))
+        .collect();
+    let mut views: Vec<MachineView> = configured
+        .iter()
+        .zip(machines::ask_all::<Entry>(&first, machines::READ_TIMEOUT))
+        .map(|((name, m), answer)| {
+            let (profiles, error) = match answer {
+                Ok(rows) => (rows, None),
+                Err(e) => (Vec::new(), Some(e)),
+            };
+            MachineView {
+                name: name.to_string(),
+                host: m.host.clone(),
+                updated_at: None,
+                error,
+                profiles,
+            }
+        })
+        .collect();
+
+    let mut interrupted = false;
+    if args.all {
+        let now = Utc::now();
+        // Devin rows of other machines keep what they had: not an account
+        // machines share.
+        let remote: Vec<(usize, usize)> = views
+            .iter()
+            .enumerate()
+            .flat_map(|(v, view)| {
+                view.profiles
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| e.provider == Provider::Claude)
+                    .map(move |(r, _)| (v, r))
+            })
+            .collect();
+        let candidates: Vec<machines::Candidate> = entries
+            .iter()
+            .map(|e| e.candidate(true, now))
+            .chain(
+                remote
+                    .iter()
+                    .map(|&(v, r)| views[v].profiles[r].candidate(false, now)),
+            )
+            .collect();
+        let chosen = machines::select(&candidates);
+        let (here, there) = chosen.split_at(entries.len());
+        let mut only: Vec<Vec<String>> = vec![Vec::new(); views.len()];
+        for (&(v, r), _) in remote.iter().zip(there).filter(|(_, c)| **c) {
+            only[v].push(views[v].profiles[r].name.clone());
+        }
+        let second: Vec<machines::Request> = configured
+            .iter()
+            .zip(&only)
+            .filter(|(_, names)| !names.is_empty())
+            .map(|(&(name, m), names)| machines::Request::new(name, m, Some(names)))
+            .collect();
+        let (live, cached): (Vec<usize>, Vec<usize>) = (0..entries.len()).partition(|&i| here[i]);
+        let live_targets: Vec<usage::Target> = live.iter().map(|&i| entries[i].target()).collect();
+        let cached_targets: Vec<usage::Target> =
+            cached.iter().map(|&i| entries[i].target()).collect();
+        let answers = std::thread::scope(|s| {
+            // The other machines' lookups run while this one's do; theirs
+            // may refresh a token too, so they get its budget and more.
+            let there = s.spawn(|| {
+                machines::ask_all::<Entry>(
+                    &second,
+                    crate::refresh::RUN_BUDGET + machines::REFRESH_MARGIN,
+                )
+            });
+            let mut found = if live_targets.is_empty() {
+                Vec::new()
+            } else {
+                usage::fetch_all(&live_targets)
+            };
+            interrupted = crate::refresh::refresh_expired(paths, cfg, &live_targets, &mut found);
+            usage::save_to_cache(paths, &live_targets, &found);
+            usage::stamp_live(&mut found, Utc::now());
+            for (&i, u) in live.iter().zip(found) {
+                entries[i].usage = u;
+            }
+            for (&i, u) in cached.iter().zip(usage::read_all(paths, &cached_targets)) {
+                entries[i].usage = u;
+            }
+            there.join().unwrap_or_default()
+        });
+        for (req, answer) in second.iter().zip(answers) {
+            let Some(view) = views.iter_mut().find(|v| v.name == req.name) else {
+                continue;
+            };
+            match answer {
+                Ok(rows) => {
+                    for row in rows {
+                        if let Some(old) = view.profiles.iter_mut().find(|e| e.name == row.name) {
+                            *old = row;
+                        }
+                    }
+                }
+                // What it had cached stays, with why it isn't newer.
+                Err(e) => view.error = Some(e),
+            }
+        }
+    } else {
+        let targets: Vec<usage::Target> = entries.iter().map(Entry::target).collect();
+        let mut found = usage::lookup(paths, &targets, cfg.usage.live);
+        if cfg.usage.live {
+            usage::stamp_live(&mut found, Utc::now());
+        }
+        for (e, u) in entries.iter_mut().zip(found) {
+            e.usage = u;
+        }
+    }
+    for v in &mut views {
+        v.updated_at = v
+            .profiles
+            .iter()
+            .filter_map(|e| machines::time_of(&e.usage))
+            .max();
+    }
+    merge_accounts(paths, entries, &mut views);
+    (views, interrupted)
+}
+
+/// Every row of an account, on any machine, gets the account's newest
+/// numbers (AC5 of #130) and the other machines it is on (`also_on`);
+/// this machine's profiles also save those numbers to their cache when
+/// they are newer than what it holds, so `mcc list`, `mcc run` and the
+/// status line show them too.
+fn merge_accounts(paths: &Paths, entries: &mut [Entry], views: &mut [MachineView]) {
+    let rows = || {
+        entries
+            .iter()
+            .map(|e| (LOCAL_MACHINE, e))
+            .chain(
+                views
+                    .iter()
+                    .flat_map(|v| v.profiles.iter().map(move |e| (v.name.as_str(), e))),
+            )
+            .filter(|(_, e)| e.provider == Provider::Claude)
+    };
+    let mut on: HashMap<String, Vec<String>> = HashMap::new();
+    for (machine, e) in rows() {
+        if let Some(id) = &e.account_id {
+            let list = on.entry(id.clone()).or_default();
+            if !list.iter().any(|m| m == machine) {
+                list.push(machine.to_string());
+            }
+        }
+    }
+    let best: HashMap<String, Usage> =
+        machines::newest(rows().filter_map(|(_, e)| Some((e.account_id.as_deref()?, &e.usage))))
+            .into_iter()
+            .map(|(id, u)| (id.to_string(), u.clone()))
+            .collect();
+    let update = |machine: &str, e: &mut Entry| {
+        if e.provider != Provider::Claude {
+            return;
+        }
+        let Some(id) = e.account_id.as_deref() else {
+            e.also_on = Some(Vec::new());
+            return;
+        };
+        e.also_on = Some(
+            on.get(id)
+                .into_iter()
+                .flatten()
+                .filter(|m| *m != machine)
+                .cloned()
+                .collect(),
+        );
+        if let Some(b) = best.get(id) {
+            let own = machines::time_of(&e.usage);
+            if own.is_none_or(|t| machines::time_of(b).is_some_and(|n| n > t)) {
+                e.usage = b.clone();
+            }
+        }
+    };
+    for e in entries.iter_mut() {
+        update(LOCAL_MACHINE, e);
+        if e.account_id.is_some() {
+            usage::save_point(paths, &e.name, &e.usage);
+        }
+    }
+    for v in views.iter_mut() {
+        for e in &mut v.profiles {
+            update(&v.name, e);
+        }
+    }
+}
+
+/// A machine's heading over its table (#130): its name (and host), and
+/// when its numbers were last updated, or "—" and why it couldn't be read.
+///
+/// ```text
+/// lab (me@lab-box) · updated 12m ago
+/// box (box) · updated — · ssh could not connect to box without a prompt: …
+/// ```
+fn heading(
+    name: &str,
+    host: Option<&str>,
+    updated: Option<DateTime<Utc>>,
+    error: Option<&MachineError>,
+    now: DateTime<Utc>,
+) -> String {
+    let mut text = match host {
+        Some(h) => format!("{name} ({h})"),
+        None => name.to_string(),
+    };
+    text.push_str(&format!(
+        " · updated {}",
+        updated.map_or_else(|| "—".into(), |t| usage::age(t, now))
+    ));
+    if let Some(e) = error {
+        text.push_str(&format!(" · {}", e.describe(name, host.unwrap_or(name))));
+    }
+    style(text).bold().to_string()
 }
 
 /// Order `entries` as `order` says (#126): alphabetically by name, or by
@@ -430,7 +876,9 @@ fn login_cell(e: &Entry, now: DateTime<Utc>) -> String {
 /// 2 lab        unknown      unknown     — (no usage cached; run /usage)
 /// ```
 ///
-/// An ACCOUNT column follows PROFILE when `show_email` is set. LAST ACTIVE
+/// An ACCOUNT column follows PROFILE when `show_email` is set, then ALSO ON
+/// when an account here is signed in on other machines too (#130): their
+/// names, "—" for the rows of no other machine. LAST ACTIVE
 /// and LOGIN ENDS lead the usage, so a profile without usage (an idle
 /// one, typically) shows them too. UPDATED, the age of usage read from the
 /// statusline cache, is there only for cached usage, and only when `layout`
@@ -441,6 +889,12 @@ fn render(entries: &[Entry], layout: Layout, show_email: bool, now: DateTime<Utc
     let mut headers = vec![profile_head.as_str()];
     if show_email {
         headers.push("ACCOUNT");
+    }
+    let also_on = entries
+        .iter()
+        .any(|e| e.also_on.as_ref().is_some_and(|m| !m.is_empty()));
+    if also_on {
+        headers.push("ALSO ON");
     }
     headers.extend(["LAST ACTIVE", "LOGIN ENDS"]);
     headers.extend(["5-HOUR", "RESETS IN", "WEEKLY", "RESETS IN"]);
@@ -462,6 +916,12 @@ fn render(entries: &[Entry], layout: Layout, show_email: bool, now: DateTime<Utc
             let mut cells = vec![super::list::indexed(&name, Some(i), entries.len())];
             if show_email {
                 cells.push(e.account.clone().unwrap_or_else(|| "—".into()));
+            }
+            if also_on {
+                cells.push(match e.also_on.as_deref() {
+                    Some(m) if !m.is_empty() => m.join(", "),
+                    _ => "—".into(),
+                });
             }
             cells.extend([activity_cell(e, now), login_cell(e, now)]);
             let u = &e.usage;
@@ -652,6 +1112,8 @@ mod tests {
             login_warning: false,
             is_global_default: name == "default",
             provider: Provider::Claude,
+            account_id: None,
+            also_on: None,
             config_dir: PathBuf::new(),
         }
     }

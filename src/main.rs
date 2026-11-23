@@ -8,6 +8,7 @@ mod env_detect;
 mod error;
 mod fsutil;
 mod log;
+mod machines;
 mod manifest;
 mod metrics;
 mod paths;
@@ -200,7 +201,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             commands::init::detect_and_save(&paths, &mut cfg, None)?;
         }
     }
-    if needs_live_disclosure(&command, &cfg) || needs_devin_disclosure(&command, &cfg, &paths) {
+    if needs_live_disclosure(&command, &cfg)
+        || needs_devin_disclosure(&command, &cfg, &paths)
+        || needs_machines_disclosure(&command, &cfg)
+    {
         // Recording the acknowledgement writes config.toml, so it takes the
         // lock like any other write (only for this, when the command doesn't
         // hold it already) and re-reads the config under it.
@@ -224,6 +228,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             eprintln!("{}", usage::DEVIN_LIVE_DISCLOSURE);
             cfg.usage.devin_disclosed_at = Some(now());
             log::write("INFO", "Devin live usage lookup disclosure shown");
+            shown = true;
+        }
+        if needs_machines_disclosure(&command, &cfg) {
+            eprintln!("{}", commands::usage::MACHINES_DISCLOSURE);
+            cfg.usage.machines_disclosed_at = Some(now());
+            log::write("INFO", "other machines disclosure shown");
             shown = true;
         }
         if shown {
@@ -289,6 +299,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
 fn needs_live_disclosure(command: &Command, cfg: &config::Config) -> bool {
     let reads_usage = match command {
         Command::List(args) => !args.no_usage,
+        // Another machine reading this one: the cache, unless it asked for
+        // --all, which has its note (printed there, not here).
+        Command::Usage(args) if args.machine_protocol => false,
         // `mcc usage devin` looks up Devin alone (its own note).
         Command::Usage(args) => {
             args.profile.as_deref() != Some(devin::NAME) || cfg.profiles.contains_key(devin::NAME)
@@ -312,6 +325,7 @@ fn needs_live_disclosure(command: &Command, cfg: &config::Config) -> bool {
 fn needs_devin_disclosure(command: &Command, cfg: &config::Config, paths: &paths::Paths) -> bool {
     let reads_devin = match command {
         Command::List(args) => !args.no_usage,
+        Command::Usage(args) if args.machine_protocol => false,
         Command::Usage(args) => match args.profile.as_deref() {
             None => true,
             Some(name) => name == devin::NAME && !cfg.profiles.contains_key(name),
@@ -323,6 +337,14 @@ fn needs_devin_disclosure(command: &Command, cfg: &config::Config, paths: &paths
         && cfg.usage.devin_disclosed_at.is_none()
         && !usage::disabled_by_env()
         && devin::detected(paths)
+}
+
+/// Whether this command is about to read the other machines set up under
+/// `[machines]` for the first time (#130): `mcc usage` as it reads them,
+/// without `machines_disclosed_at`.
+fn needs_machines_disclosure(command: &Command, cfg: &config::Config) -> bool {
+    matches!(command, Command::Usage(args) if commands::usage::fans_out(cfg, args))
+        && cfg.usage.machines_disclosed_at.is_none()
 }
 
 /// Commands that may write ~/.mcc/config.toml, and so take its lock.

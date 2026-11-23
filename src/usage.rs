@@ -64,7 +64,7 @@ const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 pub const LIVE_DISCLOSURE: &str = "⚠ Live usage lookup is on ([usage] live = true in ~/.mcc/config.toml): mcc reads each profile's Claude Code login (its OAuth access token, from .credentials.json or the macOS Keychain) and sends it to Anthropic's undocumented, rate-limited usage endpoint (https://api.anthropic.com/api/oauth/usage). Anthropic says third-party tools may not collect or intermediate Claude.ai credentials (https://code.claude.com/docs/en/legal-and-compliance), so use this at your own discretion. Set live = false to read usage only from the `mcc statusline` cache (`mcc usage --all` still looks it up live, with its own notice). This note is shown once.";
 
 /// Where a [`Usage`] came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Source {
     /// The rate limits `mcc statusline` (or the last `mcc usage --all`) cached.
@@ -73,7 +73,7 @@ pub enum Source {
     Live,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
     Ok,
@@ -87,7 +87,7 @@ pub enum Status {
 pub const DEVIN_LIVE_DISCLOSURE: &str = "⚠ Live usage lookup is on for Devin too ([usage] live = true in ~/.mcc/config.toml): mcc reads the Devin CLI's login (its session token, from Devin's credentials.toml, which mcc never changes) and sends it to Devin's quota API (https://app.devin.ai/api) to show Devin's daily and weekly usage. The token is never stored or logged by mcc. Set live = false to show only the Devin usage last looked up (`mcc usage --all` still looks it up live, with its own notice). This note is shown once.";
 
 /// Why usage is unavailable. Serialized as snake_case in the `--json` output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Reason {
     /// No OAuth access token for the profile (logged out, or an API-key login).
@@ -173,14 +173,16 @@ impl Reason {
 }
 
 /// One rate-limit window: percent used and when it resets.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Window {
     pub percent: f64,
-    #[serde(serialize_with = "ser_time")]
+    #[serde(serialize_with = "ser_time", deserialize_with = "de_time", default)]
     pub resets_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+/// A profile's 5-hour and weekly usage. Read back only from another
+/// machine's `mcc usage` (#130).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Usage {
     pub status: Status,
     pub reason: Option<Reason>,
@@ -188,8 +190,9 @@ pub struct Usage {
     pub weekly: Option<Window>,
     /// `None` when nothing was looked up (`disabled`).
     pub source: Option<Source>,
-    /// When these numbers were cached (`None` for live lookups).
-    #[serde(serialize_with = "ser_time")]
+    /// When these numbers were cached (`None` for live lookups, except
+    /// where machines compare them, #130: see [`stamp_live`]).
+    #[serde(serialize_with = "ser_time", deserialize_with = "de_time", default)]
     pub updated_at: Option<DateTime<Utc>>,
     /// Devin's daily window. Never set for Claude Code profiles, and left
     /// out of their JSON; never put in `five_hour`, which means 5 hours.
@@ -310,6 +313,28 @@ fn ser_time<S: Serializer>(t: &Option<DateTime<Utc>>, s: S) -> Result<S::Ok, S::
         Some(t) => s.serialize_str(&t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
         None => s.serialize_none(),
     }
+}
+
+/// The other way round from [`ser_time`]: an RFC 3339 string or null.
+pub(crate) fn de_time<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<DateTime<Utc>>, D::Error> {
+    match Option::<String>::deserialize(d)? {
+        None => Ok(None),
+        Some(s) => DateTime::parse_from_rfc3339(&s)
+            .map(|t| Some(t.with_timezone(&Utc)))
+            .map_err(serde::de::Error::custom),
+    }
+}
+
+/// An account as machines compare it (#130): the hex SHA-256 of its
+/// email, trimmed and lowercased, so the same login matches across
+/// machines without its email leaving any of them.
+pub fn account_id(email: &str) -> String {
+    Sha256::digest(email.trim().to_lowercase().as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// An OAuth access token. Deliberately has no `Display`; `Debug` is redacted.
@@ -487,7 +512,7 @@ pub fn token_state(config_dir: &Path, is_default: bool) -> TokenState {
 pub const ACCESS_REFRESH_MARGIN_MS: i64 = 300_000;
 
 /// Where a login deadline was read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeadlineSource {
     /// `<config dir>/.credentials.json`.
@@ -846,6 +871,57 @@ fn read_cached(path: &Path, now: DateTime<Utc>) -> Usage {
     let mut u = Usage::ok(five_hour, weekly).with_source(Source::Cache);
     u.updated_at = updated_at;
     u
+}
+
+/// Give each live result with usage the time it was looked up (`at`), so
+/// it can be compared with numbers cached elsewhere (#130). Only where
+/// machines compare points: the default output keeps `updated_at` null
+/// for live lookups.
+pub fn stamp_live(all: &mut [Usage], at: DateTime<Utc>) {
+    for u in all {
+        if u.status == Status::Ok && u.source == Some(Source::Live) && u.updated_at.is_none() {
+            u.updated_at = Some(at);
+        }
+    }
+}
+
+/// Save `u`, the newest numbers of `name`'s account (looked up on another
+/// machine or for another profile, #130), to `name`'s statusline cache
+/// with their own time, so `mcc list`, `mcc run` and the status line show
+/// them too. Only when they are newer than what is cached there: an older
+/// point is never written over a newer one, nor given a newer time. `true`
+/// when saved; a failed write is logged.
+pub fn save_point(paths: &Paths, name: &str, u: &Usage) -> bool {
+    let Some(at) = u.updated_at.filter(|_| u.status == Status::Ok) else {
+        return false;
+    };
+    let path = paths.profile_state_dir(name).join(USAGE_FILE);
+    let cached = std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .and_then(|v| v.get("updated_at").and_then(timestamp));
+    if cached.is_some_and(|c| c >= at) {
+        return false;
+    }
+    let Some(record) = cache_record(name, u, at) else {
+        return false;
+    };
+    match crate::commands::statusline::write_json(&path, &record) {
+        Ok(()) => {
+            crate::log::write(
+                "INFO",
+                &format!("usage {name}: newer numbers of its account saved to the cache"),
+            );
+            true
+        }
+        Err(e) => {
+            crate::log::write(
+                "WARN",
+                &format!("usage {name}: not saved to the cache: {e:#}"),
+            );
+            false
+        }
+    }
 }
 
 /// Save each live result that has usage to the statusline cache

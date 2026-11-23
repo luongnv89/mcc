@@ -56,6 +56,25 @@ macro_rules! usage_all_devin_note {
 }
 pub(crate) use usage_all_devin_note;
 
+/// The line `mcc usage --all` adds to its notice when other machines are
+/// set up (#130). A macro so the help text below can include it verbatim.
+macro_rules! usage_all_machines_note {
+    () => {
+        "⚠ Other machines are set up ([machines] in ~/.mcc/config.toml), so --all also refreshes them: over SSH, it runs `mcc usage --all` there for the accounts this machine doesn't have, each account looked up once, on one machine, with that machine's own login."
+    };
+}
+pub(crate) use usage_all_machines_note;
+
+/// Printed on stderr the first time `mcc usage` reads the machines set up
+/// under `[machines]` (#130); `[usage] machines_disclosed_at` records that
+/// it was. A macro so the help text below can include it verbatim.
+macro_rules! machines_disclosure {
+    () => {
+        "ⓘ mcc usage reads the other machines set up under [machines] in ~/.mcc/config.toml: it runs `mcc usage` on each over SSH (ssh -o BatchMode=yes, with your own SSH keys and config) and shows their tables after this machine's. No login or token leaves any machine; an account on several machines is matched by a SHA-256 of its email, never the email itself. This note is shown once."
+    };
+}
+pub(crate) use machines_disclosure;
+
 const ABOUT: &str = "mcc — run several Claude Code accounts side by side.
 
 Each profile is a separate Claude Code config directory (CLAUDE_CONFIG_DIR)
@@ -158,6 +177,7 @@ pub enum Command {
         "  mcc usage --show-email        Also show each profile's account email\n",
         "  mcc usage --sort five-hour    Rows by 5-hour usage, least to most\n",
         "  mcc usage devin               Only Devin (when the Devin CLI is signed in)\n",
+        "  mcc usage --all --only work   Look up only `work` live (and refresh it)\n",
         "  mcc usage --json | jq '.[] | {name, weekly: .usage.weekly.percent}'\n",
         "  mcc usage --json-v2 | jq '.profiles[].name'   Versioned: {\"schema\": 2, \"profiles\": [...]}\n",
         "\n",
@@ -220,7 +240,35 @@ pub enum Command {
         "--all) and never with MCC_NO_USAGE=1; otherwise the last lookup is shown.\n",
         "--all then adds this line to its note:\n",
         "\n",
-        usage_all_devin_note!()
+        usage_all_devin_note!(),
+        "\n\n",
+        "Other machines (#130): with machines set up in ~/.mcc/config.toml, for\n",
+        "example\n",
+        "\n",
+        "  [machines.lab]\n",
+        "  host = \"me@lab-box\"               # what `ssh` connects to\n",
+        "  mcc = \"/home/me/.cargo/bin/mcc\"  # optional: mcc's full path there\n",
+        "\n",
+        "`mcc usage` also runs `mcc usage` on each of them over SSH (BatchMode, so\n",
+        "key-based login must work without a prompt) and shows one table per\n",
+        "machine after this one's (`local`), each headed by its name and when its\n",
+        "numbers were last updated, or by why it couldn't be read; a machine that\n",
+        "fails never fails the command. ALSO ON names the other machines an\n",
+        "account is signed in on (matched by a SHA-256 of the email), and every\n",
+        "row of that account shows its newest numbers from any machine, which\n",
+        "are saved to this machine's cache too. --sort orders each table. Each\n",
+        "machine needs this version of mcc or newer; set `mcc` to its full path\n",
+        "when a non-interactive SSH session doesn't find it. --json-v2 adds a\n",
+        "`machines` key: [{name, host, updated_at, error, profiles}]; --json, `mcc\n",
+        "usage PROFILE` and MCC_NO_USAGE=1 read this machine only. With --all,\n",
+        "each account is looked up live once, on one machine (this one when it\n",
+        "has it), and the note gains this line:\n",
+        "\n",
+        usage_all_machines_note!(),
+        "\n\n",
+        "The first time, mcc prints this note:\n",
+        "\n",
+        machines_disclosure!()
     ))]
     Usage(UsageArgs),
 
@@ -745,6 +793,28 @@ pub struct UsageArgs {
     /// Order the rows by name, 5-hour or weekly usage (least to most), or the soonest 5-hour or weekly reset first; a profile without the value sorts last (default: `[usage] sort`, else weekly usage)
     #[arg(long, value_enum)]
     pub sort: Option<SortOrder>,
+
+    /// With --all: look up and refresh only these profiles of this machine (comma-separated; `default` for ~/.claude), and show only them
+    #[arg(
+        long,
+        value_name = "PROFILES",
+        value_delimiter = ',',
+        requires = "all",
+        value_parser = profile_name
+    )]
+    pub only: Option<Vec<String>>,
+
+    /// How another machine's mcc asks for this one's usage (#130): with
+    /// --json-v2, each row's account as a hash, numbers from the cache
+    /// unless --all, and `[machines]` ignored.
+    #[arg(long, hide = true, requires = "json_v2")]
+    pub machine_protocol: bool,
+}
+
+/// A profile name as `--only` takes it: the alias rules, so a name can be
+/// passed on to another machine's command line safely.
+fn profile_name(name: &str) -> Result<String, String> {
+    crate::validate::check_syntax(name).map(|()| name.to_string())
 }
 
 #[derive(Debug, Args)]
