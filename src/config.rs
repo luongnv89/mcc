@@ -47,6 +47,78 @@ pub struct Config {
     /// starts there first. Left out of the file while empty.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub projects: BTreeMap<String, Project>,
+    /// `[machines.NAME]`: other machines whose usage `mcc usage` shows
+    /// next to this one's, read over SSH (#130). Opt-in, and left out of
+    /// the file while empty. Checked by `mcc config edit` and before each
+    /// use ([`Machine::check`]), never on load: a bad entry must not stop
+    /// every command.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub machines: BTreeMap<String, Machine>,
+}
+
+/// Another machine `mcc usage` reads (`[machines.NAME]`, #130).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Machine {
+    /// What `ssh` connects to: a host name, `user@host`, or a `Host`
+    /// alias of your own SSH config (ssh reads it; mcc never does).
+    pub host: String,
+    /// The `mcc` command there: a full path, since a non-interactive SSH
+    /// session may not load the PATH a login shell sets. Unset means `mcc`
+    /// on that PATH. Left out of the file while unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcc: Option<String>,
+}
+
+/// The name `mcc usage` gives this machine next to the configured ones,
+/// so no `[machines.NAME]` may take it.
+pub const LOCAL_MACHINE: &str = "local";
+
+impl Machine {
+    /// Why `[machines.<name>]` can't be used, if it can't: the name
+    /// follows the profile-name rules (and isn't [`LOCAL_MACHINE`]); the
+    /// host is one word ssh can't read as an option; the mcc path is
+    /// absolute or a bare command, never `~/…`, which a quoted word never
+    /// expands.
+    pub fn check(&self, name: &str) -> std::result::Result<(), String> {
+        if crate::validate::check_syntax(name).is_err() || name == LOCAL_MACHINE {
+            return Err(format!(
+                "\"{name}\" is not a valid machine name: use 1–32 characters, lowercase letters, digits, '-' or '_', starting with a letter (not \"{LOCAL_MACHINE}\", this machine's name)"
+            ));
+        }
+        let host = self.host.as_str();
+        if host.is_empty() {
+            return Err(
+                "host is empty: set it to what `ssh` connects to, e.g. host = \"me@build-box\""
+                    .into(),
+            );
+        }
+        if host.starts_with('-') {
+            return Err(format!(
+                "host \"{host}\" starts with '-', which ssh would read as an option"
+            ));
+        }
+        if host.chars().any(|c| c.is_whitespace() || c.is_control()) {
+            return Err(format!(
+                "host {host:?} contains a space or a control character: use a host name, user@host or a Host alias from your SSH config"
+            ));
+        }
+        if let Some(mcc) = &self.mcc {
+            if mcc.trim().is_empty() {
+                return Err("mcc is empty: leave it out to run `mcc` from the PATH there, or set the full path".into());
+            }
+            if mcc.starts_with('-') || mcc.chars().any(char::is_control) {
+                return Err(format!(
+                    "mcc {mcc:?} is not a command: set the full path to mcc on that machine"
+                ));
+            }
+            if mcc.starts_with('~') {
+                return Err(format!(
+                    "mcc \"{mcc}\" starts with '~', which is not expanded there: set the full path, e.g. \"/home/me/.cargo/bin/mcc\""
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -133,6 +205,11 @@ pub struct UsageConfig {
     /// file while unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sort: Option<String>,
+    /// When the note about reading other machines over SSH (#130) was
+    /// shown (RFC 3339): the first `mcc usage` that read `[machines]`.
+    /// Left out of the file until then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machines_disclosed_at: Option<String>,
 }
 
 impl UsageConfig {
@@ -1382,6 +1459,76 @@ mod tests {
             back.usage.live_disclosed_at.as_deref(),
             Some("2026-10-01T00:00:00Z")
         );
+    }
+
+    /// #130: `[machines.NAME]` round-trips, `mcc` only when set, and a
+    /// file without machines saves byte for byte (no `[machines]` table).
+    #[test]
+    fn machines_round_trip_and_stay_out_of_files_without_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let legacy = "# mine\n[sync]\nexclude = []\nextra = []\n\n[usage]\n\n[profiles]\n";
+        std::fs::write(&path, legacy).unwrap();
+        let mut cfg = Config::load(&path).unwrap();
+        assert!(cfg.machines.is_empty());
+        cfg.save(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), legacy);
+
+        cfg.machines.insert(
+            "lab".into(),
+            Machine {
+                host: "me@lab-box".into(),
+                mcc: None,
+            },
+        );
+        cfg.machines.insert(
+            "build".into(),
+            Machine {
+                host: "build".into(),
+                mcc: Some("/opt/my tools/mcc".into()),
+            },
+        );
+        cfg.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# mine\n"), "{text}");
+        assert!(
+            text.contains("[machines.lab]\nhost = \"me@lab-box\"\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("[machines.build]\nhost = \"build\"\nmcc = \"/opt/my tools/mcc\"\n"),
+            "{text}"
+        );
+        assert_eq!(Config::load(&path).unwrap().machines, cfg.machines);
+    }
+
+    #[test]
+    fn machine_check_refuses_what_ssh_could_misread() {
+        let m = |host: &str, mcc: Option<&str>| Machine {
+            host: host.into(),
+            mcc: mcc.map(str::to_string),
+        };
+        assert_eq!(m("me@lab-box", None).check("lab"), Ok(()));
+        assert_eq!(m("lab", Some("/opt/my tools/mcc")).check("lab-2"), Ok(()));
+        assert_eq!(m("lab", Some("mcc")).check("lab"), Ok(()));
+        for host in [
+            "",
+            "-oProxyCommand=touch /tmp/x",
+            "-p22",
+            "lab box",
+            "lab\tbox",
+            "lab\nbox",
+            "lab\u{1b}[2J",
+            " lab",
+        ] {
+            assert!(m(host, None).check("lab").is_err(), "{host:?}");
+        }
+        for mcc in ["", "  ", "~/bin/mcc", "-v", "/bin/mcc\n"] {
+            assert!(m("lab", Some(mcc)).check("lab").is_err(), "{mcc:?}");
+        }
+        for name in ["local", "Lab", "1lab", "lab;x", ""] {
+            assert!(m("lab", None).check(name).is_err(), "{name:?}");
+        }
     }
 
     #[test]
