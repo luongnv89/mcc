@@ -155,6 +155,16 @@ pub struct SyncConfig {
     /// out of the file while unset, so existing files stay as they are.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto: Option<bool>,
+    /// More `settings.json` keys tied to one account (`apiKeyHelper`, or
+    /// `env.NAME` for a variable), on top of the built-in ones: sync never
+    /// copies them to another profile.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub account_keys: Vec<String>,
+    /// More `settings.json` keys holding a secret not tied to an account,
+    /// on top of the names and values sync recognizes: `mcc sync` asks
+    /// before copying them, never showing the value.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secret_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -917,6 +927,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         let mut cfg = Config::default();
         cfg.sync.exclude = vec!["plugins".into()];
+        cfg.sync.account_keys = vec!["env.MY_ORG_KEY".into()];
         cfg.privacy.show_email = Some(true);
         cfg.profiles.insert(
             "work".into(),
@@ -943,6 +954,14 @@ mod tests {
         let back = Config::load(&path).unwrap();
         assert_eq!(back.profiles, cfg.profiles);
         assert_eq!(back.sync.exclude, vec!["plugins".to_string()]);
+        assert_eq!(back.sync.account_keys, vec!["env.MY_ORG_KEY".to_string()]);
+        assert!(back.sync.secret_keys.is_empty());
+        // Unset lists stay out of the file.
+        assert!(
+            !std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("secret_keys")
+        );
         assert!(back.show_email());
     }
 
