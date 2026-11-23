@@ -427,6 +427,21 @@ impl Rewriter {
         self
     }
 
+    /// Whether the profile's overlay sets the flat settings key `key`.
+    fn overlay_sets(&self, key: &str) -> bool {
+        let Some(overlay) = &self.overlay else {
+            return false;
+        };
+        match key.strip_prefix(settings_sync::ENV_PREFIX) {
+            Some(name) => match overlay.get("env") {
+                Some(Value::Object(vars)) => vars.contains_key(name),
+                Some(_) => true,
+                None => false,
+            },
+            None => overlay.contains_key(key),
+        }
+    }
+
     /// Whether the profile has a settings overlay.
     pub fn has_overlay(&self) -> bool {
         self.overlay.is_some()
@@ -767,13 +782,15 @@ pub struct Plan {
     /// their account-bound keys can't be told apart; the profile's are
     /// left as they are, and so is their record.
     pub unreadable: Vec<PathBuf>,
-    /// Shared secrets the default's `settings.local.json` sets that the
-    /// profile's lacks or has differently, held ([`Secrets`]): left out of
-    /// what is written (the profile's own value kept), so held again next
-    /// time. Only when the file is written or already as the default gives it.
-    local_held: Vec<Held>,
-    /// What to write for a path instead of copying it: `settings.local.json`
-    /// with its held shared secrets left out.
+    /// Shared secrets a settings file copied whole (`settings.local.json`,
+    /// or `settings.json` when the profile's isn't a JSON object) sets that
+    /// the profile's lacks or has differently, held ([`Secrets`]): left out
+    /// of what is written (the profile's own value kept), so held again
+    /// next time. Only when the file is written or already as the default
+    /// gives it.
+    file_held: Vec<Held>,
+    /// What to write for a path instead of copying it: a settings file
+    /// copied whole, with its held shared secrets left out.
     prepared: BTreeMap<PathBuf, Vec<u8>>,
     /// Hash of every default file or symlink in the sync set, as the profile
     /// receives it (what a sync writes, or finds already there).
@@ -829,7 +846,7 @@ impl Plan {
                 })
             })
             .collect();
-        out.extend(self.local_held.iter().cloned());
+        out.extend(self.file_held.iter().cloned());
         out
     }
 
@@ -1118,12 +1135,13 @@ pub fn desired_bytes(src: &Path, rewrite: bool, rw: &Rewriter) -> Result<Vec<u8>
     }
 }
 
-/// [`desired_bytes`] for the default's `settings.local.json` `src`, with
-/// each shared secret the profile's (`dst`) lacks or has differently left
-/// as the profile has it, unless `secrets` lets it through; and those
-/// held. A profile file that isn't a JSON object counts as empty; one that
-/// is the default's own file (a symlink to it) already has every value.
-fn local_desired(
+/// [`desired_bytes`] for the default's settings file `src` copied whole,
+/// with each shared secret the profile's (`dst`) lacks or has differently
+/// left as the profile has it, unless `secrets` lets it through; and those
+/// held. Keys the profile's overlay sets are its own. A profile file that
+/// isn't a JSON object counts as empty; one that is the default's own file
+/// (a symlink to it) already has every value.
+fn held_desired(
     src: &Path,
     dst: &Path,
     rewrite: bool,
@@ -1144,10 +1162,16 @@ fn local_desired(
         Some(Value::Object(m)) => settings_sync::flatten(&m),
         _ => Map::new(),
     };
+    let local = rw.local_settings_file(src);
     let mut held = Vec::new();
     for (key, v) in settings_sync::flatten(&want) {
-        let id = format!("{LOCAL_PREFIX}{key}");
+        let id = if local {
+            format!("{LOCAL_PREFIX}{key}")
+        } else {
+            key.clone()
+        };
         if have.get(&key) != Some(&v)
+            && !(rw.overlays(src) && rw.overlay_sets(&key))
             && rw.classifier.category(&key, Some(&v)) == Category::SharedSecret
             && secrets.holds(&id)
         {
@@ -1156,7 +1180,11 @@ fn local_desired(
                 id,
                 mark: settings_sync::declined_from_default(Some(&v)),
                 key,
-                file: LOCAL_SETTINGS_FILE,
+                file: if local {
+                    LOCAL_SETTINGS_FILE
+                } else {
+                    SETTINGS_FILE
+                },
             });
         }
     }
@@ -1511,17 +1539,23 @@ pub fn plan_with(
                         push(a, item.rel.clone(), f);
                     }
                 }
-                // settings.local.json the sync writes: the shared secrets
-                // the default's adds or changes are held out of it. Where
+                // A settings file the sync writes whole (settings.local.json,
+                // or settings.json when the profile's isn't a JSON object):
+                // the shared secrets the default's adds or changes are held
+                // out of it. Where
                 // the profile's is kept (a local edit or conflict) or
                 // already as the default gives it, there is nothing to hold.
                 let writes = changes
                     .last()
                     .is_some_and(|c| c.rel == item.rel && !c.action.kept() && !c.dir);
-                if local && writes {
-                    let (bytes, held) = local_desired(&src, &dst, item.rewrite, rw, &base.secrets)?;
+                if rw.settings_like(&src) && writes {
+                    let (bytes, held) = held_desired(&src, &dst, item.rewrite, rw, &base.secrets)?;
                     if !held.is_empty() {
-                        let want = local_settings_hash(&bytes, rw);
+                        let want = if local {
+                            local_settings_hash(&bytes, rw)
+                        } else {
+                            manifest::hash_file(&bytes)
+                        };
                         hashes.insert(item.rel.clone(), want.clone());
                         if have.as_deref() == Some(want.as_str()) {
                             changes.pop();
@@ -1529,7 +1563,7 @@ pub fn plan_with(
                         } else {
                             plan.prepared.insert(item.rel.clone(), bytes);
                         }
-                        plan.local_held.extend(held);
+                        plan.file_held.extend(held);
                     }
                 }
             }
@@ -2682,7 +2716,7 @@ mod tests {
             }),
             settings: None,
             unreadable: Vec::new(),
-            local_held: Vec::new(),
+            file_held: Vec::new(),
             prepared: BTreeMap::new(),
         };
         let mut got = p.backup_paths(dst);

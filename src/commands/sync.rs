@@ -2020,6 +2020,47 @@ mod tests {
         }
     }
 
+    /// AC3 of #129: a profile settings.json that isn't a JSON object is
+    /// overwritten whole by `--force`, yet the default's shared secrets
+    /// reach it only once agreed to; a decline holds on the next sync,
+    /// when the file is read key by key.
+    #[test]
+    fn a_forced_whole_file_settings_copy_holds_shared_secrets() {
+        let (_d, paths, mut cfg) = synced();
+        let mut s = settings(&paths.default_dir);
+        s["env"] = serde_json::json!({"TAVILY_API_KEY": "tvly-default", "FLAG": "1"});
+        write(&paths.default_dir, s);
+        let cs = paths.profile_dir("csdaisy");
+        std::fs::write(cs.join(copy::SETTINGS_FILE), "[]").unwrap();
+        // Profiles in order: csdaisy (whole file), lab, work.
+        let mut ask = Scripted::new(&[false, true, true]);
+        sync_forced(&paths, &mut cfg, &mut ask, true);
+        assert_eq!(ask.prompts.len(), 3, "{:?}", ask.prompts);
+        assert_eq!(
+            ask.prompts[0],
+            "Sync env.TAVILY_API_KEY (shared secret) from the default to \"csdaisy\"? Its value is not shown."
+        );
+        let got = settings(&cs);
+        assert_eq!(got["model"], "opus", "{got}");
+        assert_eq!(got["env"]["FLAG"], "1", "{got}");
+        assert!(got["env"].get("TAVILY_API_KEY").is_none(), "{got}");
+        assert_eq!(
+            record(&cs).declined_secrets["env.TAVILY_API_KEY"],
+            settings_sync::declined_from_default(Some(&serde_json::json!("tvly-default")))
+        );
+        // Asking anything fails the test.
+        sync_forced(&paths, &mut cfg, &mut Scripted::new(&[]), true);
+        assert!(settings(&cs)["env"].get("TAVILY_API_KEY").is_none());
+        // Agreed to, it arrives.
+        std::fs::write(cs.join(copy::SETTINGS_FILE), "[]").unwrap();
+        let mut m = record(&cs);
+        m.declined_secrets.clear();
+        m.save(&cs).unwrap();
+        let mut ask = Scripted::new(&[true]);
+        sync_forced(&paths, &mut cfg, &mut ask, true);
+        assert_eq!(settings(&cs)["env"]["TAVILY_API_KEY"], "tvly-default");
+    }
+
     #[test]
     fn only_auto_sync_backups_are_pruned_and_the_latest_kept() {
         let d = tempfile::tempdir().unwrap();

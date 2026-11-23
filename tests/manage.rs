@@ -2649,6 +2649,57 @@ fn a_clone_without_a_terminal_leaves_shared_secrets_for_mcc_sync() {
     );
 }
 
+/// AC3 of #129: a profile settings.json that isn't a JSON object (`[]`)
+/// is overwritten whole by `--force`, but without a terminal (and with
+/// --yes) none of the default's shared secrets reach it: each is reported
+/// skipped with its category, while the basic keys arrive.
+#[test]
+fn a_forced_copy_over_a_non_object_settings_file_keeps_shared_secrets_out() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    with_profile(&sb, "work", "--clone");
+    let secrets = [
+        (
+            "TAVILY_API_KEY",
+            ["tvly", "LEAKCHECK", "force0123456789"].join("-"),
+        ),
+        ("SERPAPI_KEY", "0123456789abcdef".repeat(4)),
+        (
+            "BRAVE_API_KEY",
+            ["brv", "LEAKCHECK", "force0123456789"].join("-"),
+        ),
+    ];
+    for (name, value) in &secrets {
+        set_env(&sb, ".claude", name, value);
+    }
+    set_env(&sb, ".claude", CODE_MODE, "1");
+    sb.write(".mcc/profiles/work/settings.json", "[]");
+    let o = sb
+        .mcc()
+        .args(["sync", "work", "--force", "--yes"])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{o:?}");
+    let (out, err) = (
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr),
+    );
+    let text = sb.read(".mcc/profiles/work/settings.json");
+    for (name, value) in &secrets {
+        assert!(!text.contains(value.as_str()), "{name}: {text}");
+        assert!(!out.contains(value.as_str()) && !err.contains(value.as_str()));
+        assert!(
+            err.contains(&format!(
+                "env.{name}: shared secret · from the default · skipped"
+            )),
+            "{name}: {err}"
+        );
+    }
+    let s = settings_of(&sb, ".mcc/profiles/work");
+    assert_eq!(s["env"][CODE_MODE], "1", "{s}");
+    assert!(s.get("model").is_some(), "{s}");
+}
+
 /// A shared secret a profile already has as the default does is never
 /// asked about, held or reported again.
 #[test]
@@ -3024,6 +3075,8 @@ fn a_profile_with_unreadable_settings_never_gets_account_bound_keys() {
         let s = settings_of(&sb, &format!(".mcc/profiles/{p}"));
         assert_eq!(s["model"], "haiku", "{p}: {s}");
         assert!(s["env"].get("ANTHROPIC_API_KEY").is_none(), "{p}: {s}");
+        // Nor its shared secrets, without a terminal (AC3 of #129).
+        assert!(s["env"].get("TAVILY_API_KEY").is_none(), "{p}: {s}");
     }
     let log = sb.read(".mcc/logs/mcc.log");
     assert!(!log.contains(&key) && !log.contains(&tavily));
