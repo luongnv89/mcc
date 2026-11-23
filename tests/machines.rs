@@ -761,33 +761,80 @@ fn what_another_machine_sends_is_never_shown_raw() {
 fn this_machines_heading_shows_its_own_update_time() {
     // AC2: ann's newest numbers are lab's, a minute old, and every row of
     // hers shows them; this machine's heading (and `updated_at`) still
-    // says when its own numbers are from, 30 minutes ago.
+    // says when its own numbers are from, 30 minutes ago, run after run,
+    // though its cache now holds lab's numbers (AC5).
     let local = machine(Some(("ann@example.com", "tok-1")), &[]);
     let lab = machine(Some(("ann@example.com", "tok-2")), &[]);
     seed_usage_cache(&lab, "default", None, Some((70.0, 86400)), 60);
     local.add_machine("lab", "lab-host", Some(&lab), None);
     let stub = stub(&[]);
-
     seed_usage_cache(&local, "default", None, Some((20.0, 86400)), 30 * 60);
-    let out = run(&local, &stub, &["usage"]);
-    let lines: Vec<&str> = out.lines().collect();
-    assert_eq!(lines[0], "local · updated 30m ago", "{out}");
-    assert!(
-        lines[2].contains(" 70% ") && lines[2].ends_with("1m ago"),
-        "{out}"
-    );
-    assert!(
-        out.lines().any(|l| l == "lab (lab-host) · updated 1m ago"),
-        "{out}"
-    );
+    let own = json(local.read(".mcc/state/default/usage.json").as_bytes())["updated_at"].clone();
 
-    // The merge saved lab's point here: put this machine's own back.
-    seed_usage_cache(&local, "default", None, Some((20.0, 86400)), 30 * 60);
-    let own = json(local.read(".mcc/state/default/usage.json").as_bytes());
+    for _ in 0..2 {
+        let out = run(&local, &stub, &["usage"]);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines[0], "local · updated 30m ago", "{out}");
+        assert!(
+            lines[2].contains(" 70% ") && lines[2].ends_with("1m ago"),
+            "{out}"
+        );
+        assert!(
+            out.lines().any(|l| l == "lab (lab-host) · updated 1m ago"),
+            "{out}"
+        );
+        let v = v2(&local, &stub, &[]);
+        assert_eq!(weekly(by_name(rows(&v), "default")), 70.0);
+        assert_eq!(v["updated_at"], own, "{v}");
+        assert_ne!(v["updated_at"], machine_of(&v, "lab")["updated_at"]);
+        let cached = json(local.read(".mcc/state/default/usage.json").as_bytes());
+        assert_eq!(cached["seven_day"]["used_percentage"], 70.0, "{cached}");
+        assert_eq!(cached["own_updated_at"], own, "{cached}");
+    }
+}
+
+#[test]
+fn another_machine_tells_its_own_update_time_from_numbers_it_got() {
+    // lab's cache holds numbers a third machine had, a minute old, beside
+    // lab's own last update, two hours ago: they are shown, under a heading
+    // that says when lab itself last updated.
+    let local = machine(Some(("ann@example.com", "tok-1")), &[]);
+    let lab = machine(Some(("dan@example.com", "tok-2")), &[]);
+    seed_usage_cache(&lab, "default", None, Some((70.0, 86400)), 60);
+    let path = ".mcc/state/default/usage.json";
+    let mut record = json(lab.read(path).as_bytes());
+    let own = rfc3339_in(-2 * 3600);
+    record["own_updated_at"] = own.clone().into();
+    lab.write(path, &record.to_string());
+    local.add_machine("lab", "lab-host", Some(&lab), None);
+    let stub = stub(&[]);
+
+    // lab's own answers: only the machine reading it gets its own time.
+    let plain = json(stdout_of(lab.mcc().args(["usage", "--json-v2"])).as_bytes());
+    assert!(rows(&plain)[0].get("own_updated_at").is_none(), "{plain}");
+    let reply =
+        json(stdout_of(lab.mcc().args(["usage", "--json-v2", "--machine-protocol"])).as_bytes());
+    assert_eq!(rows(&reply)[0]["own_updated_at"], own.as_str(), "{reply}");
+
     let v = v2(&local, &stub, &[]);
-    assert_eq!(weekly(by_name(rows(&v), "default")), 70.0);
-    assert_eq!(v["updated_at"], own["updated_at"], "{v}");
-    assert_ne!(v["updated_at"], machine_of(&v, "lab")["updated_at"]);
+    let lab_v = machine_of(&v, "lab");
+    assert_eq!(lab_v["updated_at"], own.as_str(), "{v}");
+    assert_eq!(weekly(by_name(rows(lab_v), "default")), 70.0, "{v}");
+    assert!(
+        by_name(rows(lab_v), "default")
+            .get("own_updated_at")
+            .is_none()
+    );
+    let out = run(&local, &stub, &["usage"]);
+    assert!(
+        out.lines().any(|l| l == "lab (lab-host) · updated 2h ago"),
+        "{out}"
+    );
+    assert!(
+        out.lines()
+            .any(|l| l.contains(" 70% ") && l.ends_with("1m ago")),
+        "{out}"
+    );
 }
 
 #[test]

@@ -202,6 +202,12 @@ pub struct Usage {
     /// for Claude Code profiles, and left out of their JSON.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overage_usd: Option<f64>,
+    /// Set only when these numbers came from another machine (#130):
+    /// when the machine holding them last updated them itself (`None`
+    /// when it never had), so its own last update is never taken for
+    /// another machine's. Never part of this JSON.
+    #[serde(skip)]
+    pub own_updated_at: Option<Option<DateTime<Utc>>>,
 }
 
 impl Usage {
@@ -215,6 +221,7 @@ impl Usage {
             updated_at: None,
             daily: None,
             overage_usd: None,
+            own_updated_at: None,
         }
     }
 
@@ -228,6 +235,7 @@ impl Usage {
             updated_at: None,
             daily: None,
             overage_usd: None,
+            own_updated_at: None,
         }
     }
 
@@ -878,6 +886,11 @@ fn read_cached(path: &Path, now: DateTime<Utc>) -> Usage {
     }
     let mut u = Usage::ok(five_hour, weekly).with_source(Source::Cache);
     u.updated_at = updated_at;
+    // Numbers another machine had (#130): this machine's own time is kept
+    // beside them.
+    if let Some(own) = v.get(OWN_UPDATED_AT) {
+        u.own_updated_at = Some(timestamp(own));
+    }
     u
 }
 
@@ -893,12 +906,19 @@ pub fn stamp_live(all: &mut [Usage], at: DateTime<Utc>) {
     }
 }
 
+/// The cache key (#130) beside numbers from another machine: when this
+/// machine last updated the profile itself. The status line's own write
+/// replaces the whole record, and drops it.
+const OWN_UPDATED_AT: &str = "own_updated_at";
+
 /// Save `u`, the newest numbers of `name`'s account (looked up on another
 /// machine or for another profile, #130), to `name`'s statusline cache
 /// with their own time, so `mcc list`, `mcc run` and the status line show
 /// them too. Only when they are newer than what is cached there: an older
-/// point is never written over a newer one, nor given a newer time. `true`
-/// when saved; a failed write is logged.
+/// point is never written over a newer one, nor given a newer time.
+/// Numbers from another machine keep this machine's own time beside them
+/// ([`Usage::own_updated_at`]). `true` when saved; a failed write is
+/// logged.
 pub fn save_point(paths: &Paths, name: &str, u: &Usage) -> bool {
     let Some(at) = u.updated_at.filter(|_| u.status == Status::Ok) else {
         return false;
@@ -911,9 +931,13 @@ pub fn save_point(paths: &Paths, name: &str, u: &Usage) -> bool {
     if cached.is_some_and(|c| c >= at) {
         return false;
     }
-    let Some(record) = cache_record(name, u, at) else {
+    let Some(mut record) = cache_record(name, u, at) else {
         return false;
     };
+    if let (Some(own), Some(map)) = (u.own_updated_at, record.as_object_mut()) {
+        let own = own.map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+        map.insert(OWN_UPDATED_AT.into(), serde_json::json!(own));
+    }
     match crate::commands::statusline::write_json(&path, &record) {
         Ok(()) => {
             crate::log::write(
@@ -1898,6 +1922,34 @@ mod tests {
         );
         assert_eq!(u.weekly.as_ref().unwrap().percent, 18.0);
         assert_eq!(u.age(now).as_deref(), Some("12m ago"));
+        // The status line's own record: this machine's own numbers.
+        assert_eq!(u.own_updated_at, None);
+    }
+
+    #[test]
+    fn numbers_from_another_machine_keep_this_ones_own_time() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("usage.json");
+        let now = at("2026-10-10T12:00:00Z");
+        let window = r#"{"used_percentage":18,"resets_at":null}"#;
+        for (own, expected) in [
+            (
+                r#""2026-10-10T10:00:00Z""#,
+                Some(at("2026-10-10T10:00:00Z")),
+            ),
+            ("null", None),
+        ] {
+            std::fs::write(
+                &path,
+                format!(
+                    r#"{{"profile":"work","updated_at":"2026-10-10T11:48:00Z","five_hour":null,"seven_day":{window},"own_updated_at":{own}}}"#
+                ),
+            )
+            .unwrap();
+            let u = read_cached(&path, now);
+            assert_eq!(u.updated_at, Some(at("2026-10-10T11:48:00Z")));
+            assert_eq!(u.own_updated_at, Some(expected));
+        }
     }
 
     #[test]

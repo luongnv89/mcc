@@ -144,6 +144,17 @@ struct Entry {
     /// for this one. Only with machines set up; left out otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     also_on: Option<Vec<String>>,
+    /// For the machine reading this one (#130), on a row whose numbers
+    /// came from another machine: when this machine last updated it itself
+    /// ([`Usage::own_updated_at`]), null when never. Only in a
+    /// `--machine-protocol` answer; left out everywhere else.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "ser_own_time",
+        deserialize_with = "de_own_time"
+    )]
+    own_updated_at: Option<Option<DateTime<Utc>>>,
     #[serde(skip)]
     config_dir: PathBuf,
 }
@@ -153,6 +164,20 @@ fn ser_time<S: serde::Serializer>(t: &Option<DateTime<Utc>>, s: S) -> Result<S::
         Some(t) => s.serialize_str(&t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
         None => s.serialize_none(),
     }
+}
+
+fn ser_own_time<S: serde::Serializer>(
+    t: &Option<Option<DateTime<Utc>>>,
+    s: S,
+) -> Result<S::Ok, S::Error> {
+    ser_time(&t.flatten(), s)
+}
+
+/// Present, even as null, is `Some`: absent (an older mcc) stays `None`.
+fn de_own_time<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Option<DateTime<Utc>>>, D::Error> {
+    usage::de_time(d).map(Some)
 }
 
 impl Entry {
@@ -168,6 +193,7 @@ impl Entry {
                 .as_deref()
                 .map(|e| usage::account_id(e, seat.organization_uuid.as_deref())),
             also_on: None,
+            own_updated_at: None,
             usage: Usage::default(),
             last_activity: metrics::last_activity(dir).map(DateTime::<Utc>::from),
             login_expires_at: None,
@@ -195,6 +221,7 @@ impl Entry {
             provider: Provider::Devin,
             account_id: None,
             also_on: None,
+            own_updated_at: None,
             config_dir: PathBuf::new(),
         }
     }
@@ -217,6 +244,10 @@ impl Entry {
     fn received(mut self, machine: &str, now: DateTime<Utc>) -> Self {
         self.account = None;
         self.also_on = None;
+        // Its own last update goes with its numbers, as `Usage` keeps it.
+        if let Some(own) = self.own_updated_at.take() {
+            self.usage.own_updated_at = Some(own);
+        }
         if machines::drop_future_time(&mut self.usage, now) {
             crate::log::write(
                 "WARN",
@@ -386,6 +417,14 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
 
     // Devin is never merged with another machine: its time is its own.
     let local_updated = local_updated.max(devin.as_ref().and_then(|d| machines::time_of(&d.usage)));
+
+    // The machine reading this one tells its own numbers from those this
+    // one got from another machine (#130); nobody else sees it.
+    if protocol {
+        for e in &mut entries {
+            e.own_updated_at = e.usage.own_updated_at;
+        }
+    }
 
     let mut out = std::io::stdout().lock();
     if args.json || args.json_v2 {
@@ -710,18 +749,19 @@ fn lookup_with_machines(
             e.usage = u;
         }
     }
+    // Each machine's own last update: never numbers it got from another
+    // machine (its cache keeps its own time beside them), nor those the
+    // merge below puts in its rows.
     for v in &mut views {
         v.updated_at = v
             .profiles
             .iter()
-            .filter_map(|e| machines::time_of(&e.usage))
+            .filter_map(|e| machines::own_time(&e.usage))
             .max();
     }
-    // This machine's own last update, before another machine's newer
-    // numbers replace any of its own.
     let local_updated = entries
         .iter()
-        .filter_map(|e| machines::time_of(&e.usage))
+        .filter_map(|e| machines::own_time(&e.usage))
         .max();
     merge_accounts(paths, entries, &mut views);
     (views, local_updated, interrupted)
@@ -753,11 +793,23 @@ fn merge_accounts(paths: &Paths, entries: &mut [Entry], views: &mut [MachineView
             }
         }
     }
-    let best: HashMap<String, Usage> =
-        machines::newest(rows().filter_map(|(_, e)| Some((e.account_id.as_deref()?, &e.usage))))
-            .into_iter()
-            .map(|(id, u)| (id.to_string(), u.clone()))
-            .collect();
+    fn points<'a>((_, e): (&str, &'a Entry)) -> Option<(&'a str, &'a Usage)> {
+        Some((e.account_id.as_deref()?, &e.usage))
+    }
+    let best: HashMap<String, Usage> = machines::newest(rows().filter_map(points))
+        .into_iter()
+        .map(|(id, u)| (id.to_string(), u.clone()))
+        .collect();
+    // Each account's newest point on this machine: the best is this
+    // machine's own when it is as new (and was never another machine's).
+    let here: HashMap<String, DateTime<Utc>> = machines::newest(
+        rows()
+            .filter(|(m, _)| *m == LOCAL_MACHINE)
+            .filter_map(points),
+    )
+    .into_iter()
+    .filter_map(|(id, u)| Some((id.to_string(), machines::time_of(u)?)))
+    .collect();
     let update = |machine: &str, e: &mut Entry| {
         if e.provider != Provider::Claude {
             return;
@@ -776,8 +828,16 @@ fn merge_accounts(paths: &Paths, entries: &mut [Entry], views: &mut [MachineView
         );
         if let Some(b) = best.get(id) {
             let own = machines::time_of(&e.usage);
-            if own.is_none_or(|t| machines::time_of(b).is_some_and(|n| n > t)) {
-                e.usage = b.clone();
+            let newer = machines::time_of(b);
+            if own.is_none_or(|t| newer.is_some_and(|n| n > t)) {
+                let mut u = b.clone();
+                // This machine's row keeps its own last update beside
+                // another machine's numbers, in its cache too.
+                if machine == LOCAL_MACHINE {
+                    let from_here = b.own_updated_at.is_none() && here.get(id) == newer.as_ref();
+                    u.own_updated_at = (!from_here).then(|| machines::own_time(&e.usage));
+                }
+                e.usage = u;
             }
         }
     };
@@ -1155,6 +1215,7 @@ mod tests {
             provider: Provider::Claude,
             account_id: None,
             also_on: None,
+            own_updated_at: None,
             config_dir: PathBuf::new(),
         }
     }
@@ -1178,6 +1239,7 @@ mod tests {
             updated_at: Some(at("2026-10-10T11:48:00Z")),
             daily: None,
             overage_usd: None,
+            own_updated_at: None,
         };
         let mut entries = [
             entry("default", Some("me@example.com"), ok),

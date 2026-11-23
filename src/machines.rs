@@ -399,6 +399,13 @@ pub fn time_of(u: &Usage) -> Option<DateTime<Utc>> {
     u.updated_at.filter(|_| u.status == Status::Ok)
 }
 
+/// When the machine reporting `u` last updated it itself (#130), for its
+/// heading and `updated_at`: the time it kept beside numbers that came
+/// from another machine, else [`time_of`]. Never for choosing the newest.
+pub fn own_time(u: &Usage) -> Option<DateTime<Utc>> {
+    u.own_updated_at.unwrap_or_else(|| time_of(u))
+}
+
 /// How far ahead of this machine's clock another machine's time may be
 /// and still be believed: clocks a little apart are normal.
 pub const CLOCK_TOLERANCE: chrono::Duration = chrono::Duration::seconds(60);
@@ -409,7 +416,12 @@ pub const CLOCK_TOLERANCE: chrono::Duration = chrono::Duration::seconds(60);
 /// overwrite this machine's cache with them. The numbers stay, with no
 /// time, so they never compete in [`newest`]. `true` when it was dropped.
 pub fn drop_future_time(u: &mut Usage, now: DateTime<Utc>) -> bool {
-    let future = u.updated_at.is_some_and(|t| t > now + CLOCK_TOLERANCE);
+    let ahead = |t: DateTime<Utc>| t > now + CLOCK_TOLERANCE;
+    // Its own last update, shown in its heading, is no more believed.
+    if let Some(own) = &mut u.own_updated_at {
+        *own = own.filter(|&t| !ahead(t));
+    }
+    let future = u.updated_at.is_some_and(ahead);
     if future {
         u.updated_at = None;
     }

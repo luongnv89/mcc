@@ -113,6 +113,7 @@ mod tests {
             updated_at: None,
             daily: None,
             overage_usd: None,
+            own_updated_at: None,
         }
     }
 
