@@ -289,7 +289,7 @@ mcc delete job              # remove it completely
 | `mcc init` | Detect OS, arch, terminal, shell, rc file, the `claude` binary, and whether `~/.local/bin` is on PATH (and offer to add it) | `--force`, `--shell zsh\|bash\|fish` |
 | `mcc add [ALIAS]` | Create the default profile, or a new profile with its own command; records the account and its organization, warns when another profile already uses that account, and asks for an optional label. A clone shares the default's plugins instead of copying them | `--clone`, `--fresh`, `--link ITEMS`, `--copy-plugins`, `--no-login`, `--email ADDRESS`, `--sso`, `--label LABEL`, `--color COLOR`, `-y` |
 | `mcc list` (`ls`) | Show every profile with its account, 5-hour/weekly usage and sync state in a table that fits 120 columns; `--long` adds every metric | `--json`, `--json-v2`, `-l/--long`, `--no-usage`, `--show-email`, `--hide-email` |
-| `mcc usage [PROFILE]` | Show each profile's 5-hour and weekly usage in a table (`default` or `claude` for the default profile, `devin` for Devin alone), with when it was last active and when its login ends, and warn before a login runs out; `--all` looks every account up live for one run, with a risk notice, and lets Claude Code refresh an expired token first in a one-turn session (see [Live usage lookup](#live-usage-lookup-opt-in)) | `--all`, `--json`, `--json-v2`, `--show-email`, `--hide-email`, `--sort ORDER` |
+| `mcc usage [PROFILE]` | Show each profile's 5-hour and weekly usage in a table (`default` or `claude` for the default profile, `devin` for Devin alone), with when it was last active and when its login ends, and warn before a login runs out; `--all` looks every account up live for one run, with a risk notice, and lets Claude Code refresh an expired token first in a one-turn session (see [Live usage lookup](#live-usage-lookup-opt-in)); with `[machines]` set up, your other machines' accounts too, over SSH (see [Multiple machines](#multiple-machines)) | `--all`, `--only PROFILES`, `--json`, `--json-v2`, `--show-email`, `--hide-email`, `--sort ORDER` |
 | `mcc login PROFILE` (`renew`) | Renew a profile's Claude Code sign-in in place before its login runs out, and check that it worked (see [Login expiry](#login-expiry-and-mcc-login)) | `--refresh-only` |
 | `mcc sync [ALIAS]` | Copy the default's setup into a profile (default → profile only), keeping edits made in the profile | `--all`, `--dry-run`, `--prune`, `--force`, `--only ITEMS`, `-y` |
 | `mcc diff ALIAS` | Show how a profile differs from the default's setup, path by path, as `sync` classifies it | `--only ITEMS` |
@@ -684,6 +684,42 @@ mcc reads it the way custats-macos's Devin provider does: it takes the session t
 That lookup sends Devin's token over the network, so it follows the [live usage](#live-usage-lookup-opt-in) settings: it runs only with `[usage] live = true` (after a one-time note) or for `mcc usage --all`, and never with `MCC_NO_USAGE=1`. Otherwise mcc shows what the last lookup saved in `~/.mcc/providers/devin/quota.json` (the numbers and the organization, never the token) with its age, or `— (not looked up; mcc usage --all looks it up)` (`mcc list` and bare `mcc` add a hint saying so after the table), and reads no token at all. Bare `mcc` never looks it up live. A failed lookup leaves the saved numbers as they were.
 
 `mcc doctor` (or `mcc doctor devin`) checks Devin when its CLI or its login is there: the `devin` command, the login (whether it holds a token is read only with `[usage] live = true`, and the token is never shown) and how its usage is looked up. Devin's findings are warnings at most, never problems.
+
+</details>
+
+#### Multiple machines
+
+<details>
+<summary>Usage of the accounts on your other machines, over SSH</summary>
+
+If you use Claude Code on more than one machine, `mcc usage` can show every machine's accounts in one view. Add each other machine to `~/.mcc/config.toml` with `mcc config edit` (`mcc config set` doesn't set these):
+
+```toml
+[machines.lab]
+host = "me@lab-box"                 # what `ssh` connects to: a host, user@host, or a Host from your SSH config
+mcc = "/home/me/.cargo/bin/mcc"     # optional: mcc's full path there
+```
+
+`mcc usage` then runs `mcc usage` on each machine over SSH and shows one table per machine after this one's, which is called `local`. Each table is headed by its machine's name and when its numbers were last updated:
+
+```text
+local · updated 30m ago
+# PROFILE    ALSO ON  LAST ACTIVE  LOGIN ENDS  5-HOUR  RESETS IN  WEEKLY          RESETS IN  UPDATED
+1 default ★  lab      just now     unknown     —                  ██░░░░░░░░ 20%  1d 0h      30m ago
+
+lab (me@lab-box) · updated 5m ago
+# PROFILE    ALSO ON  LAST ACTIVE  LOGIN ENDS  5-HOUR  RESETS IN  WEEKLY          RESETS IN  UPDATED
+1 work       local    unknown      unknown     —                  ██░░░░░░░░ 20%  1d 0h      30m ago
+2 default ★  —        just now     unknown     —                  ███░░░░░░░ 30%  1d 0h      5m ago
+```
+
+- **The same account on several machines.** Accounts are matched by a SHA-256 of their email, so the email never leaves its machine, and ALSO ON names the other machines each one is on. Every row of an account shows its newest numbers from any machine, and this machine saves them to its own cache when they are newer, so `mcc list`, `mcc run` and the status line show them too.
+- **Refreshing.** `mcc usage --all` refreshes every machine with one live lookup per account: an account this machine has is looked up here; any other account is looked up on one machine that has it (the first, in name order, whose login hasn't run out), with `mcc usage --all --only PROFILES` there. Its notice gains a line saying so.
+- **A machine that can't be read** shows `updated —` and why (unreachable, too old, no mcc found…) in its heading; the others still show, and the command still succeeds.
+- **SSH.** mcc runs `ssh -o BatchMode=yes -o ConnectTimeout=10 -- HOST …` with your own SSH keys and config (it never reads `~/.ssh/config` itself), so key-based login must work without a prompt: check with `ssh HOST true`. A non-interactive SSH session may not load the PATH your login shell sets; when the heading says no mcc was found, set `mcc` to its full path. Each machine needs this version of mcc or newer.
+- **What reads only this machine:** `mcc usage PROFILE`, `--json` (schema 1), `--only`, and `MCC_NO_USAGE=1`. `--json-v2` adds a `machines` key after `profiles`: `[{"name", "host", "updated_at", "error", "profiles": [...]}]`, and each profile row gains `account_id` and `also_on`. Rows keep `account` null for other machines whatever `show_email` says.
+
+The first `mcc usage` that reads other machines explains this on stderr once, and records when as `machines_disclosed_at` under `[usage]`.
 
 </details>
 
