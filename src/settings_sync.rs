@@ -36,14 +36,21 @@ const ACCOUNT_KEYS: &[&str] = &[
     "forceLoginOrgUUID",
 ];
 
-/// An `env` variable named like a secret: one of these words, as a whole
-/// `_`-separated part of the name (so `MAX_THINKING_TOKENS` is not one),
+/// An `env` variable named like a secret: `PASSWORD`, `PASSWD`, `SECRET`,
+/// `CREDENTIAL`, `PRIVATE_KEY` or `WEBHOOK` anywhere in it
+/// (`PGPASSWORD`); one of the shorter words as a whole `_`-separated part
+/// (so `MAX_THINKING_TOKENS`, `BYPASS_PROXY` and `OLDPWD` are not one);
 /// or `KEY` as its last part (`SERPAPI_KEY`).
 static SECRET_NAME: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)(?:^|_)(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|PRIVATE_KEY|ACCESS_KEY|AUTH)(?:_|$)|(?i)(?:^|_)KEY$",
+        r"(?i)PASSWORD|PASSWD|SECRET|CREDENTIAL|PRIVATE_?KEY|WEBHOOK|(?:^|_)(?:API_?KEY|TOKEN|ACCESS_KEY|AUTH|PASS|PWD|DSN)(?:_|$)|(?:^|_)KEY$",
     )
     .expect("static regex")
+});
+
+/// A URL with a password in it: `scheme://user:pass@host`.
+static CREDENTIAL_URL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@").expect("static regex")
 });
 
 /// A run of 32 or more hex digits standing alone: in an `env` value, an
@@ -62,8 +69,9 @@ static TOKEN_SHAPE: LazyLock<Regex> = LazyLock::new(|| {
 
 /// A long run that may be a random token: checked for mixed case and
 /// digits by [`holds_token`]. `/` and `.` are left out, so paths are not,
-/// and a run next to a `/` or `\` (a path's segment, such as
-/// `-Users-me-src-project2`) is never one.
+/// and a run that is a filesystem path's segment (next to a `/` or `\`,
+/// such as Claude Code's `-Users-me-src-project2`) is never one; a URL's
+/// segment always may be (a webhook's token).
 static LONG_RUN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"[A-Za-z0-9_+=-]{32,}").expect("static regex"));
 
@@ -154,16 +162,16 @@ impl Category {
 }
 
 /// Whether a string in `v` (at any depth) looks like a token: a known
-/// token prefix, or a long run of mixed-case letters and digits.
+/// token prefix, a URL with a password, or a long run of mixed-case
+/// letters and digits that isn't a filesystem path's segment.
 fn holds_token(v: &Value) -> bool {
     match v {
         Value::String(s) => {
             TOKEN_SHAPE.is_match(s)
+                || CREDENTIAL_URL.is_match(s)
                 || LONG_RUN.find_iter(s).any(|m| {
                     let run = m.as_str();
-                    let in_path = s[..m.start()].ends_with(['/', '\\'])
-                        || s[m.end()..].starts_with(['/', '\\']);
-                    !in_path
+                    !in_path(s, m.start(), m.end())
                         && run.bytes().any(|b| b.is_ascii_uppercase())
                         && run.bytes().any(|b| b.is_ascii_lowercase())
                         && run.bytes().any(|b| b.is_ascii_digit())
@@ -173,6 +181,17 @@ fn holds_token(v: &Value) -> bool {
         Value::Object(m) => m.values().any(holds_token),
         _ => false,
     }
+}
+
+/// Whether `s[start..end]` is a segment of a filesystem path: next to a
+/// `/` or `\`, in a word (as a shell splits a command line) that is not
+/// a URL (no `://` before it).
+fn in_path(s: &str, start: usize, end: usize) -> bool {
+    let sep = s[..start].ends_with(['/', '\\']) || s[end..].starts_with(['/', '\\']);
+    let word = s[..start]
+        .rfind(|c: char| c.is_whitespace() || matches!(c, '\'' | '"' | '`' | '=' | '('))
+        .map_or(0, |i| i + 1);
+    sep && !s[word..start].contains("://")
 }
 
 /// Whether the `env` value `v` holds a long run of hex digits ([`HEX_RUN`]).
@@ -826,6 +845,19 @@ mod tests {
             "GEMINI_KEY",
             "linear_key",
             "KEY",
+            "PGPASSWORD",
+            "MYSQL_ROOT_PASSWD",
+            "DB_PASS",
+            "PASS",
+            "MYSQL_PWD",
+            "SENTRY_DSN",
+            "DSN",
+            "SLACK_WEBHOOK_URL",
+            "DISCORDWEBHOOK",
+            "CLIENTSECRET",
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "SSH_PRIVATE_KEY",
+            "PRIVATEKEY_PEM",
         ] {
             assert_eq!(
                 basic(&format!("env.{name}"), json!("x")),
@@ -858,12 +890,19 @@ mod tests {
             ),
             Category::SharedSecret
         );
-        // Names with KEY not as their last part, or inside a word, are not.
+        // Names with KEY not as their last part, or inside a word, are not;
+        // neither is PASS or PWD inside a word.
         for name in [
             "KEYBOARD_LAYOUT",
             "MONKEY",
             "KEY_PATH",
             "MAX_THINKING_TOKENS",
+            "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE",
+            "BYPASS_PROXY",
+            "PASSTHROUGH",
+            "OLDPWD",
+            "COMPASS_URL",
+            "DATABASE_URL",
         ] {
             assert_eq!(
                 basic(&format!("env.{name}"), json!("x")),
@@ -893,6 +932,60 @@ mod tests {
             ),
             Category::Basic
         );
+        // A URL with a password is a secret, wherever it is; one without is
+        // not.
+        for v in [
+            "postgres://app:hunter2@db.example.invalid:5432/app",
+            "redis://default:s3cr3t@cache.example.invalid",
+            "bash -c 'psql postgres://u:pass@host/db'",
+        ] {
+            assert_eq!(
+                basic("env.DATABASE_URL", json!(v)),
+                Category::SharedSecret,
+                "{v}"
+            );
+            assert_eq!(
+                basic("hooks", json!({"Stop": [v]})),
+                Category::SharedSecret,
+                "{v}"
+            );
+        }
+        for v in [
+            "https://api.example.invalid/v1/items?x=1",
+            "postgres://db.example.invalid:5432/app",
+            "https://user@example.invalid/repo.git",
+            "git@github.com:me/repo.git",
+        ] {
+            assert_eq!(basic("env.DATABASE_URL", json!(v)), Category::Basic, "{v}");
+        }
+        // A token in a URL's path is one, mid-path or at its end, whatever
+        // the key: a webhook's.
+        let hook = format!(
+            "{}{}{}{}",
+            "AbCdEfGh12345678", "IjKlMnOp90123456", "QrStUvWx", "Yz7890AbCdEfGhIjKlMnOpQr"
+        );
+        assert_eq!(hook.len(), 64);
+        for v in [
+            format!("curl -X POST https://discord.example.invalid/api/webhooks/123456/{hook}"),
+            format!("https://discord.example.invalid/api/webhooks/123456/{hook}"),
+            format!("https://example.invalid/hook/{hook}/send"),
+            format!("curl -d x 'https://example.invalid/hook/{hook}/send?a=1'"),
+            format!("--url=https://example.invalid/{hook}"),
+        ] {
+            assert_eq!(
+                basic(
+                    "hooks",
+                    json!({"Stop": [{"hooks": [{"type": "command", "command": v}]}]})
+                ),
+                Category::SharedSecret,
+                "{v}"
+            );
+            assert_eq!(
+                basic("env.NOTIFY_URL", json!(v)),
+                Category::SharedSecret,
+                "{v}"
+            );
+        }
         // A path segment with a long mixed-case run (Claude Code names
         // project dirs so) is not a token: the statusline shim's path.
         let segment = "-Users-montimage-buildspace-luongnv89-mcc";
@@ -901,6 +994,10 @@ mod tests {
             json!({"type": "command", "command": format!("/private/tmp/{segment}/repo/.mcc/bin/mcc statusline")}),
             json!(format!("bash '/home/me/{segment}/x.sh' --flag")),
             json!(format!("C:\\Users\\{segment}\\run.cmd")),
+            json!(format!("/Users/x/.claude/projects/{segment}/memory")),
+            json!(format!(
+                "curl https://example.invalid/ping && bash /Users/x/{segment}/run.sh"
+            )),
         ] {
             assert_eq!(basic("statusLine", v.clone()), Category::Basic, "{v}");
         }
