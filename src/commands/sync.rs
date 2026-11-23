@@ -563,7 +563,8 @@ pub(crate) fn report_settings(
             }
         }
     }
-    report_held(consent, dry_run, force, sync, true);
+    // Without per-key settings, nothing agreed to was reported as taken.
+    report_held(consent, dry_run, force, sync, plan.settings.is_some());
 }
 
 /// Report what became of each shared secret the default sets that a new

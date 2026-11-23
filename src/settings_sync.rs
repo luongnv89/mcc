@@ -189,7 +189,7 @@ fn holds_token(v: &Value) -> bool {
 fn in_path(s: &str, start: usize, end: usize) -> bool {
     let sep = s[..start].ends_with(['/', '\\']) || s[end..].starts_with(['/', '\\']);
     let word = s[..start]
-        .rfind(|c: char| c.is_whitespace() || matches!(c, '\'' | '"' | '`' | '=' | '('))
+        .rfind(|c: char| c.is_whitespace() || matches!(c, '\'' | '"' | '`'))
         .map_or(0, |i| i + 1);
     sep && !s[word..start].contains("://")
 }
@@ -971,6 +971,8 @@ mod tests {
             format!("https://example.invalid/hook/{hook}/send"),
             format!("curl -d x 'https://example.invalid/hook/{hook}/send?a=1'"),
             format!("--url=https://example.invalid/{hook}"),
+            format!("https://example.invalid/hook?team=a1/{hook}"),
+            format!("curl \"https://example.invalid/x?(a=b)/{hook}\""),
         ] {
             assert_eq!(
                 basic(
