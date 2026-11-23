@@ -2501,3 +2501,48 @@ fn secret_setting_values_never_reach_the_output_or_the_log() {
             .contains(&anthropic)
     );
 }
+
+/// A profile whose settings.json isn't a JSON object is synced as a whole
+/// file, as before; the default's account-bound keys still never reach it,
+/// and `mcc diff` shows neither side's text.
+#[test]
+fn a_profile_with_unreadable_settings_never_gets_account_bound_keys() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    let key = ["sk", "ant", "LEAKCHECK", "fallback0123456789"].join("-");
+    let tavily = ["tvly", "LEAKCHECK", "fallback0123456789"].join("-");
+    set_env(&sb, ".claude", "ANTHROPIC_API_KEY", &key);
+    set_env(&sb, ".claude", "TAVILY_API_KEY", &tavily);
+    with_profile(&sb, "work", "--clone");
+    with_profile(&sb, "fresh", "--fresh");
+    for p in ["work", "fresh"] {
+        sb.write(&format!(".mcc/profiles/{p}/settings.json"), "{not json");
+    }
+    // Changed in the default too: a conflict, which --force overwrites.
+    let mut d = settings_of(&sb, ".claude");
+    d["model"] = "haiku".into();
+    sb.write(".claude/settings.json", &d.to_string());
+    let runs: [&[&str]; 4] = [
+        &["diff", "work"],
+        &["sync", "work", "--force"],
+        &["diff", "fresh"],
+        &["sync", "fresh"],
+    ];
+    for args in runs {
+        let o = sb.mcc().args(args).output().unwrap();
+        assert!(o.status.success(), "{args:?}: {o:?}");
+        let out = String::from_utf8_lossy(&o.stdout);
+        let err = String::from_utf8_lossy(&o.stderr);
+        for secret in [&key, &tavily] {
+            assert!(!out.contains(secret.as_str()), "{args:?}: {out}");
+            assert!(!err.contains(secret.as_str()), "{args:?}: {err}");
+        }
+    }
+    for p in ["work", "fresh"] {
+        let s = settings_of(&sb, &format!(".mcc/profiles/{p}"));
+        assert_eq!(s["model"], "haiku", "{p}: {s}");
+        assert!(s["env"].get("ANTHROPIC_API_KEY").is_none(), "{p}: {s}");
+    }
+    let log = sb.read(".mcc/logs/mcc.log");
+    assert!(!log.contains(&key) && !log.contains(&tavily));
+}

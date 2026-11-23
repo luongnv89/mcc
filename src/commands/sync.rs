@@ -257,6 +257,8 @@ fn gather_settings(paths: &Paths, cfg: &Config, spec: &Spec, args: &SyncArgs) ->
                     Outcome::Declined { earlier: false }
                 }
             }
+            // A real sync removes it only with --yes or a confirmation.
+            Verdict::Remove(_) if args.dry_run && !args.yes => Outcome::Asked,
             Verdict::Remove(key) => {
                 let ok = args.dry_run
                     || args.yes

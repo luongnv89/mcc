@@ -373,6 +373,22 @@ impl Rewriter {
         }
     }
 
+    /// The default's settings object `obj` as it may reach this profile:
+    /// without the keys [`Classifier::shared`] leaves out (account-bound),
+    /// everything else as it is, in its order. The `bool` says whether any
+    /// key was left out.
+    fn shared_settings(&self, obj: Map<String, Value>) -> (Map<String, Value>, bool) {
+        let flat = settings_sync::flatten(&obj);
+        let shared = self.classifier.shared(flat.clone()).into_map();
+        let mut kept = obj;
+        let mut dropped = false;
+        for k in flat.keys().filter(|k| !shared.contains_key(*k)) {
+            settings_sync::set_flat(&mut kept, k, None);
+            dropped = true;
+        }
+        (kept, dropped)
+    }
+
     /// How this profile's `settings.json` keys are sorted.
     pub fn classifier(&self) -> &Classifier {
         &self.classifier
@@ -415,7 +431,14 @@ impl Rewriter {
     /// to one, which is then written as a file) and this profile has an
     /// overlay for it.
     pub fn overlays(&self, src: &Path) -> bool {
-        self.overlay.is_some() && src == self.from_dir.join(SETTINGS_FILE) && src.is_file()
+        self.overlay.is_some() && self.settings_file(src)
+    }
+
+    /// Whether `src` is the default's `settings.json`, a file or a symlink
+    /// to one: always written as a file, without the default's
+    /// account-bound keys ([`desired_bytes`]).
+    fn settings_file(&self, src: &Path) -> bool {
+        src == self.from_dir.join(SETTINGS_FILE) && src.is_file()
     }
 
     pub fn apply(&self, text: &str) -> String {
@@ -880,7 +903,7 @@ fn kind(p: &Path) -> Kind {
 /// its content (with paths rewritten when `rewrite`), or for a symlink, the
 /// target the copy points at. `None` for a directory or a missing path.
 fn desired_hash(src: &Path, rewrite: bool, rw: &Rewriter) -> Result<Option<String>> {
-    if rw.overlays(src) {
+    if rw.settings_file(src) {
         return Ok(Some(manifest::hash_file(&desired_bytes(src, rewrite, rw)?)));
     }
     Ok(match kind(src) {
@@ -890,14 +913,48 @@ fn desired_hash(src: &Path, rewrite: bool, rw: &Rewriter) -> Result<Option<Strin
     })
 }
 
-/// What copying the file `src` writes into the profile.
-pub fn desired_bytes(src: &Path, rewrite: bool, rw: &Rewriter) -> Result<Vec<u8>> {
+/// [`desired_hash`] as mcc before per-key settings (#129) recorded the
+/// default's `settings.json`: a symlink by its target, account-bound keys
+/// kept. What an older sync record is compared with.
+fn legacy_desired_hash(src: &Path, rewrite: bool, rw: &Rewriter) -> Result<Option<String>> {
+    if !rw.overlays(src)
+        && let Kind::Link(target) = kind(src)
+    {
+        return Ok(Some(manifest::hash_link(&rw.link_target(src, &target))));
+    }
+    let bytes = rewritten_src(src, rewrite, rw)?;
+    let bytes = match &rw.overlay {
+        Some(overlay) if rw.overlays(src) => overlaid(&bytes, overlay, src)?,
+        _ => bytes,
+    };
+    Ok(Some(manifest::hash_file(&bytes)))
+}
+
+/// The file `src`, with paths rewritten when `rewrite`.
+fn rewritten_src(src: &Path, rewrite: bool, rw: &Rewriter) -> Result<Vec<u8>> {
     let bytes = std::fs::read(src).with_context(|| format!("reading {}", src.display()))?;
-    let bytes = if rewrite {
+    Ok(if rewrite {
         rewritten(&bytes, rw)
     } else {
         bytes
-    };
+    })
+}
+
+/// What copying the file `src` writes into the profile. The default's
+/// `settings.json`, when it is a JSON object, loses its account-bound keys
+/// first (they never reach another profile), and is otherwise kept byte
+/// for byte; then the profile's overlay is merged on. This is the
+/// whole-file copy, used when the profile's `settings.json` can't be
+/// synced key by key (it isn't a JSON object).
+pub fn desired_bytes(src: &Path, rewrite: bool, rw: &Rewriter) -> Result<Vec<u8>> {
+    let mut bytes = rewritten_src(src, rewrite, rw)?;
+    if rw.settings_file(src)
+        && let Ok(Value::Object(m)) = serde_json::from_slice::<Value>(&bytes)
+        && let (kept, true) = rw.shared_settings(m)
+    {
+        bytes = serde_json::to_vec_pretty(&Value::Object(kept))?;
+        bytes.push(b'\n');
+    }
     match &rw.overlay {
         Some(overlay) if rw.overlays(src) => overlaid(&bytes, overlay, src),
         _ => Ok(bytes),
@@ -1271,12 +1328,7 @@ pub fn settings_view(
     rw: &Rewriter,
     base: &Base,
 ) -> Result<Option<SettingsView>> {
-    let bytes = std::fs::read(src).with_context(|| format!("reading {}", src.display()))?;
-    let text = if rewrite {
-        rewritten(&bytes, rw)
-    } else {
-        bytes
-    };
+    let text = rewritten_src(src, rewrite, rw)?;
     let Ok(Value::Object(default)) = serde_json::from_slice::<Value>(&text) else {
         return Ok(None);
     };
@@ -1291,8 +1343,7 @@ pub fn settings_view(
             _ => return Ok(None),
         },
     };
-    let shared = rw.classifier.shared(settings_sync::flatten(&default));
-    let mut want_obj = settings_sync::unflatten(&shared.into_map());
+    let (mut want_obj, _) = rw.shared_settings(default);
     let mut overlay_keys = BTreeSet::new();
     let mut overlay_env = false;
     if let Some(overlay) = &rw.overlay {
@@ -1332,7 +1383,7 @@ pub fn settings_view(
             } else {
                 KeyBase::Guess {
                     default_unchanged: last.is_some()
-                        && desired_hash(src, rewrite, rw)?.as_ref() == last,
+                        && legacy_desired_hash(src, rewrite, rw)?.as_ref() == last,
                 }
             }
         }
@@ -1435,12 +1486,7 @@ fn plan_settings(
     } else {
         // The default's own bytes when the profile gets exactly them, as
         // a whole-file sync wrote them.
-        let bytes = std::fs::read(src).with_context(|| format!("reading {}", src.display()))?;
-        let text = if rewrite {
-            rewritten(&bytes, rw)
-        } else {
-            bytes
-        };
+        let text = rewritten_src(src, rewrite, rw)?;
         let result = Value::Object(result);
         let bytes = if serde_json::from_slice::<Value>(&text).ok().as_ref() == Some(&result) {
             text
@@ -1653,8 +1699,8 @@ fn copy_one(src: &Path, dst: &Path, rewrite: bool, rw: &Rewriter) -> Result<()> 
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
-    // The overlaid settings.json is written as a file, even from a symlink.
-    let src_kind = if rw.overlays(src) {
+    // The default's settings.json is written as a file, even from a symlink.
+    let src_kind = if rw.settings_file(src) {
         Kind::File
     } else {
         kind(src)
@@ -1669,7 +1715,7 @@ fn copy_one(src: &Path, dst: &Path, rewrite: bool, rw: &Rewriter) -> Result<()> 
             if matches!(kind(dst), Kind::Dir | Kind::Link(_)) {
                 fsutil::remove_any(dst)?;
             }
-            if rewrite || rw.overlays(src) {
+            if rewrite || rw.settings_file(src) {
                 fsutil::write_atomic(dst, &desired_bytes(src, rewrite, rw)?)?;
                 if let Ok(meta) = std::fs::metadata(src) {
                     let _ = std::fs::set_permissions(dst, meta.permissions());
@@ -2664,6 +2710,13 @@ mod tests {
         // Not another profile's paths, nor a longer name.
         let other = serde_json::json!("/h/.mcc/profiles/w2/hooks/x.sh");
         assert_eq!(rw.to_default(&other).unwrap(), other);
+        // Quotes, backslashes and non-ASCII text come back exactly.
+        let odd =
+            serde_json::json!({"command": "say \"héllo\" \\ é /h/.mcc/profiles/w/hooks/x.sh"});
+        assert_eq!(
+            rw.to_default(&odd).unwrap(),
+            serde_json::json!({"command": "say \"héllo\" \\ é /h/.claude/hooks/x.sh"})
+        );
         // A default path the profile would rewrite can't come back exactly.
         let mixed = serde_json::json!("/h/.claude/hooks/a.sh /h/.mcc/profiles/w/hooks/b.sh");
         assert_eq!(rw.to_default(&mixed), None);

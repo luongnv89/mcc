@@ -531,7 +531,8 @@ pub fn decide(c: &Classifier, default: &Map<String, Value>, sources: &[Source]) 
 pub enum Outcome {
     /// Copied to the default, and from there to every profile.
     Synced,
-    /// A shared secret a real sync would ask about (dry run).
+    /// A shared secret, or a removal without `--yes`, a real sync would
+    /// ask about (dry run).
     Asked,
     /// A shared secret the user agreed to sync.
     Approved,
@@ -612,6 +613,11 @@ mod tests {
             Value::Object(s2).to_string(),
             r#"{"env":{"A":"1","C":"3"},"hooks":{},"zeta":true}"#
         );
+        // Unusual names and values are kept exactly.
+        let odd = obj(json!({"env": {"CLÉ_é": "a \"b\" \\ ü"}, "k\"ey": "<x>"}));
+        let flat = flatten(&odd);
+        assert_eq!(flat["env.CLÉ_é"], "a \"b\" \\ ü");
+        assert_eq!(unflatten(&flat), odd);
         // An `env` that is not an object is one key.
         let odd = obj(json!({"env": "x"}));
         assert_eq!(flatten(&odd).keys().collect::<Vec<_>>(), ["env"]);

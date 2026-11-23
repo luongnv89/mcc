@@ -182,6 +182,15 @@ fn file_diff(
         rel.clone()
     };
     header(out, label(c), &shown)?;
+    if rel == copy::SETTINGS_FILE {
+        // Compared as a whole file: one side isn't a JSON object, so its
+        // keys, and which of them are secret, can't be told apart.
+        writeln!(
+            out,
+            "  (not shown: one side is not a JSON object, and settings.json may hold secrets)"
+        )?;
+        return Ok(());
+    }
     let src = paths.default_dir.join(&c.rel);
     let dst = dir.join(&c.rel);
     let (a, b) = (side(&src, Some((c.rewrite, rw)))?, side(&dst, None)?);
