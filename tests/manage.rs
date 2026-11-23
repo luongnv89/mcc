@@ -2533,6 +2533,122 @@ fn a_shared_secret_set_in_the_default_is_only_synced_once_agreed_to() {
     assert!(!log.contains(&tavily) && !log.contains(&rotated), "{log}");
 }
 
+/// AC3 of #129, for settings.local.json: a shared secret the default's
+/// adds or rotates is held without a terminal (or with --yes) and reported
+/// with its category, never its value; a dry run says it would be asked
+/// about; the rest of the file still syncs.
+#[test]
+fn a_shared_secret_in_the_default_local_settings_is_only_synced_once_agreed_to() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    sb.write(
+        ".claude/settings.local.json",
+        r#"{"env":{"LOCAL_FLAG":"1"}}"#,
+    );
+    with_profile(&sb, "work", "--clone");
+    with_profile(&sb, "lab", "--clone");
+    let token = ["tok", "LEAKCHECK", "local0123456789"].join("-");
+    let rotated = ["tok", "LEAKCHECK", "rotated0123456789"].join("-");
+    for (value, flag) in [(&token, "2"), (&rotated, "3")] {
+        sb.write(
+            ".claude/settings.local.json",
+            &serde_json::json!({"env": {"LOCAL_FLAG": flag, "SEARCH_TOKEN": value}}).to_string(),
+        );
+        let o = sb
+            .mcc()
+            .args(["sync", "--all", "--dry-run"])
+            .output()
+            .unwrap();
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(
+            err.contains("env.SEARCH_TOKEN in settings.local.json: shared secret · from the default · would be asked about"),
+            "{err}"
+        );
+        for args in [&["--all"][..], &["--all", "--yes"]] {
+            let o = sb.mcc().arg("sync").args(args).output().unwrap();
+            assert!(o.status.success(), "{o:?}");
+            let (out, err) = (
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr),
+            );
+            assert!(
+                err.contains("env.SEARCH_TOKEN in settings.local.json: shared secret · from the default · skipped (a shared secret is only synced once you agree at a terminal)"),
+                "{err}"
+            );
+            for secret in [&token, &rotated] {
+                assert!(!out.contains(secret.as_str()) && !err.contains(secret.as_str()));
+            }
+            for p in ["work", "lab"] {
+                let s = local_settings_of(&sb, &format!(".mcc/profiles/{p}"));
+                assert!(s["env"].get("SEARCH_TOKEN").is_none(), "{p}: {s}");
+                assert_eq!(s["env"]["LOCAL_FLAG"], flag, "{p}: {s}");
+            }
+        }
+    }
+    let log = sb.read(".mcc/logs/mcc.log");
+    assert!(!log.contains(&token) && !log.contains(&rotated));
+}
+
+/// AC3 of #129: `mcc add --clone` without a terminal leaves the default's
+/// shared secrets out of the new profile (settings.json and
+/// settings.local.json), says `mcc sync ALIAS` will offer them, and that
+/// sync does offer them (held, not declined or in sync). Basic and
+/// account-bound keys are cloned as before.
+#[test]
+fn a_clone_without_a_terminal_leaves_shared_secrets_for_mcc_sync() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    let tavily = ["tvly", "LEAKCHECK", "clone0123456789"].join("-");
+    let token = ["tok", "LEAKCHECK", "clone0123456789"].join("-");
+    set_env(&sb, ".claude", "TAVILY_API_KEY", &tavily);
+    set_env(&sb, ".claude", "ANTHROPIC_API_KEY", "default-account-key");
+    set_env(&sb, ".claude", CODE_MODE, "1");
+    sb.write(
+        ".claude/settings.local.json",
+        &serde_json::json!({"env": {"SEARCH_TOKEN": token, "LOCAL_FLAG": "1"}}).to_string(),
+    );
+    let o = sb
+        .mcc()
+        .args(["add", "work", "--clone", "--yes"])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{o:?}");
+    let (out, err) = (
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr),
+    );
+    for secret in [&tavily, &token] {
+        assert!(!out.contains(secret.as_str()) && !err.contains(secret.as_str()));
+    }
+    for line in [
+        "env.TAVILY_API_KEY: shared secret · from the default · skipped",
+        "env.SEARCH_TOKEN in settings.local.json: shared secret · from the default · skipped",
+        "run `mcc sync work` at a terminal to be offered it",
+    ] {
+        assert!(err.contains(line), "{line}: {err}");
+    }
+    let s = settings_of(&sb, ".mcc/profiles/work");
+    assert!(s["env"].get("TAVILY_API_KEY").is_none(), "{s}");
+    assert!(s["env"].get("ANTHROPIC_API_KEY").is_none(), "{s}");
+    assert_eq!(s["env"][CODE_MODE], "1", "{s}");
+    let l = local_settings_of(&sb, ".mcc/profiles/work");
+    assert!(l["env"].get("SEARCH_TOKEN").is_none(), "{l}");
+    assert_eq!(l["env"]["LOCAL_FLAG"], "1", "{l}");
+    // The next sync offers both (skipped again, without a terminal).
+    let err = sync_stderr(&sb, &["work"]);
+    for line in [
+        "env.TAVILY_API_KEY: shared secret · from the default · skipped",
+        "env.SEARCH_TOKEN in settings.local.json: shared secret · from the default · skipped",
+    ] {
+        assert!(err.contains(line), "{line}: {err}");
+    }
+    let err = sync_stderr(&sb, &["work", "--dry-run"]);
+    assert!(
+        err.contains("env.TAVILY_API_KEY: shared secret · from the default · would be asked about"),
+        "{err}"
+    );
+}
+
 /// A shared secret a profile already has as the default does is never
 /// asked about, held or reported again.
 #[test]
@@ -2540,13 +2656,10 @@ fn a_shared_secret_already_in_sync_is_not_asked_about() {
     let sb = Sandbox::new();
     sb.seed_default();
     let tavily = ["tvly", "LEAKCHECK", "cloned0123456789"].join("-");
-    set_env(&sb, ".claude", "TAVILY_API_KEY", &tavily);
-    // A clone takes the default as it is, secrets included.
     with_profile(&sb, "work", "--clone");
-    assert_eq!(
-        settings_of(&sb, ".mcc/profiles/work")["env"]["TAVILY_API_KEY"],
-        tavily.as_str()
-    );
+    // Set to the same value in both by hand.
+    set_env(&sb, ".claude", "TAVILY_API_KEY", &tavily);
+    set_env(&sb, ".mcc/profiles/work", "TAVILY_API_KEY", &tavily);
     set_env(&sb, ".claude", CODE_MODE, "1");
     let err = sync_stderr(&sb, &["--all"]);
     assert!(!err.contains("TAVILY_API_KEY"), "{err}");
@@ -2650,6 +2763,17 @@ fn first_sync_after_upgrade_asks_before_taking_a_key_only_a_profile_has() {
     set_env(&sb, ".claude", "TAVILY_API_KEY", "tvly-default");
     for p in ["work", "lab", "csdaisy"] {
         with_profile(&sb, p, "--clone");
+        // A clone without a terminal leaves the secret out (AC3 of #129):
+        // give each profile the default's, as agreed to, and record it.
+        set_env(
+            &sb,
+            &format!(".mcc/profiles/{p}"),
+            "TAVILY_API_KEY",
+            "tvly-default",
+        );
+    }
+    sync_stderr(&sb, &["--all"]);
+    for p in ["work", "lab", "csdaisy"] {
         legacy_record(&sb, p);
     }
     set_env(&sb, ".mcc/profiles/work", "TAVILY_API_KEY", "tvly-work");
@@ -3036,11 +3160,16 @@ fn account_bound_keys_of_settings_local_json_never_reach_a_profile() {
     }
     assert!(!out.contains("https://lab.example.invalid"), "{out}");
 
-    // A launch catches work up the same way.
+    // A launch catches work up the same way, but holds the new shared
+    // secret for `mcc sync` to ask about (AC3 of #129).
+    let mut d = local_settings_of(&sb, ".claude");
+    d["env"]["LOCAL_FLAG"] = "2".into();
+    sb.write(".claude/settings.local.json", &d.to_string());
     let o = sb.launcher("work").args(["-p", "hi"]).output().unwrap();
     assert!(o.status.success(), "{o:?}");
     let s = local_settings_of(&sb, ".mcc/profiles/work");
-    assert_eq!(s["env"]["SEARCH_TOKEN"], token.as_str(), "{s}");
+    assert!(s["env"].get("SEARCH_TOKEN").is_none(), "{s}");
+    assert_eq!(s["env"]["LOCAL_FLAG"], "2", "{s}");
     no_default_keys(&s, "work");
     let log = sb.read(".mcc/logs/mcc.log");
     assert!(!log.contains(&key) && !log.contains(&token));

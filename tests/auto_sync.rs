@@ -829,3 +829,32 @@ fn a_launch_never_copies_a_shared_secret_from_the_default() {
         "{err}"
     );
 }
+
+/// AC3 of #129, for settings.local.json: a launch catches its basic keys
+/// up but never copies a shared secret the default's adds or rotates.
+#[test]
+fn a_launch_never_copies_a_shared_secret_of_the_default_local_settings() {
+    let sb = sandbox();
+    let local = |p: &str| {
+        json(
+            sb.read(&format!(".mcc/profiles/{p}/settings.local.json"))
+                .as_bytes(),
+        )
+    };
+    let token = ["tok", "LEAKCHECK", "launch0123456789"].join("-");
+    let rotated = ["tok", "LEAKCHECK", "rotated0123456789"].join("-");
+    for (value, flag) in [(&token, "1"), (&rotated, "2")] {
+        sb.write(
+            ".claude/settings.local.json",
+            &serde_json::json!({"env": {"LOCAL_FLAG": flag, "SEARCH_TOKEN": value}}).to_string(),
+        );
+        launch(&sb, "work");
+        for p in ["work", "lab"] {
+            let s = local(p);
+            assert_eq!(s["env"]["LOCAL_FLAG"], flag, "{p}: {s}");
+            assert!(s["env"].get("SEARCH_TOKEN").is_none(), "{p}: {s}");
+        }
+    }
+    let log = sb.read(".mcc/logs/mcc.log");
+    assert!(!log.contains(&token) && !log.contains(&rotated));
+}

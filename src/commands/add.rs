@@ -1,5 +1,6 @@
 //! `mcc add` — create the default profile, or a new aliased profile.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -574,7 +575,7 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
             "Set up an empty profile"
         });
         if clone {
-            step.ok(&clone_setup(paths, cfg, &profile_dir, &link)?);
+            step.ok(&clone_setup(paths, cfg, &alias, &profile_dir, &link)?);
             let symlinked: Vec<String> = link
                 .iter()
                 .filter(|l| *l != plugins::ITEM)
@@ -759,22 +760,45 @@ fn now() -> String {
 }
 
 /// Copy the default's setup into the new profile, linking the items in
-/// `link` to the default's copy instead (see `mcc link`).
-fn clone_setup(paths: &Paths, cfg: &Config, profile_dir: &Path, link: &[String]) -> Result<String> {
+/// `link` to the default's copy instead (see `mcc link`). A shared secret
+/// in the default's settings is copied only once the user agrees at a
+/// terminal (#129); without one it is left out, so `mcc sync ALIAS`
+/// offers it later.
+fn clone_setup(
+    paths: &Paths,
+    cfg: &Config,
+    alias: &str,
+    profile_dir: &Path,
+    link: &[String],
+) -> Result<String> {
     let spec = copy::spec(None, &cfg.sync)?.without(link);
     // The same rewriter sync uses, so a clone and a sync write the same.
     let mut rw = Rewriter::for_profile(paths, cfg, profile_dir)?;
     if plugins::in_link(link) {
         rw = rw.sharing_plugins();
     }
-    let plan = copy::plan(
-        &paths.default_dir,
-        &paths.default_json,
-        profile_dir,
-        &spec,
-        &rw,
+    let (plan, consent) = super::sync::plan_asking(
+        alias,
+        &BTreeSet::new(),
+        None,
         false,
+        &mut super::sync::Terminal,
+        &mut |approved| {
+            copy::plan_with(
+                &paths.default_dir,
+                &paths.default_json,
+                profile_dir,
+                &spec,
+                &rw,
+                false,
+                &copy::Base {
+                    secrets: copy::Secrets::HeldExcept(approved),
+                    ..copy::Base::default()
+                },
+            )
+        },
     )?;
+    super::sync::report_secrets(&consent, &format!("mcc sync {alias}"));
     for rel in &plan.unreadable {
         ui::warn(&format!(
             "{} is not a JSON object (or not valid JSON), so it is not copied: the keys tied to one account in it can't be told apart; fix it, then run `mcc sync`",
@@ -790,7 +814,9 @@ fn clone_setup(paths: &Paths, cfg: &Config, profile_dir: &Path, link: &[String])
     )?;
     // What was copied, so `mcc sync` can later tell the default's changes
     // from edits made in the profile.
-    plan.manifest(None).save(profile_dir)?;
+    let mut record = plan.manifest(None);
+    record.declined_secrets.extend(consent.declined);
+    record.save(profile_dir)?;
     super::link::link_new_profile(paths, profile_dir, link)?;
     let groups: Vec<String> = plan
         .by_group()

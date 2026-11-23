@@ -85,6 +85,29 @@ pub fn run(paths: &Paths, cfg: &Config, args: &DiffArgs) -> Result<()> {
         shown += 1;
         settings_diff(&mut out, alias, s, &rw)?;
     }
+    // A shared secret of the default's settings.local.json held back from
+    // the profile (`mcc sync` asks about it): the file as the default
+    // gives it, secret values hidden.
+    let local = Path::new(copy::LOCAL_SETTINGS_FILE);
+    if plan
+        .held()
+        .iter()
+        .any(|h| h.file == copy::LOCAL_SETTINGS_FILE)
+        && !plan.changes.iter().any(|c| c.rel == local)
+        && let Some(item) = spec.items.iter().find(|i| i.rel == local)
+    {
+        shown += 1;
+        header(&mut out, "shared secret held", copy::LOCAL_SETTINGS_FILE)?;
+        let (src, dst) = (paths.default_dir.join(local), dir.join(local));
+        local_settings_diff(
+            &mut out,
+            &format!("default/{}", copy::LOCAL_SETTINGS_FILE),
+            &format!("{alias}/{}", copy::LOCAL_SETTINGS_FILE),
+            &side(&src, Some((item.rewrite, &rw)))?,
+            &side(&dst, None)?,
+            &rw,
+        )?;
+    }
     if spec.mcp {
         let (src, dst) = copy::mcp_servers(&paths.default_json, &dir.join(".claude.json"), &rw)?;
         let none = Vec::new();

@@ -766,6 +766,14 @@ pub struct Plan {
     /// their account-bound keys can't be told apart; the profile's are
     /// left as they are, and so is their record.
     pub unreadable: Vec<PathBuf>,
+    /// Shared secrets the default's `settings.local.json` sets that the
+    /// profile's lacks or has differently, held ([`Secrets`]): left out of
+    /// what is written (the profile's own value kept), so held again next
+    /// time. Only when the file is written or already as the default gives it.
+    local_held: Vec<Held>,
+    /// What to write for a path instead of copying it: `settings.local.json`
+    /// with its held shared secrets left out.
+    prepared: BTreeMap<PathBuf, Vec<u8>>,
     /// Hash of every default file or symlink in the sync set, as the profile
     /// receives it (what a sync writes, or finds already there).
     hashes: BTreeMap<PathBuf, String>,
@@ -773,7 +781,57 @@ pub struct Plan {
     items: Vec<String>,
 }
 
+/// A shared secret the default sets that a plan holds ([`Secrets`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Held {
+    /// What the user's answer is kept by ([`Secrets::HeldExcept`],
+    /// `declined_secrets`): the key, prefixed with [`LOCAL_PREFIX`] for
+    /// `settings.local.json`.
+    pub id: String,
+    /// The key, as `settings_sync` flattens it (`env.NAME`).
+    pub key: String,
+    /// The settings file it is in.
+    pub file: &'static str,
+    /// The mark a decline is recorded by
+    /// ([`settings_sync::declined_from_default`]).
+    pub mark: String,
+}
+
+impl Held {
+    /// How it is named to the user: `env.NAME`, or `env.NAME in
+    /// settings.local.json`.
+    pub fn label(&self) -> String {
+        if self.file == SETTINGS_FILE {
+            self.key.clone()
+        } else {
+            format!("{} in {}", self.key, self.file)
+        }
+    }
+}
+
+/// The prefix of a [`Held::id`] of `settings.local.json`.
+pub const LOCAL_PREFIX: &str = "settings.local.json:";
+
 impl Plan {
+    /// Every shared secret this plan holds: `settings.json`'s, then
+    /// `settings.local.json`'s.
+    pub fn held(&self) -> Vec<Held> {
+        let mut out: Vec<Held> = self
+            .settings
+            .iter()
+            .flat_map(|s| {
+                s.held.iter().map(|k| Held {
+                    id: k.clone(),
+                    key: k.clone(),
+                    file: SETTINGS_FILE,
+                    mark: settings_sync::declined_from_default(s.want.get(k)),
+                })
+            })
+            .collect();
+        out.extend(self.local_held.iter().cloned());
+        out
+    }
+
     pub fn count(&self, a: Action) -> usize {
         self.changes.iter().filter(|c| c.action == a).count()
     }
@@ -1057,6 +1115,56 @@ pub fn desired_bytes(src: &Path, rewrite: bool, rw: &Rewriter) -> Result<Vec<u8>
         Some(overlay) if rw.overlays(src) => overlaid(&bytes, overlay, src),
         _ => Ok(bytes),
     }
+}
+
+/// [`desired_bytes`] for the default's `settings.local.json` `src`, with
+/// each shared secret the profile's (`dst`) lacks or has differently left
+/// as the profile has it, unless `secrets` lets it through; and those
+/// held. A profile file that isn't a JSON object counts as empty; one that
+/// is the default's own file (a symlink to it) already has every value.
+fn local_desired(
+    src: &Path,
+    dst: &Path,
+    rewrite: bool,
+    rw: &Rewriter,
+    secrets: &Secrets,
+) -> Result<(Vec<u8>, Vec<Held>)> {
+    let bytes = desired_bytes(src, rewrite, rw)?;
+    let Ok(Value::Object(mut want)) = serde_json::from_slice::<Value>(&bytes) else {
+        return Ok((bytes, Vec::new()));
+    };
+    if same_file(dst, src) {
+        return Ok((bytes, Vec::new()));
+    }
+    let have = match std::fs::read(dst)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+    {
+        Some(Value::Object(m)) => settings_sync::flatten(&m),
+        _ => Map::new(),
+    };
+    let mut held = Vec::new();
+    for (key, v) in settings_sync::flatten(&want) {
+        let id = format!("{LOCAL_PREFIX}{key}");
+        if have.get(&key) != Some(&v)
+            && rw.classifier.category(&key, Some(&v)) == Category::SharedSecret
+            && secrets.holds(&id)
+        {
+            settings_sync::set_flat(&mut want, &key, have.get(&key).cloned());
+            held.push(Held {
+                id,
+                mark: settings_sync::declined_from_default(Some(&v)),
+                key,
+                file: LOCAL_SETTINGS_FILE,
+            });
+        }
+    }
+    if held.is_empty() {
+        return Ok((bytes, held));
+    }
+    let mut out = serde_json::to_vec_pretty(&Value::Object(want))?;
+    out.push(b'\n');
+    Ok((out, held))
 }
 
 /// Whether `bytes` parse as a JSON object.
@@ -1354,8 +1462,14 @@ pub fn plan_with(
             }
             Kind::File | Kind::Link(_) => {
                 let local = rw.local_settings_file(&src) && rw.settings_like(&src);
+                let mut local_held = Vec::new();
                 let want = if local {
-                    local_settings_hash(&desired_bytes(&src, item.rewrite, rw)?, rw)
+                    let (bytes, held) = local_desired(&src, &dst, item.rewrite, rw, &base.secrets)?;
+                    if !held.is_empty() {
+                        plan.prepared.insert(item.rel.clone(), bytes.clone());
+                    }
+                    local_held = held;
+                    local_settings_hash(&bytes, rw)
                 } else {
                     desired_hash(&src, item.rewrite, rw)?.expect("file or symlink")
                 };
@@ -1399,6 +1513,16 @@ pub fn plan_with(
                             three_way(base, &item.rel, &want, have.as_deref(), Action::Update);
                         push(a, item.rel.clone(), f);
                     }
+                }
+                // Asking about a held secret is moot while the file is
+                // kept as the profile has it (a local edit or conflict).
+                let kept = changes
+                    .iter()
+                    .rev()
+                    .find(|c| c.rel == item.rel)
+                    .is_some_and(|c| c.action.kept());
+                if !kept {
+                    plan.local_held.extend(local_held);
                 }
             }
             Kind::Dir => {
@@ -1918,6 +2042,7 @@ pub fn apply(
             .as_ref()
             .and_then(|s| s.merged.as_ref())
             .filter(|_| c.rel == Path::new(SETTINGS_FILE));
+        let merged = merged.or_else(|| plan.prepared.get(&c.rel));
         match c.action {
             Action::Add | Action::Update if let Some(bytes) = merged => {
                 // Replaces a symlink there; never writes through it.
@@ -2549,6 +2674,8 @@ mod tests {
             }),
             settings: None,
             unreadable: Vec::new(),
+            local_held: Vec::new(),
+            prepared: BTreeMap::new(),
         };
         let mut got = p.backup_paths(dst);
         got.sort();
