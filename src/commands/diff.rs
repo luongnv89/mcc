@@ -183,6 +183,13 @@ fn file_diff(
     };
     header(out, label(c), &shown)?;
     if rel == copy::SETTINGS_FILE {
+        if !dir.join(&c.rel).exists() {
+            writeln!(
+                out,
+                "  (deleted in the profile; `mcc sync {alias} --force` restores it from the default)"
+            )?;
+            return Ok(());
+        }
         // Compared as a whole file: one side isn't a JSON object, so its
         // keys, and which of them are secret, can't be told apart.
         writeln!(

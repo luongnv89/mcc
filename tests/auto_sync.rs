@@ -770,3 +770,26 @@ fn a_launch_catches_settings_up_key_by_key_and_never_gathers() {
     let cell = sync_cell(&sb, "work");
     assert!(cell.contains("1 local edit"), "{cell}");
 }
+
+/// #129 QA: a settings.json mcc wrote and the profile deleted stays
+/// deleted on launch (a local edit), never written back as `{}`, and the
+/// default is left as it is.
+#[test]
+fn a_launch_leaves_a_deleted_settings_file_deleted() {
+    let sb = sandbox();
+    std::fs::remove_file(sb.path(".mcc/profiles/work/settings.json")).unwrap();
+    // A change in the default, settings included, so the launch catches up.
+    change_default(&sb);
+    let mut d = json(sb.read(".claude/settings.json").as_bytes());
+    d["alwaysThinkingEnabled"] = true.into();
+    sb.write(".claude/settings.json", &d.to_string());
+    let default_before = sb.read(".claude/settings.json");
+    launch(&sb, "work");
+    assert!(caught_up(&sb, "work"));
+    assert!(!sb.exists(".mcc/profiles/work/settings.json"));
+    assert_eq!(sb.read(".claude/settings.json"), default_before);
+    let lab = json(sb.read(".mcc/profiles/lab/settings.json").as_bytes());
+    assert_eq!(lab["alwaysThinkingEnabled"], true, "{lab}");
+    let cell = sync_cell(&sb, "work");
+    assert!(cell.contains("1 local edit"), "{cell}");
+}

@@ -2295,7 +2295,9 @@ fn a_setting_removed_in_a_profile_leaves_the_default_only_once_confirmed() {
 
 /// #129 review: a profile whose settings.json is missing or emptied is not
 /// one that removed every key: `--yes` (with or without `--prune`) leaves
-/// the default's settings.json byte for byte as it is.
+/// the default's settings.json byte for byte as it is. The missing file
+/// stays missing (never written back as `{}`), the emptied one stays
+/// `{}`, and neither is reported as removing anything.
 #[test]
 fn a_missing_or_emptied_profile_settings_never_empties_the_default() {
     let sb = three_profiles();
@@ -2305,8 +2307,30 @@ fn a_missing_or_emptied_profile_settings_never_empties_the_default() {
     for args in [&["--all", "--yes"][..], &["--all", "--prune", "--yes"]] {
         let err = sync_stderr(&sb, args);
         assert!(!err.contains("· removed"), "{args:?}: {err}");
-        assert!(!err.contains("from \"lab\""), "{args:?}: {err}");
+        assert!(
+            err.contains("hooks: basic · from \"csdaisy\" · skipped (its settings.json has no keys of its own)"),
+            "{args:?}: {err}"
+        );
+        for line in err.lines().filter(|l| l.contains(" · from ")) {
+            let from = line.split(" · from ").nth(1).unwrap();
+            let from = from.split(" · ").next().unwrap();
+            // lab has no settings.json: never a source.
+            assert!(!from.contains("\"lab\""), "{args:?}: {line}");
+            // csdaisy's `{}` is never a removal source.
+            if from.contains("\"csdaisy\"") {
+                assert!(
+                    line.ends_with("skipped (its settings.json has no keys of its own)"),
+                    "{args:?}: {line}"
+                );
+            }
+        }
         assert_eq!(sb.read(".claude/settings.json"), default_before, "{args:?}");
+        assert!(
+            !sb.exists(".mcc/profiles/lab/settings.json"),
+            "{args:?}: {}",
+            sb.read(".mcc/profiles/lab/settings.json")
+        );
+        assert_eq!(sb.read(".mcc/profiles/csdaisy/settings.json"), "{}");
         let work = settings_of(&sb, ".mcc/profiles/work");
         for key in ["hooks", "enabledPlugins", "statusLine", "model"] {
             assert!(work.get(key).is_some(), "{args:?}: {key}: {work}");

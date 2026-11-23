@@ -1228,12 +1228,35 @@ pub fn plan_with(
                     push(extra_action, item.rel.clone(), false);
                 }
             }
+            // A settings.json mcc wrote and the profile deleted stays
+            // deleted: one local edit, its record kept as it is (never a
+            // `{}` whose keys would all read as removed). `--force` writes
+            // it afresh, two-way, so no old base survives.
+            Kind::File | Kind::Link(_)
+                if item.rel == Path::new(SETTINGS_FILE)
+                    && !detached
+                    && src.is_file()
+                    && deleted_settings(&dst, base)
+                    && !base.force =>
+            {
+                push(Action::LocalEdit, item.rel.clone(), false);
+            }
             Kind::File | Kind::Link(_)
                 if item.rel == Path::new(SETTINGS_FILE)
                     && !detached
                     && src.is_file()
                     && kind(&dst) != Kind::Dir
-                    && let Some(view) = settings_view(&src, &dst, item.rewrite, rw, base)? =>
+                    && let Some(view) = settings_view(
+                        &src,
+                        &dst,
+                        item.rewrite,
+                        rw,
+                        if deleted_settings(&dst, base) {
+                            &TWO_WAY
+                        } else {
+                            base
+                        },
+                    )? =>
             {
                 let s = plan_settings(view, &src, &dst, item.rewrite, rw, base.force)?;
                 hashes.insert(item.rel.clone(), s.file_hash.clone());
@@ -1432,6 +1455,21 @@ fn drop_unneeded_dir_adds(plan: &mut Plan) {
             || written.iter().any(|w| w.starts_with(&c.rel))
             || !hashes.keys().any(|h| h.starts_with(&c.rel))
     });
+}
+
+/// No record: compared two-way.
+const TWO_WAY: Base<'static> = Base {
+    manifest: None,
+    force: false,
+};
+
+/// Whether the profile's settings.json `dst` is missing although its
+/// record says mcc wrote one: the profile deleted it.
+fn deleted_settings(dst: &Path, base: &Base) -> bool {
+    kind(dst) == Kind::Missing
+        && base.manifest.is_some_and(|m| {
+            m.files.contains_key(SETTINGS_FILE) || m.items.contains(manifest::SETTINGS_ITEM)
+        })
 }
 
 /// The default's `settings.json` (`src`) next to the profile's (`dst`),

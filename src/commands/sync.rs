@@ -157,7 +157,8 @@ struct SettingsSource {
 /// when the user agrees at a terminal (never with `--yes`, and a declined
 /// value is not asked about again); account-bound keys never; a key
 /// removed in a profile only once the user confirms it at a terminal
-/// (never with `--yes`); a key only a profile has, from before per-key
+/// (never with `--yes`), and never from a profile whose settings.json has
+/// no keys of its own (emptied); a key only a profile has, from before per-key
 /// records while the default changed since ([`Verdict::Propose`]), the
 /// same way (a declined value is not asked about again). A profile without a settings.json of its own (or
 /// one that isn't a JSON object, or is the default's own file through a
@@ -262,6 +263,7 @@ fn gather_settings(
     let (mut set, mut remove) = (Vec::new(), Vec::new());
     let mut unconfirmed = false;
     let mut unconfirmed_proposal = false;
+    let mut emptied_source = false;
     let (mut conflict_default, mut conflict_profiles) = (false, false);
     for d in decisions {
         let outcome = match d.verdict {
@@ -359,7 +361,19 @@ fn gather_settings(
                         .and_then(|m| m.declined_secrets.get(&d.key))
                         == Some(&mark)
                 });
-                if declined {
+                // A settings.json with no keys of its own (`{}`, or only
+                // account-bound and overlay keys) was emptied, not edited:
+                // never a reason to remove anything from the default.
+                let emptied = from.iter().any(|s| {
+                    s.view
+                        .have
+                        .keys()
+                        .all(|k| classifier.is_account_bound(k) || s.view.overlaid(k))
+                });
+                if emptied {
+                    emptied_source = true;
+                    Outcome::Skipped("its settings.json has no keys of its own")
+                } else if declined {
                     Outcome::Declined { earlier: true }
                 } else if args.dry_run {
                     Outcome::Asked
@@ -393,6 +407,11 @@ fn gather_settings(
     if unconfirmed {
         ui::hint(
             "a key removed in a profile leaves the default only once you confirm it: run `mcc sync` at a terminal, without --yes",
+        );
+    }
+    if emptied_source {
+        ui::hint(
+            "a profile whose settings.json has no keys of its own is never read for removals, so an emptied file never empties the default; to remove a key everywhere, remove it from ~/.claude/settings.json",
         );
     }
     if unconfirmed_proposal {
@@ -1326,12 +1345,16 @@ mod tests {
     }
 
     fn sync(paths: &Paths, cfg: &mut Config, ask: &mut dyn Ask) {
+        sync_forced(paths, cfg, ask, false);
+    }
+
+    fn sync_forced(paths: &Paths, cfg: &mut Config, ask: &mut dyn Ask, force: bool) {
         let args = SyncArgs {
             alias: None,
             all: true,
             dry_run: false,
             prune: false,
-            force: false,
+            force,
             only: Some(vec!["settings".into()]),
             yes: false,
         };
@@ -1464,6 +1487,67 @@ mod tests {
             record(&cs).settings["effortLevel"],
             manifest::hash_json(&serde_json::json!("low"))
         );
+    }
+
+    /// #129 QA: a settings.json mcc wrote and the profile deleted stays
+    /// deleted (one local edit, never a `{}` whose keys would all read as
+    /// removed), so a sync at a terminal asks nothing and the default is
+    /// left as it is; `--force` restores it with fresh per-key bases.
+    #[test]
+    fn a_deleted_settings_file_stays_deleted_until_forced() {
+        let (_d, paths, mut cfg) = synced_with_effort();
+        let cs = paths.profile_dir("csdaisy");
+        let file = cs.join(copy::SETTINGS_FILE);
+        std::fs::remove_file(&file).unwrap();
+        let recorded = record(&cs);
+        let default = paths.default_dir.join(copy::SETTINGS_FILE);
+        let before = std::fs::read(&default).unwrap();
+        for _ in 0..2 {
+            // Asking anything fails the test.
+            sync(&paths, &mut cfg, &mut Scripted::new(&[]));
+            assert!(!file.exists(), "{:?}", std::fs::read_to_string(&file));
+            assert_eq!(std::fs::read(&default).unwrap(), before);
+            let st = status(&paths, &cfg, "csdaisy");
+            assert_eq!((st.local_edits, st.behind, st.conflicts), (1, 0, 0));
+            let m = record(&cs);
+            assert_eq!(m.settings, recorded.settings);
+            assert_eq!(
+                m.files.get("settings.json"),
+                recorded.files.get("settings.json")
+            );
+        }
+        sync_forced(&paths, &mut cfg, &mut Scripted::new(&[]), true);
+        let s = settings(&cs);
+        assert_eq!(s["model"], "opus", "{s}");
+        assert_eq!(s["effortLevel"], "high", "{s}");
+        assert_eq!(
+            record(&cs).settings["effortLevel"],
+            manifest::hash_json(&serde_json::json!("high"))
+        );
+        sync(&paths, &mut cfg, &mut Scripted::new(&[]));
+        assert_eq!(status(&paths, &cfg, "csdaisy"), Status::default());
+        assert_eq!(std::fs::read(&default).unwrap(), before);
+    }
+
+    /// #129 QA: a settings.json emptied by hand (`{}`, or only keys of its
+    /// own account) is never read for removals: a sync at a terminal asks
+    /// nothing and the default is left as it is.
+    #[test]
+    fn an_emptied_settings_file_never_removes_from_the_default() {
+        let (_d, paths, mut cfg) = synced_with_effort();
+        let cs = paths.profile_dir("csdaisy");
+        let default = paths.default_dir.join(copy::SETTINGS_FILE);
+        let before = std::fs::read(&default).unwrap();
+        for emptied in [
+            serde_json::json!({}),
+            serde_json::json!({"env": {"ANTHROPIC_BASE_URL": "https://gw.example.invalid"}}),
+        ] {
+            write(&cs, emptied.clone());
+            // Asking anything fails the test.
+            sync(&paths, &mut cfg, &mut Scripted::new(&[]));
+            assert_eq!(std::fs::read(&default).unwrap(), before, "{emptied}");
+            assert_eq!(settings(&cs), emptied);
+        }
     }
 
     /// A removal declined at the prompt is not asked about again while the
