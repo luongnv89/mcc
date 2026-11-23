@@ -182,3 +182,36 @@ fn usage_json_only_gains_the_login_fields() {
     );
     assert_envelope(&raw, "profiles", &bare);
 }
+
+#[test]
+fn usage_json_v2_gains_machines_only_when_they_are_set_up() {
+    // #130: no [machines], no `machines` key and no new row field; with
+    // one, `machines` follows `profiles` and rows carry `account_id`.
+    let sb = sandbox();
+    let keys =
+        |v: &serde_json::Value| -> Vec<String> { v.as_object().unwrap().keys().cloned().collect() };
+    let v = json(stdout_of(sb.mcc().args(["usage", "--json-v2"])).as_bytes());
+    assert_eq!(keys(&v), ["schema", "profiles"]);
+    let row_keys = keys(&v["profiles"][0]);
+    assert!(!row_keys.contains(&"account_id".to_string()), "{v}");
+
+    let lab = Sandbox::new();
+    lab.seed_default();
+    sb.add_machine("lab", "lab-host", Some(&lab), None);
+    let v = json(stdout_of(sb.mcc().args(["usage", "--json-v2"])).as_bytes());
+    assert_eq!(keys(&v), ["schema", "profiles", "machines"]);
+    let default = &v["profiles"][0];
+    assert_eq!(default["name"], "default");
+    assert_eq!(
+        default["account_id"].as_str().map(str::len),
+        Some(64),
+        "{v}"
+    );
+    assert_eq!(default["also_on"], serde_json::json!(["lab"]), "{v}");
+    let m = &v["machines"][0];
+    assert_eq!(keys(m), ["name", "host", "updated_at", "error", "profiles"]);
+    assert_eq!(m["profiles"][0]["account_id"], default["account_id"]);
+    // --json stays the bare array of this machine's profiles.
+    let bare = json(stdout_of(sb.mcc().args(["usage", "--json"])).as_bytes());
+    assert_eq!(keys(&bare[0]), row_keys);
+}

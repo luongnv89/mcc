@@ -358,3 +358,58 @@ fn get_and_path_do_not_wait_for_the_lock() {
     drop(f);
     assert!(!sb.read(CONFIG).contains("live = true"));
 }
+
+/// #130: `[machines.NAME]` is added with `mcc config edit`, which refuses
+/// a host ssh could read as an option or as two words; `get` prints it.
+#[test]
+fn machines_are_edited_by_hand_and_checked() {
+    let sb = sandbox();
+    let before = sb.read(CONFIG);
+    for (host, msg) in [
+        ("-oProxyCommand=x", "starts with '-'"),
+        ("lab box", "contains a space"),
+    ] {
+        let ed = editor(
+            &sb,
+            &format!("printf '\\n[machines.lab]\\nhost = \"{host}\"\\n' >> \"$1\"\n"),
+        );
+        sb.mcc()
+            .args(["config", "edit"])
+            .env("EDITOR", ed)
+            .assert()
+            .failure()
+            .stderr(contains("machines.lab: host"))
+            .stderr(contains(msg));
+        assert_eq!(sb.read(CONFIG), before);
+        no_edit_copies(&sb);
+    }
+    let ed = editor(
+        &sb,
+        "printf '\\n# my build box\\n[machines.lab]\\nhost = \"me@lab-box\"\\nmcc = \"/opt/mcc/bin/mcc\"\\n' >> \"$1\"\n",
+    );
+    sb.mcc()
+        .args(["config", "edit"])
+        .env("EDITOR", ed)
+        .assert()
+        .success();
+    assert_eq!(
+        stdout_of(sb.mcc().args(["config", "get", "machines.lab.host"])),
+        "me@lab-box\n"
+    );
+    assert_eq!(
+        stdout_of(sb.mcc().args(["config", "get", "machines"])),
+        "[lab]\nhost = \"me@lab-box\"\nmcc = \"/opt/mcc/bin/mcc\"\n"
+    );
+    sb.mcc()
+        .args(["config", "set", "machines.lab.host", "other"])
+        .assert()
+        .code(2)
+        .stderr(contains("mcc config edit"));
+    // Other commands keep it, and its comment, when they save.
+    sb.mcc().args(["share", "work"]).assert().success();
+    let after = sb.read(CONFIG);
+    assert!(
+        after.contains("# my build box\n[machines.lab]\nhost = \"me@lab-box\"\n"),
+        "{after}"
+    );
+}
