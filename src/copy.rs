@@ -18,7 +18,7 @@ use crate::error::CliError;
 use crate::fsutil;
 use crate::manifest::{self, Manifest};
 use crate::paths::Paths;
-use crate::settings_sync::{self, Classifier, KeyBase, KeyState, SettingsView};
+use crate::settings_sync::{self, Category, Classifier, KeyBase, KeyState, SettingsView};
 
 /// One whitelisted path inside a config dir.
 #[derive(Debug, Clone)]
@@ -659,6 +659,34 @@ pub struct Base<'a> {
     pub manifest: Option<&'a Manifest>,
     /// Overwrite conflicts instead of keeping them.
     pub force: bool,
+    /// Whether a shared secret new or changed in the default's
+    /// `settings.json` is written into the profile.
+    pub secrets: Secrets<'a>,
+}
+
+/// How a shared secret ([`Category::SharedSecret`]) new or changed in the
+/// default's `settings.json` reaches a profile's, key by key (#129).
+#[derive(Debug, Default, Clone, Copy)]
+pub enum Secrets<'a> {
+    /// Held ([`SettingsChange::held`]): never written; `mcc sync` asks
+    /// about each, auto sync leaves them to it.
+    #[default]
+    Held,
+    /// Held, except the keys in this set, which the user agreed to.
+    HeldExcept(&'a BTreeSet<String>),
+    /// Copied as any key is: a new profile cloned from the default.
+    Copied,
+}
+
+impl Secrets<'_> {
+    /// Whether the shared secret `key` is held.
+    fn holds(&self, key: &str) -> bool {
+        match self {
+            Secrets::Held => true,
+            Secrets::HeldExcept(approved) => !approved.contains(key),
+            Secrets::Copied => false,
+        }
+    }
 }
 
 /// How a profile compares with the default, in counts of files, symlinks
@@ -686,9 +714,17 @@ pub struct SettingsChange {
     pub conflicts: Vec<String>,
     /// Conflicts that `--force` overwrites (also in added/updated/removed).
     pub forced: Vec<String>,
+    /// Shared secrets new or changed in the default, not written: held
+    /// until the user agrees ([`Secrets`]). Their record is left as it is,
+    /// so they are held again next time; a held forced conflict is also
+    /// in `conflicts`.
+    pub held: Vec<String>,
     /// What to write to the profile's `settings.json`; `None` when it
     /// already has it.
     merged: Option<Vec<u8>>,
+    /// The category of each key taken from (or held by) the default, the
+    /// overlay's left out: for sync's report.
+    pub categories: BTreeMap<String, Category>,
     /// Hash of every key of the profile's settings once synced.
     hashes: BTreeMap<String, String>,
     /// The base to record for a kept key the previous record has none for.
@@ -710,7 +746,10 @@ impl SettingsChange {
 
     /// The profile differs in some key sync deals with.
     pub fn differs(&self) -> bool {
-        !self.is_empty() || !self.local.is_empty() || !self.conflicts.is_empty()
+        !self.is_empty()
+            || !self.local.is_empty()
+            || !self.conflicts.is_empty()
+            || !self.held.is_empty()
     }
 }
 
@@ -722,6 +761,11 @@ pub struct Plan {
     /// `settings.json` key by key; `None` when it is synced as a whole
     /// file (it isn't a JSON object on one side, or isn't synced).
     pub settings: Option<SettingsChange>,
+    /// The default's settings files left out because they aren't a JSON
+    /// object (a trailing comma left mid-edit, say): never copied, as
+    /// their account-bound keys can't be told apart; the profile's are
+    /// left as they are, and so is their record.
+    pub unreadable: Vec<PathBuf>,
     /// Hash of every default file or symlink in the sync set, as the profile
     /// receives it (what a sync writes, or finds already there).
     hashes: BTreeMap<PathBuf, String>,
@@ -983,15 +1027,19 @@ fn rewritten_src(src: &Path, rewrite: bool, rw: &Rewriter) -> Result<Vec<u8>> {
 }
 
 /// What copying the file `src` writes into the profile. The default's
-/// `settings.json` or `settings.local.json`, when it is a JSON object,
-/// loses its account-bound keys first (they never reach another profile),
-/// and is otherwise kept byte for byte; `settings.local.json` then gets
-/// the profile's own account-bound keys back; then the profile's overlay
-/// is merged on. This is the whole-file copy: always for
+/// `settings.json` or `settings.local.json` loses its account-bound keys
+/// first (they never reach another profile), and is otherwise kept byte
+/// for byte; `settings.local.json` then gets the profile's own
+/// account-bound keys back; then the profile's overlay is merged on. One
+/// that isn't a JSON object is never copied (an error; [`plan_with`]
+/// leaves it out first). This is the whole-file copy: always for
 /// `settings.local.json`, and for `settings.json` when the profile's
 /// can't be synced key by key (it isn't a JSON object).
 pub fn desired_bytes(src: &Path, rewrite: bool, rw: &Rewriter) -> Result<Vec<u8>> {
     let mut bytes = rewritten_src(src, rewrite, rw)?;
+    if rw.settings_like(src) && !rw.overlays(src) && !is_json_object(&bytes) {
+        return Err(not_an_object(src).into());
+    }
     if rw.settings_like(src)
         && let Ok(Value::Object(m)) = serde_json::from_slice::<Value>(&bytes)
     {
@@ -1009,6 +1057,21 @@ pub fn desired_bytes(src: &Path, rewrite: bool, rw: &Rewriter) -> Result<Vec<u8>
         Some(overlay) if rw.overlays(src) => overlaid(&bytes, overlay, src),
         _ => Ok(bytes),
     }
+}
+
+/// Whether `bytes` parse as a JSON object.
+fn is_json_object(bytes: &[u8]) -> bool {
+    matches!(serde_json::from_slice::<Value>(bytes), Ok(Value::Object(_)))
+}
+
+/// The error for the default's settings file `src` that isn't a JSON
+/// object, so is never copied.
+pub fn not_an_object(src: &Path) -> CliError {
+    CliError::input(format!(
+        "{} is not a JSON object (or not valid JSON), so it is not copied: the keys tied to one account in it can't be told apart",
+        src.display()
+    ))
+    .hint("fix the default's file (a trailing comma, say), then run `mcc sync` again")
 }
 
 /// The hash `settings.local.json` is compared and recorded by: of its keys
@@ -1163,7 +1226,10 @@ pub fn plan(
         spec,
         rw,
         prune,
-        &Base::default(),
+        &Base {
+            secrets: Secrets::Copied,
+            ..Base::default()
+        },
     )
 }
 
@@ -1189,7 +1255,7 @@ pub fn plan_with(
     // Only items the manifest records are compared three-way.
     let tracked = |key: &str| Base {
         manifest: base.manifest.filter(|m| m.items.contains(key)),
-        force: base.force,
+        ..*base
     };
     for item in &spec.items {
         let src = src_dir.join(&item.rel);
@@ -1229,6 +1295,18 @@ pub fn plan_with(
                     push(extra_action, item.rel.clone(), false);
                 }
             }
+            // The default's settings file isn't a JSON object: its
+            // account-bound keys can't be told apart, so it is never
+            // copied, and the profile's file and record stay as they are.
+            // (With an overlay, settings.json fails to merge instead.)
+            Kind::File | Kind::Link(_)
+                if rw.settings_like(&src)
+                    && !rw.overlays(&src)
+                    && !is_json_object(&rewritten_src(&src, item.rewrite, rw)?) =>
+            {
+                plan.items.pop();
+                plan.unreadable.push(item.rel.clone());
+            }
             // A settings.json mcc wrote and the profile deleted stays
             // deleted: one local edit, its record kept as it is (never a
             // `{}` whose keys would all read as removed). `--force` writes
@@ -1259,7 +1337,7 @@ pub fn plan_with(
                         },
                     )? =>
             {
-                let s = plan_settings(view, &src, &dst, item.rewrite, rw, base.force)?;
+                let s = plan_settings(view, &src, &dst, item.rewrite, rw, base)?;
                 hashes.insert(item.rel.clone(), s.file_hash.clone());
                 if s.merged.is_some() {
                     let action = if kind(&dst) == Kind::Missing {
@@ -1462,6 +1540,7 @@ fn drop_unneeded_dir_adds(plan: &mut Plan) {
 const TWO_WAY: Base<'static> = Base {
     manifest: None,
     force: false,
+    secrets: Secrets::Held,
 };
 
 /// Whether the profile's settings.json `dst` is missing although its
@@ -1570,20 +1649,30 @@ pub fn settings_view(
 /// Plan the profile's `settings.json` key by key from `view`: a key the
 /// profile's overlay sets is taken as the overlay has it; an account-bound
 /// key stays as the profile has it (never added, changed or removed); any
-/// other key is three-way, as [`three_way`] classifies a path. What is
-/// written keeps the profile's key order, with new keys after.
+/// other key is three-way, as [`three_way`] classifies a path, except that
+/// a shared secret the default sets is held as `base.secrets` says. What
+/// is written keeps the profile's key order, with new keys after.
 fn plan_settings(
     view: SettingsView,
     src: &Path,
     dst: &Path,
     rewrite: bool,
     rw: &Rewriter,
-    force: bool,
+    base: &Base,
 ) -> Result<SettingsChange> {
     let mut s = SettingsChange::default();
     let mut result = view.have_obj.clone().unwrap_or_default();
     for k in view.keys() {
         let (w, p) = (view.want.get(&k), view.have.get(&k));
+        // A shared secret the default sets reaches the profile only once
+        // the user agrees; removing one needs no consent.
+        let held = w.is_some()
+            && rw.classifier.category(&k, w) == Category::SharedSecret
+            && base.secrets.holds(&k);
+        let category = rw
+            .classifier
+            .category(&k, w)
+            .max(rw.classifier.category(&k, p));
         let take = if view.overlaid(&k) {
             w != p
         } else if rw.classifier.is_account_bound(&k) || w == p {
@@ -1591,6 +1680,10 @@ fn plan_settings(
         } else {
             // The same reading `mcc sync` takes profile changes by.
             match settings_sync::key_state(&view.base, &k, w, p) {
+                KeyState::Theirs if held => {
+                    s.held.push(k.clone());
+                    false
+                }
                 KeyState::Theirs => true,
                 KeyState::Ours { base } | KeyState::Lost { base } => {
                     if let Some(h) = base {
@@ -1609,7 +1702,12 @@ fn plan_settings(
                     s.local.push(k.clone());
                     false
                 }
-                KeyState::Both if force => {
+                KeyState::Both if base.force && held => {
+                    s.held.push(k.clone());
+                    s.conflicts.push(k.clone());
+                    false
+                }
+                KeyState::Both if base.force => {
                     s.forced.push(k.clone());
                     true
                 }
@@ -1619,6 +1717,9 @@ fn plan_settings(
                 }
             }
         };
+        if (take || s.held.last() == Some(&k)) && !view.overlaid(&k) {
+            s.categories.insert(k.clone(), category);
+        }
         if take {
             match (p, w) {
                 (None, _) => s.added.push(k.clone()),
@@ -2447,6 +2548,7 @@ mod tests {
                 ..McpChange::default()
             }),
             settings: None,
+            unreadable: Vec::new(),
         };
         let mut got = p.backup_paths(dst);
         got.sort();
@@ -2529,6 +2631,7 @@ mod tests {
             &Base {
                 manifest: Some(m),
                 force,
+                ..Base::default()
             },
         )
         .unwrap()
@@ -2844,11 +2947,32 @@ mod tests {
             vec!["model".to_string(), "env.TAVILY_API_KEY".to_string()]
         );
         // --force gives the profile the default's side of a conflict, but
-        // leaves a proposal alone.
+        // leaves a proposal alone, and holds a shared secret until the
+        // user agrees to it (AC3 of #129).
         let forced = plan3(&paths, &dst, &m, true);
         let st = forced.settings.as_ref().unwrap();
         assert_eq!(st.local, vec!["env.CODE".to_string()]);
-        assert_eq!(st.forced.len(), 2);
+        assert_eq!(st.forced, vec!["model".to_string()]);
+        assert_eq!(st.held, vec!["env.TAVILY_API_KEY".to_string()]);
+        assert!(st.conflicts.contains(&"env.TAVILY_API_KEY".to_string()));
+        let agreed = BTreeSet::from(["env.TAVILY_API_KEY".to_string()]);
+        let rw = Rewriter::new(&paths, &dst, &SyncConfig::default());
+        let sp = spec(None, &SyncConfig::default()).unwrap();
+        let forced = plan_with(
+            &paths.default_dir,
+            &paths.default_json,
+            &dst,
+            &sp,
+            &rw,
+            false,
+            &Base {
+                manifest: Some(&m),
+                force: true,
+                secrets: Secrets::HeldExcept(&agreed),
+            },
+        )
+        .unwrap();
+        assert_eq!(forced.settings.as_ref().unwrap().forced.len(), 2);
         // Once synced, the record is per key: the conflicts, with no base,
         // stay conflicts; the proposal stays one.
         let rw = Rewriter::new(&paths, &dst, &SyncConfig::default());
@@ -3078,7 +3202,7 @@ mod tests {
             false,
             &Base {
                 manifest: Some(&m),
-                force: false,
+                ..Base::default()
             },
         )
         .unwrap();
@@ -3095,7 +3219,7 @@ mod tests {
             false,
             &Base {
                 manifest: Some(&m),
-                force: false,
+                ..Base::default()
             },
         )
         .unwrap();

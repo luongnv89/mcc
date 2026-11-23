@@ -793,3 +793,39 @@ fn a_launch_leaves_a_deleted_settings_file_deleted() {
     let cell = sync_cell(&sb, "work");
     assert!(cell.contains("1 local edit"), "{cell}");
 }
+
+/// AC3 of #129: a shared secret new in the default never reaches a profile
+/// on launch (nothing is asked there); a basic key next to it does, and
+/// the secret is left for `mcc sync` to ask about.
+#[test]
+fn a_launch_never_copies_a_shared_secret_from_the_default() {
+    let sb = sandbox();
+    // Built at run time, so the source holds no token-shaped literal.
+    let tavily = ["tvly", "LEAKCHECK", "launch0123456789"].join("-");
+    let mut d = json(sb.read(".claude/settings.json").as_bytes());
+    d["env"] = serde_json::json!({"TAVILY_API_KEY": tavily});
+    d["alwaysThinkingEnabled"] = true.into();
+    sb.write(".claude/settings.json", &d.to_string());
+    for _ in 0..2 {
+        launch(&sb, "work");
+        for p in ["work", "lab"] {
+            let s = json(
+                sb.read(&format!(".mcc/profiles/{p}/settings.json"))
+                    .as_bytes(),
+            );
+            assert_eq!(s["alwaysThinkingEnabled"], true, "{p}: {s}");
+            assert!(s.get("env").is_none(), "{p}: {s}");
+            let record = sb.read(&format!(".mcc/profiles/{p}/.mcc-sync.json"));
+            assert!(!record.contains("TAVILY_API_KEY"), "{p}: {record}");
+        }
+    }
+    assert!(!sb.read(".mcc/logs/mcc.log").contains(&tavily));
+    // `mcc sync` without a terminal holds it too, and says so.
+    let o = sb.mcc().args(["sync", "work"]).output().unwrap();
+    assert!(o.status.success(), "{o:?}");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("env.TAVILY_API_KEY: shared secret · from the default · skipped"),
+        "{err}"
+    );
+}

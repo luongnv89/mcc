@@ -2446,6 +2446,183 @@ fn a_shared_secret_is_only_synced_once_agreed_to() {
     assert!(err.contains("· skipped (a shared secret"), "{err}");
 }
 
+/// AC3 of #129: a shared secret set in the default reaches a profile only
+/// once the user agrees at a terminal: without one (or with --yes) it is
+/// held and reported as skipped, with its category and never its value;
+/// a dry run says it would be asked about; a value declined earlier is not
+/// asked about again. A basic key from the default is reported with its
+/// category too, and synced.
+#[test]
+fn a_shared_secret_set_in_the_default_is_only_synced_once_agreed_to() {
+    let sb = three_profiles();
+    // Built at run time, so the source holds no token-shaped literal.
+    let tavily = ["tvly", "LEAKCHECK", "default0123456789"].join("-");
+    set_env(&sb, ".claude", "TAVILY_API_KEY", &tavily);
+    set_env(&sb, ".claude", CODE_MODE, "1");
+    let profiles = ["work", "lab", "csdaisy"];
+    let no_secret = |out: &[u8], err: &[u8]| {
+        let (out, err) = (String::from_utf8_lossy(out), String::from_utf8_lossy(err));
+        assert!(!out.contains(&tavily), "{out}");
+        assert!(!err.contains(&tavily), "{err}");
+    };
+    for args in [&["sync", "--all"][..], &["sync", "--all", "--yes"]] {
+        let o = sb.mcc().args(args).output().unwrap();
+        assert!(o.status.success(), "{o:?}");
+        no_secret(&o.stdout, &o.stderr);
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(
+            err.contains("env.TAVILY_API_KEY: shared secret · from the default · skipped (a shared secret is only synced once you agree at a terminal)"),
+            "{args:?}: {err}"
+        );
+        assert!(err.contains("3/3 profiles synced"), "{err}");
+        for p in profiles {
+            let s = settings_of(&sb, &format!(".mcc/profiles/{p}"));
+            assert!(s["env"].get("TAVILY_API_KEY").is_none(), "{p}: {s}");
+            assert_eq!(s["env"][CODE_MODE], "1", "{p}: {s}");
+        }
+    }
+    // The default keeps it, as it is.
+    assert_eq!(
+        settings_of(&sb, ".claude")["env"]["TAVILY_API_KEY"],
+        tavily.as_str()
+    );
+    let o = sb
+        .mcc()
+        .args(["sync", "--all", "--dry-run"])
+        .output()
+        .unwrap();
+    no_secret(&o.stdout, &o.stderr);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("env.TAVILY_API_KEY: shared secret · from the default · would be asked about"),
+        "{err}"
+    );
+    let o = sb.mcc().args(["diff", "work"]).output().unwrap();
+    no_secret(&o.stdout, &o.stderr);
+    assert!(
+        String::from_utf8_lossy(&o.stdout).contains("TAVILY_API_KEY"),
+        "{o:?}"
+    );
+
+    // A value declined before is not asked about again…
+    let path = ".mcc/profiles/work/.mcc-sync.json";
+    let mut m = json(sb.read(path).as_bytes());
+    m["declined_secrets"] = serde_json::json!({
+        "env.TAVILY_API_KEY": format!("default:{}", value_hash(&tavily))
+    });
+    sb.write(path, &m.to_string());
+    let err = sync_stderr(&sb, &["work"]);
+    assert!(
+        err.contains("env.TAVILY_API_KEY: shared secret · from the default · declined earlier"),
+        "{err}"
+    );
+    // …until it changes.
+    let rotated = ["tvly", "LEAKCHECK", "rotated0123456789"].join("-");
+    set_env(&sb, ".claude", "TAVILY_API_KEY", &rotated);
+    let err = sync_stderr(&sb, &["work"]);
+    assert!(
+        err.contains("env.TAVILY_API_KEY: shared secret · from the default · skipped"),
+        "{err}"
+    );
+    assert!(
+        settings_of(&sb, ".mcc/profiles/work")["env"]
+            .get("TAVILY_API_KEY")
+            .is_none()
+    );
+    let log = sb.read(".mcc/logs/mcc.log");
+    assert!(!log.contains(&tavily) && !log.contains(&rotated), "{log}");
+}
+
+/// A shared secret a profile already has as the default does is never
+/// asked about, held or reported again.
+#[test]
+fn a_shared_secret_already_in_sync_is_not_asked_about() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    let tavily = ["tvly", "LEAKCHECK", "cloned0123456789"].join("-");
+    set_env(&sb, ".claude", "TAVILY_API_KEY", &tavily);
+    // A clone takes the default as it is, secrets included.
+    with_profile(&sb, "work", "--clone");
+    assert_eq!(
+        settings_of(&sb, ".mcc/profiles/work")["env"]["TAVILY_API_KEY"],
+        tavily.as_str()
+    );
+    set_env(&sb, ".claude", CODE_MODE, "1");
+    let err = sync_stderr(&sb, &["--all"]);
+    assert!(!err.contains("TAVILY_API_KEY"), "{err}");
+    assert!(
+        err.contains(&format!(
+            "env.{CODE_MODE}: basic · from the default · synced"
+        )),
+        "{err}"
+    );
+    let s = settings_of(&sb, ".mcc/profiles/work");
+    assert_eq!(s["env"]["TAVILY_API_KEY"], tavily.as_str());
+    assert_eq!(s["env"][CODE_MODE], "1");
+}
+
+/// A default settings.json or settings.local.json that isn't valid JSON
+/// (a trailing comma left mid-edit) is never copied, so its account-bound
+/// keys never reach a profile: `mcc sync` warns and leaves the profile's
+/// files and record as they are, a launch too. Once fixed, the next sync
+/// takes the change, with no conflict.
+#[test]
+fn a_default_settings_file_that_is_not_json_is_never_copied() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    sb.write(
+        ".claude/settings.local.json",
+        r#"{"permissions":{"allow":["Bash(ls)"]}}"#,
+    );
+    with_profile(&sb, "work", "--clone");
+    with_profile(&sb, "lab", "--clone");
+    let broken = r#"{"model":"haiku","env":{"ANTHROPIC_API_KEY":"acct-secret"},}"#;
+    sb.write(".claude/settings.json", broken);
+    sb.write(".claude/settings.local.json", broken);
+    let files = ["settings.json", "settings.local.json", ".mcc-sync.json"];
+    let snapshot = |p: &str| -> Vec<String> {
+        files
+            .iter()
+            .map(|f| sb.read(&format!(".mcc/profiles/{p}/{f}")))
+            .collect()
+    };
+    let (work, lab) = (snapshot("work"), snapshot("lab"));
+    let err = sync_stderr(&sb, &["work"]);
+    assert!(
+        err.contains("settings.json is not a JSON object (or not valid JSON), so it is not synced to \"work\""),
+        "{err}"
+    );
+    assert!(
+        err.contains("settings.local.json is not a JSON object (or not valid JSON)"),
+        "{err}"
+    );
+    assert_eq!(snapshot("work"), work);
+    let o = sb.launcher("lab").args(["-p", "hi"]).output().unwrap();
+    assert!(o.status.success(), "{o:?}");
+    assert_eq!(snapshot("lab"), lab);
+    for p in ["work", "lab"] {
+        for f in &files[..2] {
+            let text = sb.read(&format!(".mcc/profiles/{p}/{f}"));
+            assert!(!text.contains("acct-secret"), "{p}/{f}: {text}");
+        }
+    }
+
+    // Fixed: the change reaches the profile, without the account key.
+    let fixed = r#"{"model":"haiku","env":{"ANTHROPIC_API_KEY":"acct-secret"}}"#;
+    sb.write(".claude/settings.json", fixed);
+    sb.write(".claude/settings.local.json", fixed);
+    let err = sync_stderr(&sb, &["--all"]);
+    assert!(!err.contains("conflict"), "{err}");
+    assert!(!err.contains("not a JSON object"), "{err}");
+    for p in ["work", "lab"] {
+        for f in &files[..2] {
+            let s = json(sb.read(&format!(".mcc/profiles/{p}/{f}")).as_bytes());
+            assert_eq!(s["model"], "haiku", "{p}/{f}: {s}");
+            assert!(s["env"].get("ANTHROPIC_API_KEY").is_none(), "{p}/{f}: {s}");
+        }
+    }
+}
+
 /// As an older mcc recorded `p`'s sync: the whole file's hash only.
 fn legacy_record(sb: &Sandbox, p: &str) {
     let path = format!(".mcc/profiles/{p}/.mcc-sync.json");

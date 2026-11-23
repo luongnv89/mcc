@@ -4,7 +4,9 @@
 //!
 //! - **basic**: no secret; a change in any profile reaches every profile;
 //! - **shared secret**: an API key or token not tied to an account; `mcc
-//!   sync` asks before copying it and never shows its value;
+//!   sync` asks before copying it, from a profile into the default or from
+//!   the default into a profile, and never shows its value (auto sync
+//!   leaves it to `mcc sync`);
 //! - **account-bound**: a credential or provider of one account (the
 //!   variables mcc strips from children, `apiKeyHelper`, …); never copied.
 //!
@@ -336,6 +338,14 @@ pub const LOST_PREFIX: &str = "lost:";
 /// there is asked about again).
 pub fn declined_removal(default: Option<&Value>) -> String {
     format!("absent:{}", hash(default).unwrap_or_default())
+}
+
+/// The mark a shared secret the default sets, declined for a profile
+/// (`mcc sync` asks before it reaches one), is remembered by in that
+/// profile's `declined_secrets`, for the default's value `default` (so a
+/// new value there is asked about again).
+pub fn declined_from_default(default: Option<&Value>) -> String {
+    format!("default:{}", hash(default).unwrap_or_default())
 }
 
 /// Where a key differs between the default's side (`w`) and the

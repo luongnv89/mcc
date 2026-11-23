@@ -6,8 +6,11 @@
 //! `settings.json` goes key by key (#129): first the settings changed in
 //! any profile are taken into the default ([`gather_settings`]: basic ones
 //! as they are, shared secrets once the user agrees, account-bound ones
-//! never), then every synced profile gets the default's keys.
+//! never), then every synced profile gets the default's keys (a shared
+//! secret new or changed in the default only once the user agrees,
+//! [`ask_secrets`]).
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -16,7 +19,7 @@ use serde_json::Value;
 use crate::cli::SyncArgs;
 use crate::commands::statusline;
 use crate::config::Config;
-use crate::copy::{self, Action, Base, Plan, Rewriter, Spec, Status};
+use crate::copy::{self, Action, Base, Plan, Rewriter, Secrets, Spec, Status};
 use crate::error::CliError;
 use crate::manifest::{self, Manifest};
 use crate::paths::Paths;
@@ -29,7 +32,8 @@ use crate::{fsutil, ui};
 const BACKED_UP: &[&str] = &["settings.json", "settings.local.json", ".claude.json"];
 
 /// How `mcc sync` asks the user to confirm a setting it takes into the
-/// default: at the terminal, or scripted in tests.
+/// default, or a shared secret it copies from it: at the terminal, or
+/// scripted in tests.
 pub(crate) trait Ask {
     /// Whether there is someone to ask.
     fn interactive(&self) -> bool;
@@ -90,7 +94,9 @@ pub(crate) fn run_with(
         return Ok(());
     }
     let spec = copy::spec(args.only.as_deref(), &cfg.sync)?;
-    gather_settings(paths, cfg, &spec, args, ask)?;
+    // Shared secrets the user agreed to take into the default: they reach
+    // every profile without being asked about again.
+    let approved = gather_settings(paths, cfg, &spec, args, ask)?;
 
     let mut failed = Vec::new();
     for (i, alias) in targets.iter().enumerate() {
@@ -100,7 +106,7 @@ pub(crate) fn run_with(
             String::new()
         };
         ui::header(&format!("Sync default → \"{alias}\"{label}"));
-        match sync_one(paths, cfg, alias, &spec, args) {
+        match sync_one(paths, cfg, alias, &spec, args, &approved, ask) {
             Ok(()) => {}
             Err(e)
                 if targets.len() > 1
@@ -167,24 +173,26 @@ struct SettingsSource {
 /// default's settings.json is backed up before it is first written, and
 /// written through a symlink (dotfiles); before that, every profile read
 /// by guess gets a per-key record of this reading, so the change can't
-/// flip it. A dry run reports only.
+/// flip it. A dry run reports only. Returns the shared secrets the user
+/// agreed to take into the default.
 fn gather_settings(
     paths: &Paths,
     cfg: &Config,
     spec: &Spec,
     args: &SyncArgs,
     ask: &mut dyn Ask,
-) -> Result<()> {
+) -> Result<BTreeSet<String>> {
+    let mut approved = BTreeSet::new();
     let Some(item) = spec
         .items
         .iter()
         .find(|i| i.rel == Path::new(copy::SETTINGS_FILE))
     else {
-        return Ok(());
+        return Ok(approved);
     };
     let src = paths.default_dir.join(copy::SETTINGS_FILE);
     if !src.is_file() {
-        return Ok(());
+        return Ok(approved);
     }
     let Ok(Value::Object(mut default)) = serde_json::from_slice::<Value>(
         &std::fs::read(&src).with_context(|| format!("reading {}", src.display()))?,
@@ -193,7 +201,7 @@ fn gather_settings(
             "{} is not a JSON object, so settings changed in profiles are not taken into it",
             paths.display(&src)
         ));
-        return Ok(());
+        return Ok(approved);
     };
     let classifier = Classifier::new(&cfg.sync);
     let mut sources = Vec::new();
@@ -210,7 +218,7 @@ fn gather_settings(
             let key = manifest::key(&item.rel);
             let base = Base {
                 manifest: manifest.as_ref().filter(|m| m.items.contains(&key)),
-                force: false,
+                ..Base::default()
             };
             let dst = p.dir.join(copy::SETTINGS_FILE);
             Ok(
@@ -257,7 +265,7 @@ fn gather_settings(
     let default_flat = settings_sync::flatten(&default);
     let decisions = settings_sync::decide(&classifier, &default_flat, &views);
     if decisions.is_empty() {
-        return Ok(());
+        return Ok(approved);
     }
     ui::header("Settings changed in profiles");
     let (mut set, mut remove) = (Vec::new(), Vec::new());
@@ -334,6 +342,9 @@ fn gather_settings(
                 } else if !ask.interactive() {
                     Outcome::Skipped("a shared secret is only synced once you agree at a terminal")
                 } else if ask.confirm(&prompt)? {
+                    if secret {
+                        approved.insert(d.key.clone());
+                    }
                     set.push(value);
                     Outcome::Approved
                 } else {
@@ -430,13 +441,13 @@ fn gather_settings(
         );
     }
     if set.is_empty() && remove.is_empty() {
-        return Ok(());
+        return Ok(approved);
     }
     if args.dry_run {
         ui::hint(
             "a real sync takes these into the default's settings.json first, then into every profile it syncs",
         );
-        return Ok(());
+        return Ok(approved);
     }
     // The profiles read by guess compare with the default: give them the
     // per-key record of this reading first, so its change doesn't flip it.
@@ -459,7 +470,104 @@ fn gather_settings(
         "updated the default's settings.json (backed up to {}); profiles get it as they sync",
         paths.display(&backup)
     ));
-    Ok(())
+    Ok(approved)
+}
+
+/// What the user said about the shared secrets the default sets that
+/// `alias`'s plan holds ([`copy::SettingsChange::held`]), asked in the
+/// same way as [`gather_settings`] asks about a profile's: a value
+/// declined earlier is not asked about again; a dry run would ask; with no
+/// terminal (`--yes` never agrees) it is skipped. Returns each held key's
+/// outcome, the keys agreed to, and the marks to record for those declined
+/// ([`settings_sync::declined_from_default`]).
+#[allow(clippy::type_complexity)]
+fn ask_secrets(
+    alias: &str,
+    plan: &Plan,
+    previous: Option<&Manifest>,
+    args: &SyncArgs,
+    ask: &mut dyn Ask,
+) -> Result<(
+    Vec<(String, Outcome)>,
+    BTreeSet<String>,
+    Vec<(String, String)>,
+)> {
+    let (mut outcomes, mut agreed, mut declined) = (Vec::new(), BTreeSet::new(), Vec::new());
+    let Some(s) = &plan.settings else {
+        return Ok((outcomes, agreed, declined));
+    };
+    for key in &s.held {
+        let mark = settings_sync::declined_from_default(s.want.get(key));
+        let outcome = if previous.and_then(|m| m.declined_secrets.get(key)) == Some(&mark) {
+            Outcome::Declined { earlier: true }
+        } else if args.dry_run {
+            Outcome::Asked
+        } else if !ask.interactive() {
+            Outcome::Skipped("a shared secret is only synced once you agree at a terminal")
+        } else if ask.confirm(&format!(
+            "Sync {key} ({}) from the default to \"{alias}\"? Its value is not shown.",
+            Category::SharedSecret.as_str()
+        ))? {
+            agreed.insert(key.clone());
+            Outcome::Approved
+        } else {
+            declined.push((key.clone(), mark));
+            Outcome::Declined { earlier: false }
+        };
+        outcomes.push((key.clone(), outcome));
+    }
+    Ok((outcomes, agreed, declined))
+}
+
+/// Report each `settings.json` key the default gives the profile (or
+/// holds back) with its category and what happened, as [`gather_settings`]
+/// reports the keys taken from profiles; never a value. Keys the profile's
+/// overlay sets and conflicts `--force` overwrites are left to the plan.
+fn report_settings(
+    plan: &Plan,
+    held: &[(String, Outcome)],
+    agreed: &BTreeSet<String>,
+    args: &SyncArgs,
+) {
+    let Some(s) = &plan.settings else {
+        return;
+    };
+    let taken = s
+        .added
+        .iter()
+        .chain(&s.updated)
+        .map(|k| {
+            (
+                k,
+                if agreed.contains(k) {
+                    Outcome::Approved
+                } else {
+                    Outcome::Synced
+                },
+            )
+        })
+        .chain(s.removed.iter().map(|k| (k, Outcome::Removed)))
+        .filter(|(k, _)| !s.forced.contains(k));
+    // One agreed to is in the plan now, as taken.
+    let held_back = held
+        .iter()
+        .filter(|(_, o)| *o != Outcome::Approved)
+        .map(|(k, o)| (k, *o));
+    for (key, outcome) in taken.chain(held_back) {
+        let Some(category) = s.categories.get(key) else {
+            continue;
+        };
+        ui::info(&format!(
+            "{key}: {} · from the default · {}",
+            category.as_str(),
+            outcome.describe(args.dry_run, args.force)
+        ));
+    }
+    if held.iter().any(|(_, o)| matches!(o, Outcome::Skipped(_))) {
+        ui::hint(
+            "a shared secret new or changed in the default reaches a profile only once you agree: run `mcc sync` at a terminal (--yes never agrees)",
+        );
+    }
 }
 
 /// Remember in the sync record at `dir` that the user declined `key` as
@@ -499,7 +607,8 @@ fn load_manifest(paths: &Paths, dir: &Path) -> Option<Manifest> {
 }
 
 /// Plan a sync of `dir` from the default, three-way against its manifest.
-/// The profile's linked items (see `mcc link`) are left out.
+/// The profile's linked items (see `mcc link`) are left out. Shared
+/// secrets the default sets are held ([`Secrets::Held`]).
 pub fn plan_for(
     paths: &Paths,
     cfg: &Config,
@@ -508,6 +617,29 @@ pub fn plan_for(
     manifest: Option<&Manifest>,
     prune: bool,
     force: bool,
+) -> Result<Plan> {
+    plan_for_with(
+        paths,
+        cfg,
+        dir,
+        spec,
+        &Base {
+            manifest,
+            force,
+            secrets: Secrets::Held,
+        },
+        prune,
+    )
+}
+
+/// [`plan_for`], against `base`.
+fn plan_for_with(
+    paths: &Paths,
+    cfg: &Config,
+    dir: &Path,
+    spec: &Spec,
+    base: &Base,
+    prune: bool,
 ) -> Result<Plan> {
     let rw = Rewriter::for_profile(paths, cfg, dir)?;
     // Linked items are the default's own files: never compared, written,
@@ -520,7 +652,7 @@ pub fn plan_for(
         &spec,
         &rw,
         prune,
-        &Base { manifest, force },
+        base,
     )
 }
 
@@ -626,6 +758,8 @@ fn sync_one(
     alias: &str,
     spec: &Spec,
     args: &SyncArgs,
+    approved: &BTreeSet<String>,
+    ask: &mut dyn Ask,
 ) -> Result<()> {
     let dir = cfg.profiles[alias].dir.clone();
     if !dir.is_dir() {
@@ -665,15 +799,17 @@ fn sync_one(
 
     let step = steps.start("Compare with the default profile");
     let previous = load_manifest(paths, &dir);
-    let plan = plan_for(
-        paths,
-        cfg,
-        &dir,
-        spec,
-        previous.as_ref(),
-        args.prune,
-        args.force,
-    )?;
+    let base = |approved| Base {
+        manifest: previous.as_ref(),
+        force: args.force,
+        secrets: Secrets::HeldExcept(approved),
+    };
+    let mut plan = plan_for_with(paths, cfg, &dir, spec, &base(approved), args.prune)?;
+    let (held, agreed, declined) = ask_secrets(alias, &plan, previous.as_ref(), args, ask)?;
+    if !agreed.is_empty() {
+        let all: BTreeSet<String> = approved.union(&agreed).cloned().collect();
+        plan = plan_for_with(paths, cfg, &dir, spec, &base(&all), args.prune)?;
+    }
     let status = plan.status();
     let mut summary = format!(
         "{} to add, {} to update, {} to remove, {} unchanged",
@@ -696,6 +832,13 @@ fn sync_one(
     }
     step.ok(&summary);
     print_plan(&plan, args.dry_run);
+    report_settings(&plan, &held, &agreed, args);
+    for rel in &plan.unreadable {
+        ui::warn(&format!(
+            "{} is not a JSON object (or not valid JSON), so it is not synced to \"{alias}\": the keys tied to one account in it can't be told apart; fix it, then run `mcc sync {alias}` again",
+            paths.display(&paths.default_dir.join(rel))
+        ));
+    }
     if status.conflicts > 0 {
         ui::hint(&format!(
             "conflicts changed in the default and in the profile; see them with `mcc diff {alias}`, or overwrite them with `mcc sync {alias} --force` (backed up first)"
@@ -704,7 +847,8 @@ fn sync_one(
     if previous.is_none() {
         warn_replaced(paths, alias, &dir, &plan, args.dry_run);
     }
-    let next = plan.manifest(previous.as_ref());
+    let mut next = plan.manifest(previous.as_ref());
+    next.declined_secrets.extend(declined);
 
     if plan.actionable() == 0 {
         // Nothing to copy, but record what the profile matches, so the next
@@ -862,7 +1006,9 @@ impl Held {
 /// `settings.json` is caught up key by key, its account-bound keys kept;
 /// settings changed in profiles are never taken into the default here
 /// (only `mcc sync` does that, asking about secrets): the default is never
-/// written.
+/// written. A shared secret new or changed in the default is held, left
+/// for `mcc sync` to ask about; a default settings file that isn't a JSON
+/// object is left out.
 ///
 /// Silent: no output, no prompt. The caller holds the config lock and
 /// loaded `cfg` under it.
@@ -1109,6 +1255,13 @@ fn print_plan(plan: &Plan, dry_run: bool) {
         }
         if !s.forced.is_empty() {
             parts.push(format!("--force overwrites {}", s.forced.join(", ")));
+        }
+        if !s.held.is_empty() {
+            parts.push(format!(
+                "{} held until you agree ({})",
+                plural(s.held.len(), "shared secret", "shared secrets"),
+                s.held.join(", ")
+            ));
         }
         ui::kv(copy::SETTINGS_FILE, &parts.join(", "));
     }
@@ -1688,6 +1841,67 @@ mod tests {
             manifest::hash_json(&serde_json::json!("tok-declined"))
         );
         sync(&paths, &mut cfg, &mut Scripted::new(&[]));
+    }
+
+    /// AC3 of #129: a shared secret set in the default reaches a profile
+    /// only once the user agrees, asked per profile without its value; a
+    /// declined one is recorded by hash and not asked again, one already
+    /// in sync is never asked about, and a new value is asked about again.
+    #[test]
+    fn a_shared_secret_from_the_default_is_synced_only_once_approved() {
+        let (_d, paths, mut cfg) = synced();
+        let mut s = settings(&paths.default_dir);
+        s["env"] = serde_json::json!({"TAVILY_API_KEY": "tvly-from-default"});
+        write(&paths.default_dir, s);
+        // Profiles in order: csdaisy, lab, work.
+        let mut ask = Scripted::new(&[true, false, true]);
+        sync(&paths, &mut cfg, &mut ask);
+        assert_eq!(ask.prompts.len(), 3, "{:?}", ask.prompts);
+        for (p, a) in ask.prompts.iter().zip(["csdaisy", "lab", "work"]) {
+            assert_eq!(
+                *p,
+                format!(
+                    "Sync env.TAVILY_API_KEY (shared secret) from the default to \"{a}\"? Its value is not shown."
+                )
+            );
+        }
+        for a in ["csdaisy", "work"] {
+            let dir = paths.profile_dir(a);
+            assert_eq!(
+                settings(&dir)["env"]["TAVILY_API_KEY"],
+                "tvly-from-default",
+                "{a}"
+            );
+        }
+        let lab = paths.profile_dir("lab");
+        assert!(settings(&lab).get("env").is_none(), "{}", settings(&lab));
+        let value = serde_json::json!("tvly-from-default");
+        assert_eq!(
+            record(&lab).declined_secrets["env.TAVILY_API_KEY"],
+            settings_sync::declined_from_default(Some(&value))
+        );
+        assert!(!record(&lab).settings.contains_key("env.TAVILY_API_KEY"));
+        // Asking anything fails the test: declined in lab, in sync elsewhere.
+        sync(&paths, &mut cfg, &mut Scripted::new(&[]));
+        assert!(settings(&lab).get("env").is_none());
+        assert_eq!(status(&paths, &cfg, "lab"), Status::default());
+        // A new value is asked about again, everywhere; declined, a
+        // profile keeps the value it has.
+        let mut s = settings(&paths.default_dir);
+        s["env"]["TAVILY_API_KEY"] = "tvly-rotated".into();
+        write(&paths.default_dir, s);
+        let mut ask = Scripted::new(&[false, true, false]);
+        sync(&paths, &mut cfg, &mut ask);
+        assert_eq!(ask.prompts.len(), 3, "{:?}", ask.prompts);
+        let cs = settings(&paths.profile_dir("csdaisy"));
+        assert_eq!(cs["env"]["TAVILY_API_KEY"], "tvly-from-default");
+        assert_eq!(settings(&lab)["env"]["TAVILY_API_KEY"], "tvly-rotated");
+        // Removing it from the default needs no consent.
+        let mut s = settings(&paths.default_dir);
+        s.as_object_mut().unwrap().remove("env");
+        write(&paths.default_dir, s);
+        sync(&paths, &mut cfg, &mut Scripted::new(&[]));
+        assert!(settings(&lab)["env"].get("TAVILY_API_KEY").is_none());
     }
 
     #[test]

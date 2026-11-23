@@ -775,6 +775,12 @@ fn clone_setup(paths: &Paths, cfg: &Config, profile_dir: &Path, link: &[String])
         &rw,
         false,
     )?;
+    for rel in &plan.unreadable {
+        ui::warn(&format!(
+            "{} is not a JSON object (or not valid JSON), so it is not copied: the keys tied to one account in it can't be told apart; fix it, then run `mcc sync`",
+            paths.display(&paths.default_dir.join(rel))
+        ));
+    }
     copy::apply(
         &plan,
         &paths.default_dir,

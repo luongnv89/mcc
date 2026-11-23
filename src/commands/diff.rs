@@ -232,7 +232,7 @@ fn settings_diff(
 ) -> Result<()> {
     let label = if !s.conflicts.is_empty() {
         "conflict"
-    } else if !s.is_empty() {
+    } else if !s.is_empty() || !s.held.is_empty() {
         "changed in default"
     } else {
         "local edit"
