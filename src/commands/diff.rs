@@ -1,20 +1,22 @@
 //! `mcc diff` — how a profile differs from the default profile's setup, path
 //! by path, classified as `mcc sync` would (see `copy::plan_with`). Read-only.
+//! `settings.json` is compared key by key, with the values of secret keys
+//! hidden.
 
 use std::io::Write;
 use std::path::Path;
 
 use anyhow::Result;
 use console::style;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::cli::DiffArgs;
 use crate::config::Config;
-use crate::copy::{self, Action, Change, Rewriter};
+use crate::copy::{self, Action, Change, Rewriter, SettingsChange};
 use crate::error::CliError;
 use crate::manifest;
 use crate::paths::Paths;
-use crate::ui;
+use crate::{settings_sync, ui};
 
 /// Files larger than this (in lines, per side) are reported without a diff.
 const MAX_DIFF_LINES: usize = 5_000;
@@ -67,12 +69,21 @@ pub fn run(paths: &Paths, cfg: &Config, args: &DiffArgs) -> Result<()> {
     let mut out = std::io::stdout().lock();
     let mut shown = 0;
     for c in &plan.changes {
-        // A missing directory's files are listed one by one.
-        if c.dir && c.action == Action::Add {
+        // A missing directory's files are listed one by one; per-key
+        // settings below.
+        if c.dir && c.action == Action::Add
+            || plan.settings.is_some() && c.rel == Path::new(copy::SETTINGS_FILE)
+        {
             continue;
         }
         shown += 1;
         file_diff(&mut out, paths, &dir, alias, c, &rw)?;
+    }
+    if let Some(s) = &plan.settings
+        && s.differs()
+    {
+        shown += 1;
+        settings_diff(&mut out, alias, s, &rw)?;
     }
     if spec.mcp {
         let (src, dst) = copy::mcp_servers(&paths.default_json, &dir.join(".claude.json"), &rw)?;
@@ -192,6 +203,43 @@ fn file_diff(
         _ => {}
     }
     Ok(())
+}
+
+/// The profile's `settings.json` next to the default's, as sync compares
+/// them key by key: the default's side with the profile's overlay and its
+/// own account-bound keys, so only what sync deals with differs. The value
+/// of every secret key (shared or account-bound) is hidden on both sides.
+fn settings_diff(
+    out: &mut impl Write,
+    alias: &str,
+    s: &SettingsChange,
+    rw: &Rewriter,
+) -> Result<()> {
+    let label = if !s.conflicts.is_empty() {
+        "conflict"
+    } else if !s.is_empty() {
+        "changed in default"
+    } else {
+        "local edit"
+    };
+    header(out, label, copy::SETTINGS_FILE)?;
+    let c = rw.classifier();
+    let text = |flat: &Map<String, Value>, other: &Map<String, Value>| -> Result<String> {
+        let shown = settings_sync::unflatten(&c.masked(flat, other));
+        Ok(serde_json::to_string_pretty(&Value::Object(shown))? + "\n")
+    };
+    let from = if rw.has_overlay() {
+        format!("default/{} + {alias} overlay", copy::SETTINGS_FILE)
+    } else {
+        format!("default/{}", copy::SETTINGS_FILE)
+    };
+    text_diff(
+        out,
+        &from,
+        &format!("{alias}/{}", copy::SETTINGS_FILE),
+        &text(&s.want, &s.have)?,
+        &text(&s.have, &s.want)?,
+    )
 }
 
 #[derive(PartialEq)]

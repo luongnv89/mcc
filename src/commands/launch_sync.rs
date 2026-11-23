@@ -404,13 +404,20 @@ impl Bases<'_> {
 }
 
 /// What a catch-up of `p` depends on: `base` ([`default_fingerprint`]),
-/// the sync settings, and the profile's own inputs — its links, its
-/// settings overlay (in the config and `settings.mcc.json`) and its sync
-/// manifest, by size and mtime.
+/// the sync settings (which items, and which settings keys are secret or
+/// account-bound), and the profile's own inputs — its links, its settings
+/// overlay (in the config and `settings.mcc.json`) and its sync manifest,
+/// by size and mtime.
 fn fingerprint(cfg: &Config, p: &Profile, base: &str) -> String {
     let mut h = Sha256::new();
     h.update(base.as_bytes());
-    h.update(format!("{:?}|{:?}", cfg.sync.exclude, cfg.sync.extra).as_bytes());
+    h.update(
+        format!(
+            "{:?}|{:?}|{:?}|{:?}",
+            cfg.sync.exclude, cfg.sync.extra, cfg.sync.account_keys, cfg.sync.secret_keys
+        )
+        .as_bytes(),
+    );
     h.update(p.dir.as_os_str().as_encoded_bytes());
     h.update(format!("|{:?}|{:?}|", p.link, p.settings).as_bytes());
     for name in [copy::OVERLAY_FILE, crate::manifest::FILE] {
