@@ -2,10 +2,16 @@
 //! three-way against the profile's sync manifest (`.mcc-sync.json`): changes
 //! in the default are copied, edits made in the profile are kept, and paths
 //! changed on both sides are conflicts, kept unless `--force`.
+//!
+//! `settings.json` goes key by key (#129): first the settings changed in
+//! any profile are taken into the default ([`gather_settings`]: basic ones
+//! as they are, shared secrets once the user agrees, account-bound ones
+//! never), then every synced profile gets the default's keys.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use serde_json::Value;
 
 use crate::cli::SyncArgs;
 use crate::commands::statusline;
@@ -14,6 +20,7 @@ use crate::copy::{self, Action, Base, Plan, Rewriter, Spec, Status};
 use crate::error::CliError;
 use crate::manifest::{self, Manifest};
 use crate::paths::Paths;
+use crate::settings_sync::{self, Category, Classifier, Outcome, SettingsView, Verdict};
 use crate::{fsutil, ui};
 
 /// Profile config files backed up before every sync that writes, even when the
@@ -51,6 +58,7 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &SyncArgs) -> Result<()> {
         return Ok(());
     }
     let spec = copy::spec(args.only.as_deref(), &cfg.sync)?;
+    gather_settings(paths, cfg, &spec, args)?;
 
     let mut failed = Vec::new();
     for (i, alias) in targets.iter().enumerate() {
@@ -96,6 +104,222 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &SyncArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Maps a profile's settings value to the default's ([`Rewriter::to_default`]).
+type ToDefault<'a> = Box<dyn Fn(&Value) -> Option<Value> + 'a>;
+
+/// One profile's `settings.json`, as a source for [`gather_settings`].
+struct SettingsSource {
+    alias: String,
+    dir: PathBuf,
+    rw: Rewriter,
+    view: SettingsView,
+    manifest: Option<Manifest>,
+}
+
+/// Take the `settings.json` keys changed in any profile into the default's
+/// `settings.json`, before the profiles are synced from it: every profile
+/// is read, whichever ones this sync updates (see
+/// [`settings_sync::decide`]). Basic keys are taken; a shared secret only
+/// when the user agrees at a terminal (never with `--yes`, and a declined
+/// value is not asked about again); account-bound keys never; a key
+/// removed in a profile only with `--yes` or a confirmation. Each key is
+/// reported with its category and what happened, never its value. The
+/// default's settings.json is backed up before it is first written, and
+/// written through a symlink (dotfiles). A dry run reports only.
+fn gather_settings(paths: &Paths, cfg: &Config, spec: &Spec, args: &SyncArgs) -> Result<()> {
+    let Some(item) = spec
+        .items
+        .iter()
+        .find(|i| i.rel == Path::new(copy::SETTINGS_FILE))
+    else {
+        return Ok(());
+    };
+    let src = paths.default_dir.join(copy::SETTINGS_FILE);
+    if !src.is_file() {
+        return Ok(());
+    }
+    let Ok(Value::Object(mut default)) = serde_json::from_slice::<Value>(
+        &std::fs::read(&src).with_context(|| format!("reading {}", src.display()))?,
+    ) else {
+        ui::warn(&format!(
+            "{} is not a JSON object, so settings changed in profiles are not taken into it",
+            paths.display(&src)
+        ));
+        return Ok(());
+    };
+    let mut sources = Vec::new();
+    for (alias, p) in &cfg.profiles {
+        if !p.dir.is_dir() {
+            continue;
+        }
+        let read = || -> Result<Option<SettingsSource>> {
+            let rw = Rewriter::for_profile(paths, cfg, &p.dir)?;
+            let manifest = manifest::load(&p.dir).manifest().cloned();
+            let key = manifest::key(&item.rel);
+            let base = Base {
+                manifest: manifest.as_ref().filter(|m| m.items.contains(&key)),
+                force: false,
+            };
+            let dst = p.dir.join(copy::SETTINGS_FILE);
+            Ok(
+                copy::settings_view(&src, &dst, item.rewrite, &rw, &base)?.map(|view| {
+                    SettingsSource {
+                        alias: alias.clone(),
+                        dir: p.dir.clone(),
+                        rw,
+                        view,
+                        manifest,
+                    }
+                }),
+            )
+        };
+        match read() {
+            Ok(Some(s)) => sources.push(s),
+            Ok(None) => {}
+            Err(e) => ui::warn(&format!(
+                "\"{alias}\": its settings are not read for changes to take into the default ({e:#})"
+            )),
+        }
+    }
+    let classifier = Classifier::new(&cfg.sync);
+    let maps: Vec<ToDefault> = sources
+        .iter()
+        .map(|s| Box::new(|v: &Value| s.rw.to_default(v)) as ToDefault)
+        .collect();
+    let views: Vec<settings_sync::Source> = sources
+        .iter()
+        .zip(&maps)
+        .map(|(s, f)| settings_sync::Source {
+            alias: &s.alias,
+            view: &s.view,
+            to_default: f.as_ref(),
+        })
+        .collect();
+    let decisions = settings_sync::decide(&classifier, &settings_sync::flatten(&default), &views);
+    if decisions.is_empty() {
+        return Ok(());
+    }
+    ui::header("Settings changed in profiles");
+    let (mut set, mut remove) = (Vec::new(), Vec::new());
+    for d in decisions {
+        let outcome = match d.verdict {
+            Verdict::AccountBound => {
+                Outcome::Skipped("account-bound: never copied to another profile")
+            }
+            Verdict::Unmappable => Outcome::Skipped(
+                "it holds paths of the profile that can't be mapped to the default's",
+            ),
+            Verdict::Conflict { with_default } => Outcome::Conflict { with_default },
+            Verdict::Set(value) if d.category == Category::Basic => {
+                set.push(value);
+                Outcome::Synced
+            }
+            Verdict::Set(value) => {
+                // A shared secret: the value each source has, by hash.
+                let hashes: Vec<(&SettingsSource, Option<String>)> = sources
+                    .iter()
+                    .filter(|s| d.sources.contains(&s.alias))
+                    .map(|s| (s, settings_sync::hash(s.view.have.get(&d.key))))
+                    .collect();
+                let declined = hashes.iter().all(|(s, h)| {
+                    s.manifest
+                        .as_ref()
+                        .and_then(|m| m.declined_secrets.get(&d.key))
+                        == h.as_ref()
+                });
+                if declined {
+                    Outcome::Declined { earlier: true }
+                } else if args.dry_run {
+                    Outcome::Asked
+                } else if !ui::is_interactive() {
+                    Outcome::Skipped("a shared secret is only synced once you agree at a terminal")
+                } else if ui::confirm(
+                    &format!(
+                        "Sync {} ({}) from {} to the default and every profile? Its value is not shown.",
+                        d.key,
+                        d.category.as_str(),
+                        quoted(&d.sources)
+                    ),
+                    false,
+                    "",
+                )? {
+                    set.push(value);
+                    Outcome::Approved
+                } else {
+                    for (s, h) in hashes {
+                        if let (Some(mut m), Some(h)) = (s.manifest.clone(), h) {
+                            m.declined_secrets.insert(d.key.clone(), h);
+                            m.save(&s.dir)?;
+                        }
+                    }
+                    Outcome::Declined { earlier: false }
+                }
+            }
+            Verdict::Remove(key) => {
+                let ok = args.dry_run
+                    || args.yes
+                    || (ui::is_interactive()
+                        && ui::confirm(
+                            &format!(
+                                "Remove {} ({}) from the default and every profile? It was removed in {}",
+                                d.key,
+                                d.category.as_str(),
+                                quoted(&d.sources)
+                            ),
+                            false,
+                            "",
+                        )?);
+                if ok {
+                    remove.push(key);
+                    Outcome::Removed
+                } else if ui::is_interactive() {
+                    Outcome::Skipped("removal not confirmed")
+                } else {
+                    Outcome::Skipped("removing it needs --yes or a terminal")
+                }
+            }
+        };
+        ui::info(&format!(
+            "{}: {} · from {} · {}",
+            d.key,
+            d.category.as_str(),
+            quoted(&d.sources),
+            outcome.describe(args.dry_run, args.force)
+        ));
+    }
+    if set.is_empty() && remove.is_empty() {
+        return Ok(());
+    }
+    if args.dry_run {
+        ui::hint(
+            "a real sync takes these into the default's settings.json first, then into every profile it syncs",
+        );
+        return Ok(());
+    }
+    // Through a symlink: the user's own file gets the change, and stays linked.
+    let real = std::fs::canonicalize(&src).with_context(|| format!("reading {}", src.display()))?;
+    let backup = new_backup_dir(&paths.default_dir)?;
+    fsutil::copy_path(&real, &backup.join(copy::SETTINGS_FILE))?;
+    settings_sync::apply_to_default(&mut default, &set, &remove);
+    let mut text = serde_json::to_vec_pretty(&Value::Object(default))?;
+    text.push(b'\n');
+    fsutil::write_atomic(&real, &text)?;
+    ui::success(&format!(
+        "updated the default's settings.json (backed up to {}); profiles get it as they sync",
+        paths.display(&backup)
+    ));
+    Ok(())
+}
+
+/// `"a"`, or `"a", "b"`.
+fn quoted(aliases: &[String]) -> String {
+    aliases
+        .iter()
+        .map(|a| format!("\"{a}\""))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The profile's sync manifest, warning (and comparing two-way) when it
@@ -475,6 +699,11 @@ impl Held {
 /// conflicts are kept. Records the manifest and, when it copied something,
 /// `last_sync` in `cfg`, which it saves.
 ///
+/// `settings.json` is caught up key by key, its account-bound keys kept;
+/// settings changed in profiles are never taken into the default here
+/// (only `mcc sync` does that, asking about secrets): the default is never
+/// written.
+///
 /// Silent: no output, no prompt. The caller holds the config lock and
 /// loaded `cfg` under it.
 pub fn auto_catch_up(paths: &Paths, cfg: &mut Config, alias: &str) -> Result<AutoOutcome> {
@@ -688,6 +917,40 @@ fn print_plan(plan: &Plan, dry_run: bool) {
             parts.push(format!("--force overwrites {}", m.forced.join(", ")));
         }
         ui::kv("mcp", &parts.join(", "));
+    }
+    if let Some(s) = &plan.settings
+        && s.differs()
+    {
+        let mut parts = Vec::new();
+        let list =
+            |sign: &str, keys: &[String]| format!("{sign}{} ({})", keys.len(), keys.join(", "));
+        if !s.added.is_empty() {
+            parts.push(list("+", &s.added));
+        }
+        if !s.updated.is_empty() {
+            parts.push(list("~", &s.updated));
+        }
+        if !s.removed.is_empty() {
+            parts.push(list("-", &s.removed));
+        }
+        if !s.local.is_empty() {
+            parts.push(format!(
+                "{} kept ({})",
+                plural(s.local.len(), "local edit", "local edits"),
+                s.local.join(", ")
+            ));
+        }
+        if !s.conflicts.is_empty() {
+            parts.push(format!(
+                "{} skipped ({})",
+                plural(s.conflicts.len(), "conflict", "conflicts"),
+                s.conflicts.join(", ")
+            ));
+        }
+        if !s.forced.is_empty() {
+            parts.push(format!("--force overwrites {}", s.forced.join(", ")));
+        }
+        ui::kv(copy::SETTINGS_FILE, &parts.join(", "));
     }
     // List individual paths: in a dry run every change, otherwise the local
     // edits and conflicts kept and the conflicts --force overwrites (all with

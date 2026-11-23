@@ -2023,7 +2023,8 @@ fn settings_overlay_keeps_local_edits_and_conflicts_three_way() {
     add_settings_overlay(&sb);
     sb.mcc().args(["sync", "work"]).assert().success();
 
-    // An edit in the profile is a local edit, kept.
+    // A basic key added in the profile is taken into the default (#129):
+    // no longer a local edit kept in the profile.
     let mut s = work_settings(&sb);
     s["mine"] = true.into();
     sb.write(".mcc/profiles/work/settings.json", &s.to_string());
@@ -2032,23 +2033,47 @@ fn settings_overlay_keeps_local_edits_and_conflicts_three_way() {
         .assert()
         .success()
         .stderr(predicate::str::contains(
-            "= settings.json (local edit, kept)",
-        ));
-    // A default change on top of it is a conflict.
-    sb.write(".claude/settings.json", r#"{"model":"haiku"}"#);
+            "mine: basic · from \"work\" · synced",
+        ))
+        .stderr(predicate::str::contains("local edit").not());
+    assert_eq!(
+        json(sb.read(".claude/settings.json").as_bytes())["mine"],
+        true
+    );
+    // Overlay keys are the profile's own: never taken into the default.
+    assert_eq!(
+        json(sb.read(".claude/settings.json").as_bytes())["model"],
+        "opus"
+    );
+
+    // The same key changed both in the default and in the profile: a
+    // conflict, kept.
+    let mut d = json(sb.read(".claude/settings.json").as_bytes());
+    d["mine"] = "theirs".into();
+    sb.write(".claude/settings.json", &d.to_string());
+    let mut s = work_settings(&sb);
+    s["mine"] = "ours".into();
+    sb.write(".mcc/profiles/work/settings.json", &s.to_string());
     sb.mcc()
         .args(["sync", "work"])
         .assert()
         .success()
-        .stderr(predicate::str::contains("! settings.json (conflict"));
-    assert_eq!(work_settings(&sb)["mine"], true);
-    // --force takes the merged result.
+        .stderr(predicate::str::contains(
+            "mine: basic · from \"work\" · conflict",
+        ))
+        .stderr(predicate::str::contains("1 conflict skipped (mine)"));
+    assert_eq!(work_settings(&sb)["mine"], "ours");
+    assert_eq!(
+        json(sb.read(".claude/settings.json").as_bytes())["mine"],
+        "theirs"
+    );
+    // --force takes the default's value, the overlay still on top.
     sb.mcc()
         .args(["sync", "work", "--force"])
         .assert()
         .success();
     let s = work_settings(&sb);
-    assert!(s.get("mine").is_none(), "{s}");
+    assert_eq!(s["mine"], "theirs", "{s}");
     assert_eq!(s["model"], "sonnet", "{s}");
 }
 

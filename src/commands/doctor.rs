@@ -1210,9 +1210,10 @@ fn check_statusline(d: &mut Doctor, name: &str, p: &Profile) {
     );
 }
 
-/// Whether the profile's settings.json is a sync conflict (changed in the
-/// default and edited in the profile), which `mcc sync` skips unless
-/// --force. Read-only: the same plan `mcc diff` makes.
+/// Whether the profile's statusLine is a sync conflict (changed in the
+/// default and edited in the profile: its `statusLine` key, or the whole
+/// settings.json when it is synced as a file), which `mcc sync` skips
+/// unless --force. Read-only: the same plan `mcc diff` makes.
 fn settings_conflict(d: &Doctor, dir: &Path) -> bool {
     let Ok(spec) = copy::spec(Some(&["settings".to_string()]), &d.cfg.sync) else {
         return false;
@@ -1220,9 +1221,14 @@ fn settings_conflict(d: &Doctor, dir: &Path) -> bool {
     let loaded = manifest::load(dir);
     super::sync::plan_for(d.paths, d.cfg, dir, &spec, loaded.manifest(), false, false).is_ok_and(
         |plan| {
-            plan.changes.iter().any(|c| {
-                !c.dir && c.action == copy::Action::Conflict && c.rel == Path::new("settings.json")
-            })
+            plan.settings
+                .as_ref()
+                .is_some_and(|s| s.conflicts.iter().any(|k| k == "statusLine"))
+                || plan.changes.iter().any(|c| {
+                    !c.dir
+                        && c.action == copy::Action::Conflict
+                        && c.rel == Path::new("settings.json")
+                })
         },
     )
 }
