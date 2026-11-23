@@ -1258,6 +1258,20 @@ pub fn plan_with(
                     desired_hash(&src, item.rewrite, rw)?.expect("file or symlink")
                 };
                 hashes.insert(item.rel.clone(), want.clone());
+                // An older mcc's record of settings.local.json is the hash
+                // of the whole file it wrote: while the default still gives
+                // that, the default is unchanged, so compare with it.
+                let want = match base.manifest.and_then(|m| m.files.get(LOCAL_SETTINGS_FILE)) {
+                    Some(last)
+                        if local
+                            && *last != want
+                            && legacy_desired_hash(&src, item.rewrite, rw)?.as_ref()
+                                == Some(last) =>
+                    {
+                        last.clone()
+                    }
+                    _ => want,
+                };
                 if detached {
                     push(Action::Add, item.rel.clone(), false);
                 } else if kind(&dst) == Kind::Missing {
@@ -2819,6 +2833,49 @@ mod tests {
         assert_eq!(st.conflicts.len(), 3);
         assert_eq!(read_settings(&dst)["env"]["TAVILY_API_KEY"], "t1");
         assert_eq!(read_settings(&dst)["env"]["CODE"], "1");
+    }
+
+    /// settings.local.json after upgrading: an older mcc recorded the hash
+    /// of the whole file it wrote (the default's, account-bound keys and
+    /// all). An edit in the profile alone stays a local edit, a change in
+    /// the default alone is an update, both are a conflict.
+    #[test]
+    fn local_settings_with_a_whole_file_record_are_three_way() {
+        let local_action = |p: &Plan| {
+            p.changes
+                .iter()
+                .find(|c| c.rel == Path::new(LOCAL_SETTINGS_FILE))
+                .map(|c| c.action)
+        };
+        let old = r#"{"env":{"ANTHROPIC_API_KEY":"k","A":"1"}}"#;
+        let edited = r#"{"env":{"ANTHROPIC_API_KEY":"k","A":"1","B":"2"}}"#;
+        let changed = r#"{"env":{"ANTHROPIC_API_KEY":"k","A":"9"}}"#;
+        for (profile, default, want) in [
+            (old, old, None),
+            (edited, old, Some(Action::LocalEdit)),
+            (old, changed, Some(Action::Update)),
+            (edited, changed, Some(Action::Conflict)),
+        ] {
+            let (_d, paths, dst) = setup();
+            let src = paths.default_dir.join(LOCAL_SETTINGS_FILE);
+            std::fs::write(&src, old).unwrap();
+            let mut m = cloned(&paths, &dst);
+            // As the older mcc copied and recorded it.
+            std::fs::write(dst.join(LOCAL_SETTINGS_FILE), profile).unwrap();
+            m.files.insert(
+                LOCAL_SETTINGS_FILE.into(),
+                manifest::hash_file(old.as_bytes()),
+            );
+            std::fs::write(&src, default).unwrap();
+            let p = plan3(&paths, &dst, &m, false);
+            assert_eq!(local_action(&p), want, "{profile} / {default}");
+            // Kept as it is, it stays what it was on the next plan.
+            if want == Some(Action::LocalEdit) {
+                let m2 = p.manifest(Some(&m));
+                let p = plan3(&paths, &dst, &m2, false);
+                assert_eq!(local_action(&p), want);
+            }
+        }
     }
 
     #[test]
