@@ -61,7 +61,9 @@ static TOKEN_SHAPE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// A long run that may be a random token: checked for mixed case and
-/// digits by [`holds_token`]. `/` and `.` are left out, so paths are not.
+/// digits by [`holds_token`]. `/` and `.` are left out, so paths are not,
+/// and a run next to a `/` or `\` (a path's segment, such as
+/// `-Users-me-src-project2`) is never one.
 static LONG_RUN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"[A-Za-z0-9_+=-]{32,}").expect("static regex"));
 
@@ -159,7 +161,10 @@ fn holds_token(v: &Value) -> bool {
             TOKEN_SHAPE.is_match(s)
                 || LONG_RUN.find_iter(s).any(|m| {
                     let run = m.as_str();
-                    run.bytes().any(|b| b.is_ascii_uppercase())
+                    let in_path = s[..m.start()].ends_with(['/', '\\'])
+                        || s[m.end()..].starts_with(['/', '\\']);
+                    !in_path
+                        && run.bytes().any(|b| b.is_ascii_uppercase())
                         && run.bytes().any(|b| b.is_ascii_lowercase())
                         && run.bytes().any(|b| b.is_ascii_digit())
                 })
@@ -887,6 +892,22 @@ mod tests {
                 json!({"command": "bash '/Users/someone/.mcc/profiles/work-account-2/hooks/statusline-command-runner.sh'"})
             ),
             Category::Basic
+        );
+        // A path segment with a long mixed-case run (Claude Code names
+        // project dirs so) is not a token: the statusline shim's path.
+        let segment = "-Users-montimage-buildspace-luongnv89-mcc";
+        assert!(segment.len() >= 40);
+        for v in [
+            json!({"type": "command", "command": format!("/private/tmp/{segment}/repo/.mcc/bin/mcc statusline")}),
+            json!(format!("bash '/home/me/{segment}/x.sh' --flag")),
+            json!(format!("C:\\Users\\{segment}\\run.cmd")),
+        ] {
+            assert_eq!(basic("statusLine", v.clone()), Category::Basic, "{v}");
+        }
+        // The same run standing alone still is.
+        assert_eq!(
+            basic("x", json!(format!("--key {}", &segment[1..]))),
+            Category::SharedSecret
         );
         assert_eq!(
             basic("x", json!("0d5b1f6e-8a3c-4b7e-9f21-6c3d2e1a0b9f")),
