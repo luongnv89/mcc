@@ -1436,6 +1436,7 @@ mod tests {
             "curl -d \"$(id -u node:pw)\" https://x.example.invalid",
             // A `date` format is never a user.
             "curl -u +%H:%M https://x.example.invalid",
+            "curl -u %H:%M https://x.example.invalid",
         ] {
             let v = json!({"Stop": [{"hooks": [{"type": "command", "command": cmd}]}]});
             assert_eq!(basic("hooks", v), Category::Basic, "{cmd}");
