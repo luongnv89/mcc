@@ -257,7 +257,12 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names.len(), 2, "{names:?}");
-        assert!(!d.path().join(".mcc/state/evil.json").exists());
+        // Nothing beside the ledgers either (`../evil` would land there).
+        let state: Vec<String> = std::fs::read_dir(paths.profile_state_dir("api"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(state, [DIR], "{state:?}");
         assert_eq!(month_to_date(&paths, "api", now), Some(2.5));
     }
 
