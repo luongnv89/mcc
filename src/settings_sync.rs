@@ -284,13 +284,24 @@ fn holds_auth_header(s: &str) -> bool {
     })
 }
 
-/// Whether `s` gives curl a password ([`CURL_USER`], after `curl` in
-/// it: `date -u +%H:%M` or `docker --user node:node` is not one) other
-/// than a shell variable's, with a user that isn't a numeric id.
+/// Whether `s` gives curl a password ([`CURL_USER`]) other than a shell
+/// variable's, with a user that isn't a numeric id. The match must belong
+/// to the last `curl` before it: no `;`, `|`, `&`, newline or `$(` between
+/// them, so `curl …; date -u +%H:%M` or `docker --user node:pw` is not
+/// one. A user starting with `+` or `%` is a `date` format, never a user.
+/// A separator inside a curl argument (a quoted URL with `&`, `-d "$(…)"`
+/// before `-u`) also ends the match, so such a password is missed;
+/// `[sync] secret_keys` marks what detection misses.
 fn holds_curl_password(s: &str) -> bool {
     CURL_USER.captures_iter(s).any(|c| {
         let (user, pass) = (&c[1], &c[2]);
-        s[..c.get(0).map_or(0, |m| m.start())].contains("curl")
+        let before = &s[..c.get(0).map_or(0, |m| m.start())];
+        let in_curl = before.rfind("curl").is_some_and(|i| {
+            let between = &before[i..];
+            !between.contains([';', '|', '&', '\n']) && !between.contains("$(")
+        });
+        in_curl
+            && !user.starts_with(['+', '%'])
             && !pass.starts_with(['$', '`'])
             && !user.bytes().all(|b| b.is_ascii_digit())
     })
@@ -1396,6 +1407,10 @@ mod tests {
             "curl --user admin:pw https://api.example.invalid/notify",
             "curl --user=admin:pw https://api.example.invalid/notify",
             "curl -u 'admin:pw' https://api.example.invalid/notify",
+            // The last curl before `-u` counts, and a separator after it doesn't.
+            "cd /tmp && curl -u admin:pw https://api.example.invalid/notify",
+            "curl -s https://x.example.invalid && curl -u admin:pw https://api.example.invalid/notify",
+            "curl -u admin:pw https://api.example.invalid/notify | jq .",
         ] {
             let v = json!({"Stop": [{"hooks": [{"type": "command", "command": cmd}]}]});
             assert_eq!(basic("hooks", v), Category::SharedSecret, "{cmd}");
@@ -1410,6 +1425,17 @@ mod tests {
             "echo \"$(date -u +%Y-%m-%dT%H:%M:%SZ) done\" >> log",
             "docker run --user node:node img",
             "rsync -u host:/dir .",
+            // A `date -u` after a curl is not curl's `-u` (#134).
+            "curl -s -X POST https://ntfy.sh/topic -d \"Claude finished at $(date -u +%H:%M)\"",
+            "curl -s wttr.in/?format=3; date -u +%H:%M",
+            // A `-u` past a separator belongs to another command.
+            "curl -s https://x.example.invalid; docker run --user node:pw img",
+            "curl -s https://x.example.invalid | docker run --user node:pw img",
+            "curl -s https://x.example.invalid && docker run --user node:pw img",
+            "curl -s https://x.example.invalid\ndocker run --user node:pw img",
+            "curl -d \"$(id -u node:pw)\" https://x.example.invalid",
+            // A `date` format is never a user.
+            "curl -u +%H:%M https://x.example.invalid",
         ] {
             let v = json!({"Stop": [{"hooks": [{"type": "command", "command": cmd}]}]});
             assert_eq!(basic("hooks", v), Category::Basic, "{cmd}");
