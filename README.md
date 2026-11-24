@@ -156,6 +156,9 @@ No. `mcc run` asks you to wait (the default), start it anyway, or pick a profile
 **Does mcc read my Claude Code logins?**
 Not their tokens, by default: usage comes from the opt-in `mcc statusline` cache, and `mcc usage` reads only each login's deadline (one timestamp) to warn before it runs out; see [Login expiry](#login-expiry-and-mcc-login). Live lookup (`[usage] live = true` or `mcc usage --all`) reads tokens and says so; see [Live usage lookup](#live-usage-lookup-opt-in).
 
+**Does mcc store any credential?**
+One: the key of an [API-key profile](#api-key-profiles) you add with `--api-key-stdin` or `--api-key-prompt`. mcc writes it once to a `0600` file under `~/.mcc/keys` and never reads it again; Claude Code reads it through the profile's `apiKeyHelper`. With `--api-key-helper` mcc stores nothing. mcc never reads or moves a Claude subscription login.
+
 **Does mcc change my default `~/.claude`?**
 `mcc default PROFILE` and `mcc default --new` change the account it is signed in to, after asking (they run `claude auth logout` and `claude auth login`; mcc never copies a credential). Otherwise only `mcc statusline install` and `uninstall` write to it, with a backup, and `mcc add` creates it if missing. Linked items and shared plugins write through to it by design.
 
@@ -183,7 +186,7 @@ The full documentation, one collapsed section per topic. `mcc help COMMAND` prin
 <summary>Every feature, in full</summary>
 
 - **First-run detection.** mcc detects your OS, terminal, shell (zsh, bash, fish) and the right rc file, so new commands work in your shell.
-- **`add`.** If `~/.claude` doesn't exist yet, `add` creates your default profile. Otherwise it asks for an alias and checks that the name isn't already taken by a command, alias, function, shell builtin, or existing profile. You then either **clone** the default's setup (without credentials) or start **fresh**, and the new profile's login opens.
+- **`add`.** If `~/.claude` doesn't exist yet, `add` creates your default profile. Otherwise it asks for an alias and checks that the name isn't already taken by a command, alias, function, shell builtin, or existing profile. You then either **clone** the default's setup (without credentials) or start **fresh**, and the new profile's login opens. An [API-key profile](#api-key-profiles) (`--api-key-stdin`, `--api-key-prompt` or `--api-key-helper CMD`) uses an Anthropic API key instead of a login, through Claude Code's `apiKeyHelper`.
 - **`list`.** One row per profile, in a table that fits 120 columns (★ marks the default profile, `~/.claude`; see [`mcc default`](#choosing-the-default-profile-mcc-default)): account (label or organization; emails are hidden unless you ask for them), 5-hour and weekly usage (with a usage bar), last used, and a `SYNC` column saying how the profile compares with the default (`✓`, `3 behind`, `2 local edits`, `1 conflict`). Profiles that share sessions are marked `(shared)`, and a hint names `mcc refresh-launchers` while a launcher is out of date. A second table lists your projects and the profile (and account) `mcc run` starts in each. `--long` adds the command, skills, agents, commands, plugins, MCP servers, hooks, size and last sync; `--json` has everything.
 - **`usage`.** Every profile's 5-hour and weekly limits in one compact table: a usage bar with the percent used, time until reset and the reset time. Near-limit accounts stand out with `!` / `!!` markers and colour. Rows are ordered by weekly usage, least to most — `--sort` (or `[usage] sort`) picks another order (`name`, `five-hour`, `five-hour-reset`, `weekly`, `weekly-reset`). Account emails are hidden unless you ask for them. `--json` for scripts.
 - **`rename`.** Gives a profile a new name, and with it a new command. The new name is checked like an alias in `add`. The profile's directory, login and setup stay as they are.
@@ -726,6 +729,28 @@ That lookup sends Devin's token over the network, so it follows the [live usage]
 
 </details>
 
+#### API-key profiles
+
+<details>
+<summary>Adding a profile that uses an Anthropic API key, where the key is kept, and its estimated spend</summary>
+
+An API-key profile uses an Anthropic API key (API usage billing) instead of a Claude login. `mcc add` gives it the key through Claude Code's [`apiKeyHelper`](https://code.claude.com/docs/en/settings-reference#apikeyhelper) in the profile's `settings.json`, skips the sign-in, and marks Claude Code's first-run setup as done:
+
+```console
+$ mcc add api --fresh --api-key-stdin --budget 50 < key.txt
+$ mcc add api --clone --api-key-prompt
+$ mcc add api --clone --api-key-helper "op read op://Private/anthropic/key"
+```
+
+- **Where the key is kept.** With `--api-key-helper CMD`, Claude Code runs your command and mcc stores nothing. With `--api-key-stdin` (a pipe) or `--api-key-prompt` (hidden, at a terminal), mcc writes the key once to a `0600` file in `~/.mcc/keys` (a `0700` directory), named after the profile's directory, and sets `apiKeyHelper` to `cat` that file. mcc never reads it again. A key is never accepted as an argument: anything containing `sk-ant-` is refused as an alias and redacted from `mcc.log` and from usage errors.
+- **Starting it.** Its launcher, `mcc run`, `mcc exec` and `mcc env` unset `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`, which would otherwise replace the profile's key.
+- **Its spend.** `mcc add` installs the [mcc statusline](#status-line-mcc-statusline) in the profile's [settings overlay](#per-profile-settings-overlays), so sync never removes it or spreads it. The statusline records the cost Claude Code reports for each session. `mcc list`, `mcc usage` and bare `mcc` show API-key profiles in their own `API KEY` block, with no 5-hour or weekly window, as `est. $1.50 this month of $50.00 budget (3%)`. This is Claude Code's list-price estimate for this machine only. `--budget` (or `mcc config set profiles.ALIAS.api_budget_usd 75`) sets the budget it is compared with. In `--json`, the profile has `"auth": "api_key"` and its `usage` adds `est_cost_usd` and `budget_usd`.
+- **What doesn't apply.** `mcc login` and `mcc default` refuse an API-key profile, `mcc usage --all` never refreshes one, and `mcc delete` also removes the key file mcc wrote (`--keep-auth` keeps it), never a helper's own.
+
+mcc can't read the account's credit balance or Console spend limit: there is no API for them. [docs/api-key-profiles.md](docs/api-key-profiles.md) lists what can and can't be tracked, with sources.
+
+</details>
+
 #### Multiple machines
 
 <details>
@@ -909,6 +934,7 @@ Refused before anything signs out:
 
 - `mcc default default` (or `claude`): `~/.claude` is the default already (exit 2).
 - A profile that is signed out, signed in to the same account as `~/.claude`, or signed in to an Anthropic Console account (API billing, which Claude Code keeps outside the profile's directory).
+- An [API-key profile](#api-key-profiles), or a `~/.claude` whose `settings.json` gives Claude Code a key (`apiKeyHelper` or `env.ANTHROPIC_API_KEY`): neither has a Claude account to trade (exit 2).
 - A session-sharing profile that would end up sharing across organizations with the account it receives. Stop sharing first with `mcc share work --off`.
 - No terminal and no `-y` (exit 2).
 

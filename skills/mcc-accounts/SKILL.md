@@ -1,6 +1,6 @@
 ---
 name: mcc-accounts
-description: "Inspect and use Claude Code accounts (mcc profiles): which one a session or repo uses, usage, login expiry, running commands or claude -p as a profile, mapping, syncing. Don't use for API keys or billing, gh/AWS/git accounts, or settings.json."
+description: "Inspect and use Claude Code accounts (mcc profiles): which one a session or repo uses, usage, login expiry, running commands or claude -p as a profile, mapping, syncing. Don't use for Anthropic Console billing or spend limits, gh/AWS/git accounts, or settings.json."
 license: Apache-2.0
 compatibility: "macOS or Linux with the mcc CLI 0.7.0+ on PATH. Python 3 for scripts/mcc_whoami.py. Claude Code for runs as a profile."
 effort: medium
@@ -92,6 +92,7 @@ Usage comes from a cache: report its age (`updated_at`). Read `references/inspec
 - Usage `null` or `no_data` is unknown, not 0%. Team and Enterprise seats may report none.
 - `login_expires_at: null` on macOS can mean a Keychain-only login: report it as unknown.
 - mcc 0.11.0+ may add a `devin` row (`provider: "devin"`) to `mcc list` and `mcc usage`. Devin is not an mcc profile or a Claude Code account: never pass it to `mcc exec`, `mcc run --profile` or `mcc project set`, and report its usage apart from the accounts. Details in `references/inspect.md`.
+- An API-key profile (mcc after 0.11.0, `"auth": "api_key"` in `mcc list` and `mcc usage`) is an mcc profile that uses an Anthropic API key instead of a Claude login. It has no 5-hour or weekly window, no login expiry and no account: report its `usage.est_cost_usd` (this month's estimated spend on this machine, from the statusline) against `usage.budget_usd`, apart from the accounts' usage. `mcc login` and `mcc default` refuse it. Details in `references/inspect.md`.
 - From mcc 0.11.0, `mcc usage` orders rows from least to most weekly usage by default (`--sort`, `usage.sort`), so the ★ default is no longer first. That is mcc's display order, not a ranking: never present the first row as the account to use.
 
 ## Report
