@@ -63,7 +63,10 @@ subscription login.
 The file is named after the profile's directory, not its alias, so `mcc
 rename` keeps it working. `mcc delete` removes it, but only when the
 profile's `apiKeyHelper` is exactly the `cat` command mcc wrote for that
-file. A helper of your own, and whatever it reads, are left alone. With
+file, or when `settings.json` (or its `apiKeyHelper`) is already gone, so
+nothing reads the file any more. A helper of your own, and whatever it
+reads, are left alone; if you edited the helper by hand and mcc's file is
+still there, `mcc delete` leaves it too and prints its path. With
 `mcc delete --keep-auth` the file stays and mcc prints where it is. Adding
 the profile again then replaces it, and puts the old one back if the add
 fails.

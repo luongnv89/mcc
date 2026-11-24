@@ -727,6 +727,55 @@ fn delete_and_rename_keep_track_of_the_managed_key() {
     assert_eq!(sb.read("my-key"), KEY);
 }
 
+/// Delete with no helper to confirm the key file: when settings.json is
+/// gone nothing reads it, so it goes (or is kept, named, with
+/// --keep-auth); when the helper was edited by hand it stays, named.
+#[test]
+fn delete_names_or_removes_a_key_file_no_helper_confirms() {
+    let sb = sandbox();
+
+    // settings.json gone: the key mcc wrote is removed all the same.
+    add_managed(&sb, "api", "--fresh", KEY, &[]).success();
+    let key = key_file(&sb);
+    std::fs::remove_file(sb.path(".mcc/profiles/api/settings.json")).unwrap();
+    sb.mcc()
+        .args(["delete", "api", "--yes"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Remove managed API key"))
+        .stderr(predicate::str::contains("your own command").not());
+    assert!(!key.exists());
+
+    // ...unless --keep-auth, which keeps it and says where.
+    add_managed(&sb, "api", "--fresh", KEY, &[]).success();
+    let key = key_file(&sb);
+    std::fs::remove_file(sb.path(".mcc/profiles/api/settings.json")).unwrap();
+    sb.mcc()
+        .args(["delete", "api", "--yes", "--keep-auth"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "--keep-auth — kept ~/.mcc/keys/api-",
+        ));
+    assert_eq!(std::fs::read_to_string(&key).unwrap(), KEY);
+    std::fs::remove_file(&key).unwrap();
+
+    // A hand-edited helper: the file stays, and the warning names it.
+    add_managed(&sb, "api", "--fresh", KEY, &[]).success();
+    let key = key_file(&sb);
+    let mut s = settings(&sb, ".mcc/profiles/api");
+    s["apiKeyHelper"] = serde_json::json!("cat /dev/null");
+    sb.write(".mcc/profiles/api/settings.json", &s.to_string());
+    sb.mcc()
+        .args(["delete", "api", "--yes"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "its apiKeyHelper is not the one mcc wrote — left ~/.mcc/keys/api-",
+        ));
+    assert_eq!(std::fs::read_to_string(&key).unwrap(), KEY);
+}
+
 /// The sharing guard names API-key profiles when one has no account to
 /// compare, instead of asking to log them in.
 #[test]

@@ -105,6 +105,16 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &DeleteArgs) -> Result<()> {
     // the directory goes: only the one mcc wrote, never a helper's target.
     let api_key = registered.as_ref().is_some_and(|p| p.is_api_key());
     let managed_key = crate::api_key::managed_key_of(paths, &dir);
+    // No helper confirms it, but mcc's key file for this directory is
+    // still there: settings.json (or its helper) is gone, so nothing reads
+    // it any more, or the helper was edited by hand.
+    let unconfirmed_key = if api_key && managed_key.is_none() {
+        let key = crate::api_key::managed_key_path(paths, &dir);
+        let is_file = std::fs::symlink_metadata(&key).is_ok_and(|m| m.is_file());
+        is_file.then(|| (key, crate::api_key::helper_of(&dir).is_none()))
+    } else {
+        None
+    };
     let mut steps = ui::Steps::new(if api_key || managed_key.is_some() {
         6
     } else {
@@ -192,8 +202,24 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &DeleteArgs) -> Result<()> {
 
     if api_key || managed_key.is_some() {
         let step = steps.start("Remove managed API key");
+        // The helper-less case removes mcc's own file like the confirmed
+        // one; an edited helper keeps it, named, as it may still read it.
+        let managed_key = match (&managed_key, &unconfirmed_key) {
+            (None, Some((key, true))) => Some(key.clone()),
+            _ => managed_key.clone(),
+        };
         match &managed_key {
-            None => step.skip("its apiKeyHelper is your own command — left alone"),
+            None => match &unconfirmed_key {
+                Some((key, _)) => {
+                    warnings += 1;
+                    step.warn(&format!(
+                        "its apiKeyHelper is not the one mcc wrote — left {} (the key mcc \
+                         stored for this profile); remove it yourself if nothing uses it",
+                        paths.display(key)
+                    ));
+                }
+                None => step.skip("its apiKeyHelper is your own command — left alone"),
+            },
             Some(key) if args.keep_auth => {
                 step.skip(&format!("--keep-auth — kept {}", paths.display(key)));
             }
