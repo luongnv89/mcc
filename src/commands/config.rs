@@ -59,6 +59,10 @@ pub const SETTABLE: &[(&str, &str)] = &[
         "black, red, green, yellow, blue, magenta, cyan or white (\"\" removes it)",
     ),
     ("profiles.ALIAS.auto_sync", "true or false"),
+    (
+        "profiles.ALIAS.api_budget_usd",
+        "an API-key profile's monthly budget in US dollars, 0 or more (\"\" removes it)",
+    ),
 ];
 
 /// A key `mcc config set` accepts, parsed.
@@ -75,6 +79,7 @@ enum Key {
     Label(String),
     Color(String),
     AutoSync(String),
+    Budget(String),
 }
 
 pub fn run(paths: &Paths, args: &ConfigArgs) -> Result<()> {
@@ -127,6 +132,12 @@ fn settable(key: &str, parts: &[String]) -> Result<Key> {
         ["profiles", alias, "label"] => Key::Label(alias.to_string()),
         ["profiles", alias, "color"] => Key::Color(alias.to_string()),
         ["profiles", alias, "auto_sync"] => Key::AutoSync(alias.to_string()),
+        ["profiles", alias, "api_budget_usd"] => Key::Budget(alias.to_string()),
+        ["profiles", alias, "auth"] => {
+            return Err(managed(&format!(
+                "`mcc add {alias} --api-key-stdin` (or --api-key-prompt, --api-key-helper) makes an API-key profile; `mcc delete {alias}` removes one"
+            )));
+        }
         ["profiles", alias, f] if f.starts_with("share_") => {
             return Err(managed(&format!(
                 "session sharing is set with `mcc share {alias}` (see `mcc help share`)"
@@ -229,6 +240,12 @@ fn lookup(cfg: &Config, key: &str, parts: &[String]) -> Result<String> {
                 .into());
         }
         (None, Ok(Key::Color(alias))) => return Err(super::unknown_profile(&alias)),
+        (None, Ok(Key::Budget(alias))) if cfg.profiles.contains_key(&alias) => {
+            return Err(CliError::runtime(format!("\"{key}\" is not set"))
+                .hint(format!("set it with `mcc config set {key} <USD>`"))
+                .into());
+        }
+        (None, Ok(Key::Budget(alias))) => return Err(super::unknown_profile(&alias)),
         (None, _) => {
             return Err(CliError::runtime(format!("\"{key}\" is not set"))
                 .hint(format!(
@@ -363,6 +380,28 @@ fn apply(cfg: &mut Config, which: &Key, value: &str) -> Result<()> {
                         .hint("example: mcc config set profiles.work.label \"Acme (work)\"")
                 })?;
                 Some(trimmed.to_string())
+            };
+        }
+        Key::Budget(alias) => {
+            let profile = cfg
+                .profiles
+                .get_mut(alias)
+                .ok_or_else(|| super::unknown_profile(alias))?;
+            if !profile.is_api_key() {
+                return Err(CliError::usage(format!(
+                    "\"{alias}\" is not an API-key profile: a budget applies to API usage billing"
+                ))
+                .hint("`mcc list` shows API-key profiles apart, under API KEY")
+                .into());
+            }
+            profile.api_budget_usd = if value.trim().is_empty() {
+                None
+            } else {
+                Some(crate::config::parse_budget(value).map_err(|m| {
+                    CliError::usage(format!("invalid budget: {m}")).hint(format!(
+                        "example: mcc config set profiles.{alias}.api_budget_usd 50"
+                    ))
+                })?)
             };
         }
         Key::Color(alias) => {

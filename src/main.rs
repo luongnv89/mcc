@@ -1,8 +1,10 @@
+mod api_key;
 mod claude;
 mod cli;
 mod commands;
 mod config;
 mod copy;
+mod cost;
 mod devin;
 mod env_detect;
 mod error;
@@ -79,8 +81,45 @@ fn parse_args() -> Cli {
     } else {
         cmd = cmd.subcommand_required(true);
     }
-    let matches = cmd.get_matches_mut();
-    Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.format(&mut cmd).exit())
+    let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let matches = cmd
+        .try_get_matches_from_mut(&argv)
+        .unwrap_or_else(|e| exit_with(e, &argv));
+    Cli::from_arg_matches(&matches).unwrap_or_else(|e| exit_with(e.format(&mut cmd), &argv))
+}
+
+/// Exit on a clap error (or `--help`, `--version`) exactly as clap does,
+/// except that when an argument holds something shaped like an API key
+/// (`sk-ant-`, #132), clap's message, which may quote it, is printed with
+/// every such value replaced by `[redacted]`, plain, then mcc exits 2.
+fn exit_with(e: clap::Error, argv: &[std::ffi::OsString]) -> ! {
+    let keys: Vec<String> = argv
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .filter(|a| api_key::looks_like_key(a))
+        .collect();
+    if keys.is_empty() {
+        e.exit()
+    }
+    eprint!("{}", redact_keys(&e.render().to_string(), &keys));
+    std::process::exit(2)
+}
+
+/// `text` with each argument in `keys` (whole, and the value of a
+/// `--flag=value`) and anything else starting `sk-ant-` replaced by
+/// `[redacted]`.
+fn redact_keys(text: &str, keys: &[String]) -> String {
+    let mut out = text.to_string();
+    for k in keys {
+        out = out.replace(k.as_str(), "[redacted]");
+        if let Some((_, value)) = k.split_once('=')
+            && api_key::looks_like_key(value)
+        {
+            out = out.replace(value, "[redacted]");
+        }
+    }
+    let shaped = regex::Regex::new(r"sk-ant-[^\s'\x22`]*").expect("a valid pattern");
+    shaped.replace_all(&out, "[redacted]").into_owned()
 }
 
 /// Whether mcc is set up: `~/.mcc/config.toml` loads and has its `[env]`
@@ -427,20 +466,33 @@ fn log_invocation() {
 
 /// The command line as logged: the value of `--email` (`--email ADDRESS` or
 /// `--email=ADDRESS`) becomes `<redacted>`, so the address given to
-/// `mcc add --email` never reaches mcc.log (#88). clap accepts only the exact
-/// long option (no prefixes, no short form). Arguments after `--` are
-/// redacted the same way, which only hides more.
+/// `mcc add --email` never reaches mcc.log (#88); so does the value of
+/// `--api-key-helper` (a command that may name where a key is kept), and any
+/// argument holding something shaped like an API key (`sk-ant-`, #132),
+/// whatever flag it follows. clap accepts only the exact long option (no
+/// prefixes, no short form). Arguments after `--` are redacted the same
+/// way, which only hides more.
 fn redact_args(args: impl IntoIterator<Item = String>) -> Vec<String> {
+    const VALUE_FLAGS: [&str; 2] = ["--email", "--api-key-helper"];
     let mut redact_next = false;
     args.into_iter()
         .map(|arg| {
-            if std::mem::take(&mut redact_next) {
+            if std::mem::take(&mut redact_next) || api_key::looks_like_key(&arg) {
+                if let Some(flag) = VALUE_FLAGS
+                    .iter()
+                    .find(|f| arg.starts_with(&format!("{f}=")))
+                {
+                    return format!("{flag}=<redacted>");
+                }
                 "<redacted>".to_string()
-            } else if arg == "--email" {
+            } else if VALUE_FLAGS.contains(&arg.as_str()) {
                 redact_next = true;
                 arg
-            } else if arg.starts_with("--email=") {
-                "--email=<redacted>".to_string()
+            } else if let Some(flag) = VALUE_FLAGS
+                .iter()
+                .find(|f| arg.starts_with(&format!("{f}=")))
+            {
+                format!("{flag}=<redacted>")
             } else {
                 arg
             }
@@ -490,6 +542,48 @@ mod tests {
         assert_eq!(
             redact(&["add", "work", "--email"]),
             ["add", "work", "--email"]
+        );
+    }
+
+    /// B3/B18 of #132: the helper command in both forms, and anything
+    /// shaped like a key wherever it appears, never reach mcc.log.
+    #[test]
+    fn redacts_helpers_and_key_shaped_arguments() {
+        assert_eq!(
+            redact(&["add", "api", "--api-key-helper", "op read x", "--yes"]),
+            ["add", "api", "--api-key-helper", "<redacted>", "--yes"]
+        );
+        assert_eq!(
+            redact(&["add", "--api-key-helper=op read x"]),
+            ["add", "--api-key-helper=<redacted>"]
+        );
+        assert_eq!(
+            redact(&["add", "--api-key-prompt", "sk-ant-test-fixture"]),
+            ["add", "--api-key-prompt", "<redacted>"]
+        );
+        assert_eq!(
+            redact(&[
+                "add",
+                "--api-key-stdin=sk-ant-test-fixture",
+                "--email=sk-ant-x"
+            ]),
+            ["add", "<redacted>", "--email=<redacted>"]
+        );
+        assert_eq!(redact(&["usage", "xsk-ant-y"]), ["usage", "<redacted>"]);
+    }
+
+    #[test]
+    fn clap_errors_lose_key_shaped_values() {
+        let keys = ["--api-key-stdin=sk-ant-test-fixture".to_string()];
+        let text = "error: unexpected value 'sk-ant-test-fixture' for '--api-key-stdin' found; no more were expected\n  tip: sk-ant-other";
+        let out = super::redact_keys(text, &keys);
+        assert!(!out.contains("sk-ant-"), "{out}");
+        assert!(out.contains("unexpected value '[redacted]'"), "{out}");
+        // A key with `=` in it: the empty value after it is left alone.
+        let keys = ["sk-ant-x=".to_string()];
+        assert_eq!(
+            super::redact_keys("unexpected argument 'sk-ant-x=' found", &keys),
+            "unexpected argument '[redacted]' found"
         );
     }
 

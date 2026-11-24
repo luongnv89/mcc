@@ -36,6 +36,10 @@ pub(crate) struct Profile {
     pub(crate) config_dir: Option<PathBuf>,
     /// Whether it uses the default's plugins (`mcc link <alias> plugins`).
     pub(crate) shares_plugins: bool,
+    /// An API-key profile (#132): started without the shell's
+    /// `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`; no Claude login to
+    /// renew or trade. Always false for the default profile.
+    pub(crate) api_key: bool,
 }
 
 impl Profile {
@@ -44,6 +48,8 @@ impl Profile {
             name: self.name.clone(),
             config_dir: self.config_dir.clone().unwrap_or(paths.default_dir.clone()),
             is_default: self.config_dir.is_none(),
+            api_key: self.api_key,
+            budget_usd: None,
         }
     }
 }
@@ -54,11 +60,13 @@ pub(crate) fn profiles(cfg: &Config) -> Vec<Profile> {
         name: "default".into(),
         config_dir: None,
         shares_plugins: false,
+        api_key: false,
     })
     .chain(cfg.profiles.iter().map(|(name, p)| Profile {
         name: name.clone(),
         config_dir: Some(p.dir.clone()),
         shares_plugins: crate::plugins::shared(p),
+        api_key: p.is_api_key(),
     }))
     .collect()
 }
@@ -332,8 +340,14 @@ pub(crate) fn note_if_not_the_projects(cfg: &Config, chosen: &str) {
 /// MCC_HOME sandboxes stay consistent), and `CLAUDE_CODE_PLUGIN_CACHE_DIR`
 /// set to the default's plugins when the profile shares them. For a profile
 /// with its own plugins the variable is cleared when it holds the default's
-/// plugins root (mcc's value), else left as it is (the user's own).
+/// plugins root (mcc's value), else left as it is (the user's own). An
+/// API-key profile runs without `ANTHROPIC_API_KEY` and
+/// `ANTHROPIC_AUTH_TOKEN`, which would replace its `apiKeyHelper` (#132).
 pub(crate) fn profile_env(cmd: &mut std::process::Command, paths: &Paths, p: &Profile) {
+    if p.api_key {
+        cmd.env_remove("ANTHROPIC_API_KEY")
+            .env_remove("ANTHROPIC_AUTH_TOKEN");
+    }
     cmd.env("HOME", &paths.home);
     match &p.config_dir {
         Some(dir) => cmd

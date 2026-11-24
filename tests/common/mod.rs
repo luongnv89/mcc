@@ -50,6 +50,11 @@ const FAKE_CLAUDE: &str = r#"#!/bin/sh
 # (an error on stderr, exit 1), as a Claude Code that can't check would;
 # $HOME/.fake-status-broken-default does the same for the default location
 # only (no CLAUDE_CONFIG_DIR), even when ~/.claude does not exist.
+# An API-key profile (#132): with no credentials file, a settings.json that
+# has an apiKeyHelper makes `auth status` report what Claude Code 2.1.331
+# does (authMethod "api_key_helper", apiKeySource "apiKeyHelper"); the
+# helper is never run. Every run appends its first two arguments to
+# $HOME/claude-calls.log, so a test can tell claude never ran.
 # A login held in the Keychain (macOS), with no ~/.claude directory: when
 # $HOME/.fake-keychain-login exists and CLAUDE_CONFIG_DIR is unset, `auth
 # status` reports loggedIn true as the email in that file (profiles never
@@ -63,6 +68,7 @@ envlog() {
   done
   return 0
 }
+printf '%s %s\n' "$1" "$2" >> "$HOME/claude-calls.log"
 cfgdir=""
 [ -n "$FAKE_CONFIG_DIRECTORY" ] && cfgdir=", \"configDirectory\": \"$dir\""
 case "$1 $2" in
@@ -137,6 +143,8 @@ case "$1 $2" in
       email="${FAKE_EMAIL:-fake@example.com}"
       [ -f "$dir/.fake-account" ] && email=$(cat "$dir/.fake-account")
       echo "{\"loggedIn\": true, \"authMethod\": \"${FAKE_AUTH_METHOD:-claude.ai}\", \"email\": \"$email\"$org$src$cfgdir}"
+    elif [ -f "$dir/settings.json" ] && grep -q '"apiKeyHelper"' "$dir/settings.json"; then
+      echo "{\"loggedIn\": true, \"authMethod\": \"api_key_helper\", \"apiKeySource\": \"apiKeyHelper\"$cfgdir}"
     elif [ -z "$CLAUDE_CONFIG_DIR" ] && [ -f "$HOME/.fake-keychain-login" ]; then
       echo "{\"loggedIn\": true, \"authMethod\": \"claude.ai\", \"email\": \"$(cat "$HOME/.fake-keychain-login")\"$cfgdir}"
     else

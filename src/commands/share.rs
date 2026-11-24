@@ -324,6 +324,7 @@ fn refusal(
     others: &[(String, OrgId, Risk)],
     risk: Risk,
     allow: bool,
+    api_key: bool,
 ) -> anyhow::Error {
     let list = risk_list(others);
     let who = format!("profile \"{alias}\" ({})", me.describe());
@@ -346,6 +347,10 @@ fn refusal(
         ),
         Risk::OrgToPersonal => format!(
             "{separate}; to share anyway, run `mcc share {alias} --allow-cross-org` in a terminal and confirm"
+        ),
+        // An API-key profile has no OAuth account to compare (#132).
+        Risk::Unknown if api_key => format!(
+            "API-key profiles have no Claude account for mcc to compare: {separate}, or pass --allow-cross-org"
         ),
         Risk::Unknown => format!(
             "log the profiles in (`claude auth login`) so mcc can see their accounts, {separate}, or pass --allow-cross-org"
@@ -371,6 +376,10 @@ fn guard(
     let Some(risk) = others.iter().map(|(_, _, r)| *r).max() else {
         return Ok(false);
     };
+    let api_key = profile.is_api_key()
+        || others
+            .iter()
+            .any(|(name, _, _)| cfg.profiles.get(name).is_some_and(|p| p.is_api_key()));
     if already && !allow {
         if profile.share_cross_org_allowed_at.is_none() {
             ui::warn(&format!(
@@ -409,10 +418,10 @@ fn guard(
             )? {
                 Ok(true)
             } else {
-                Err(refusal(alias, &me, group, &others, risk, false))
+                Err(refusal(alias, &me, group, &others, risk, false, api_key))
             }
         }
-        Verdict::Refuse => Err(refusal(alias, &me, group, &others, risk, allow)),
+        Verdict::Refuse => Err(refusal(alias, &me, group, &others, risk, allow, api_key)),
     }
 }
 

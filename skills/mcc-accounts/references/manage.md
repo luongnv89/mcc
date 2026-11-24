@@ -27,6 +27,8 @@ Pass `-y`/`--yes` only after the user confirmed. With `MCC_NON_INTERACTIVE=1`, a
 | `mcc login <p> --refresh-only` | Runs one tiny `claude -p` as `<p>` so Claude Code refreshes its token. Spends a little quota; usually does not move the login deadline | confirm | `mcc usage --json-v2` → `login_expires_at` |
 | `mcc login <p>` | Browser sign-in that renews the login | hand off | `mcc usage --json-v2` → `login_warning` |
 | `mcc add <p> --clone` | New profile, launcher, and rc alias; ends with a browser sign-in | hand off | `mcc list --json-v2` |
+| `mcc add <p> --api-key-prompt` / `--api-key-stdin` / `--api-key-helper CMD` | New API-key profile: no sign-in; a managed key goes to a `0600` file in `~/.mcc/keys`. Never put a key in the command line, and never ask the user to paste one into the chat | hand off: the user types or pipes the key | `mcc list --json-v2` → `auth` |
+| `mcc config set profiles.<p>.api_budget_usd <usd>` | An API-key profile's monthly budget (`""` removes it) | run | `mcc config get profiles.<p>.api_budget_usd` |
 | `mcc delete <p>` | Logs out and removes the profile folder: its sessions, history, launcher, and alias. Mappings naming it go too | confirm, naming what is lost | `mcc list --json-v2` |
 | `mcc init` | Detects the shell and may offer to edit the rc file | hand off | `mcc doctor --json-v2` |
 

@@ -8,13 +8,13 @@ use serde_json::{Map, Value};
 
 use crate::claude::{self, Claude};
 use crate::cli::AddArgs;
-use crate::config::{Account, Config, Profile};
+use crate::config::{Account, AuthKind, Config, Profile};
 use crate::copy::{self, Rewriter};
 use crate::env_detect::{EnvInfo, dir_on_path};
 use crate::error::CliError;
 use crate::paths::Paths;
 use crate::txn::{self, Transaction};
-use crate::{fsutil, metrics, plugins, shell, ui, validate};
+use crate::{api_key, fsutil, metrics, plugins, shell, ui, validate};
 
 /// Something created during `add`, undone in reverse order on failure.
 enum Undo {
@@ -22,11 +22,15 @@ enum Undo {
     Wrapper(PathBuf),
     RcBlock(PathBuf, String),
     Registry(String),
+    /// The API key file written for the profile (with the one it replaced,
+    /// put back).
+    KeyFile(api_key::Written),
 }
 
 fn rollback(paths: &Paths, cfg: &mut Config, undo: &mut Transaction<Undo>) {
     undo.rollback(&txn::REMOVE, |u| match u {
         Undo::Dir(p) => (paths.display(&p), fsutil::remove_any(&p)),
+        Undo::KeyFile(w) => (paths.display(&w.path), api_key::undo_write(&w)),
         Undo::Wrapper(p) => (paths.display(&p), fsutil::remove_any(&p)),
         Undo::RcBlock(rc, id) => (
             format!("alias block in {}", paths.display(&rc)),
@@ -43,6 +47,13 @@ fn rollback(paths: &Paths, cfg: &mut Config, undo: &mut Transaction<Undo>) {
 }
 
 pub fn run(paths: &Paths, cfg: &mut Config, args: &AddArgs) -> Result<()> {
+    // B18 of #132: before anything checks, prints or logs the name, on the
+    // way to the default profile too.
+    if args.alias.as_deref().is_some_and(api_key::looks_like_key) {
+        return Err(CliError::usage(api_key::KEY_ON_COMMAND_LINE)
+            .hint("example: mcc add api --api-key-stdin < key.txt")
+            .into());
+    }
     let env = cfg.env.clone().expect("init runs before commands");
     if let Some(label) = &args.label {
         check_label(label).map_err(|m| {
@@ -57,10 +68,67 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &AddArgs) -> Result<()> {
         check_email(email)
             .map_err(|m| CliError::usage(m).hint("example: mcc add work --email me@example.com"))?;
     }
+    if let Some(cmd) = &args.api_key_helper {
+        api_key::check_helper(cmd).map_err(|m| {
+            CliError::usage(m).hint(
+                "example: mcc add api --api-key-helper \"op read op://Private/anthropic/key\"",
+            )
+        })?;
+    }
+    let api_key = api_key_flag(args);
+    if args.budget.is_some() && api_key.is_none() {
+        return Err(CliError::usage("--budget is for API-key profiles")
+            .hint("add it with --api-key-stdin, --api-key-prompt or --api-key-helper, e.g. `mcc add api --api-key-stdin --budget 50 < key.txt`")
+            .into());
+    }
     if !paths.default_dir.exists() {
+        // B2 of #132: the default profile is never an API-key profile.
+        if let Some(flag) = api_key.or(args.budget.map(|_| "--budget")) {
+            return Err(CliError::usage(format!(
+                "{flag} can't be used to create the default profile ({} does not exist yet)",
+                paths.display(&paths.default_dir)
+            ))
+            .hint("create the default profile first (`mcc add` with no API-key flag), then add the API-key profile")
+            .into());
+        }
         return add_default(paths, cfg, &env, args);
     }
     add_profile(paths, cfg, &env, args)
+}
+
+/// The API-key flag given, if any (clap lets one through at most).
+fn api_key_flag(args: &AddArgs) -> Option<&'static str> {
+    if args.api_key_stdin {
+        Some("--api-key-stdin")
+    } else if args.api_key_prompt {
+        Some("--api-key-prompt")
+    } else if args.api_key_helper.is_some() {
+        Some("--api-key-helper")
+    } else {
+        None
+    }
+}
+
+/// How an API-key profile gets its key (#132).
+enum KeySource {
+    /// `--api-key-helper`: the user's command, set as `apiKeyHelper`.
+    Helper(String),
+    /// `--api-key-stdin` / `--api-key-prompt`: a key mcc stores.
+    Managed(api_key::ApiKey),
+}
+
+/// The key source of an API-key `mcc add` (`None` for a Claude login),
+/// with a managed key read now, before anything is created.
+fn key_source(args: &AddArgs) -> Result<Option<KeySource>> {
+    Ok(if let Some(cmd) = &args.api_key_helper {
+        Some(KeySource::Helper(cmd.clone()))
+    } else if args.api_key_stdin {
+        Some(KeySource::Managed(api_key::read_stdin()?))
+    } else if args.api_key_prompt {
+        Some(KeySource::Managed(api_key::read_prompt()?))
+    } else {
+        None
+    })
 }
 
 /// No `~/.claude` yet: create the default profile (`claude`), keeping the
@@ -543,7 +611,8 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
     {
         link.push(plugins::ITEM.into());
     }
-    let bin = if args.no_login {
+    let key = key_source(args)?;
+    let bin = if args.no_login || key.is_some() {
         claude::find_binary(env.claude_bin.as_deref())
     } else {
         Some(claude::require_binary(env.claude_bin.as_deref())?)
@@ -551,8 +620,9 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
 
     ui::header(&format!("Add Claude Code profile \"{alias}\""));
     let profile_dir = paths.profile_dir(&alias);
-    let mut steps = ui::Steps::new(8);
+    let mut steps = ui::Steps::new(if key.is_some() { 9 } else { 8 });
     let mut undo: Transaction<Undo> = Transaction::new();
+    let mut key_written: Option<api_key::Written> = None;
 
     let result = (|| -> Result<()> {
         let step = steps.start("Validate alias");
@@ -609,7 +679,10 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
             plugins::in_link(&link)
                 .then(|| plugins::shared_root(paths))
                 .as_deref(),
-            shell::Blocks::for_profile(cfg, None),
+            shell::Blocks {
+                api_key: key.is_some(),
+                ..shell::Blocks::for_profile(cfg, None)
+            },
         )?;
         undo.record(Undo::Wrapper(wrapper.clone()));
         if dir_on_path(&paths.local_bin) {
@@ -640,6 +713,10 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
             }
         };
 
+        if let Some(key) = &key {
+            key_written = api_key_steps(&mut steps, &mut undo, paths, &alias, &profile_dir, key)?;
+        }
+
         let step = steps.start("Register profile");
         cfg.profiles.insert(
             alias.clone(),
@@ -665,6 +742,8 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
                 settings: None,
                 link: link.clone(),
                 auto_sync: None,
+                auth: key.is_some().then_some(AuthKind::ApiKey),
+                api_budget_usd: args.budget,
             },
         );
         undo.record(Undo::Registry(alias.clone()));
@@ -679,6 +758,20 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
     }
 
     let account = match (&bin, args.no_login) {
+        // An API key needs no sign-in; Claude Code's first-run setup is
+        // marked done, so the first start goes straight to the prompt.
+        _ if key.is_some() => {
+            if let Err(e) = mark_onboarded(
+                &profile_dir.join(".claude.json"),
+                clone.then_some(paths.default_json.as_path()),
+            ) {
+                ui::warn(&format!(
+                    "could not update {}: {e:#} — Claude Code may show its first-run setup once",
+                    paths.display(&profile_dir.join(".claude.json"))
+                ));
+            }
+            None
+        }
         (Some(bin), false) => {
             let c = Claude {
                 bin,
@@ -734,7 +827,12 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
     };
     // The profile is kept from here on: nothing below rolls it back.
     undo.commit();
-    let logged_in = account.is_some();
+    if let Some(w) = &key_written
+        && let Err(e) = api_key::keep_write(w)
+    {
+        ui::warn(&format!("could not remove the replaced key file: {e:#}"));
+    }
+    let logged_in = account.is_some() || key.is_some();
     if let Some(a) = &account {
         warn_if_duplicate(paths, cfg, Some(&alias), a, args.from_default);
     }
@@ -759,6 +857,53 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
 
     summary(paths, cfg, &alias, clone, logged_in);
     Ok(())
+}
+
+/// The steps that give an API-key profile its key (#132), between the shell
+/// alias and the registry: store a managed key ([`api_key::write_key_file`],
+/// as late as possible), install the mcc statusline through the profile's
+/// settings overlay so its spend is recorded (before `apiKeyHelper` is
+/// written, so no settings backup holds it), then set `apiKeyHelper`.
+/// Returns the key file written, if any.
+fn api_key_steps(
+    steps: &mut ui::Steps,
+    undo: &mut Transaction<Undo>,
+    paths: &Paths,
+    alias: &str,
+    profile_dir: &Path,
+    key: &KeySource,
+) -> Result<Option<api_key::Written>> {
+    let step = steps.start("Store the API key");
+    let (helper, written) = match key {
+        KeySource::Helper(cmd) => {
+            step.skip("--api-key-helper: Claude Code runs your command, mcc stores no key");
+            (cmd.clone(), None)
+        }
+        KeySource::Managed(k) => {
+            let path = api_key::managed_key_path(paths, profile_dir);
+            let w = api_key::write_key_file(&path, k)?;
+            undo.record(Undo::KeyFile(w.clone()));
+            step.ok(&format!("{} (only you can read it)", paths.display(&path)));
+            (api_key::managed_helper(&path), Some(w))
+        }
+    };
+
+    let step = steps.start("Install the mcc statusline (records the estimated spend)");
+    let state = paths.profile_state_dir(alias);
+    if !state.exists() {
+        undo.record(Undo::Dir(state));
+    }
+    super::statusline::install_in_overlay(paths, alias, profile_dir)?;
+    step.ok(&format!(
+        "in {} and its settings overlay {}",
+        copy::SETTINGS_FILE,
+        copy::OVERLAY_FILE
+    ));
+
+    let step = steps.start("Set apiKeyHelper");
+    api_key::set_helper(profile_dir, &helper)?;
+    step.ok("apiKeyHelper set");
+    Ok(written)
 }
 
 fn now() -> String {
@@ -865,6 +1010,13 @@ fn resolve_alias(
     ));
     loop {
         let a = ui::input("Alias for the new profile (this becomes its command)", "")?;
+        if api_key::looks_like_key(&a) {
+            ui::warn(&format!(
+                "{}: the alias is the profile's command name",
+                api_key::KEY_ON_COMMAND_LINE
+            ));
+            continue;
+        }
         if let Err(m) = validate::check_syntax(&a) {
             ui::warn(&m);
             continue;
@@ -910,9 +1062,12 @@ fn conflict_error(alias: &str, conflicts: &[validate::Conflict]) -> anyhow::Erro
 
 fn summary(paths: &Paths, cfg: &Config, alias: &str, clone: bool, logged_in: bool) {
     let p = &cfg.profiles[alias];
+    let api = p.auth == Some(AuthKind::ApiKey);
     ui::result(
         true,
-        &if logged_in {
+        &if api {
+            format!("API-key profile \"{alias}\" is ready — start it with `{alias}`")
+        } else if logged_in {
             format!("profile \"{alias}\" is ready — start it with `{alias}`")
         } else {
             format!("profile \"{alias}\" created — run `{alias}` to log in and start")
@@ -924,6 +1079,18 @@ fn summary(paths: &Paths, cfg: &Config, alias: &str, clone: bool, logged_in: boo
             (Some(e), Some(o)) => ui::kv("Account", &format!("{e} ({o})")),
             (Some(e), None) => ui::kv("Account", e),
             _ => {}
+        }
+    }
+    if api {
+        ui::kv(
+            "Auth",
+            &match api_key::managed_key_of(paths, &p.dir) {
+                Some(key) => format!("API key, in {}", paths.display(&key)),
+                None => "API key, from your apiKeyHelper command".into(),
+            },
+        );
+        if let Some(b) = p.api_budget_usd {
+            ui::kv("Budget", &format!("${b:.2} a month"));
         }
     }
     if let Some(l) = &p.label {

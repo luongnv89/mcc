@@ -32,10 +32,10 @@ pub fn run(paths: &Paths, cfg: &Config, args: &ListArgs) -> Result<()> {
         Some(live) => devin::Lookup::of(live),
     };
     let devin = devin_row(paths, how, show_email);
-    let shown: Vec<ProfileMetrics> = all.iter().cloned().chain(devin.clone()).collect();
 
     let mut out = std::io::stdout().lock();
     if args.json || args.json_v2 {
+        let shown: Vec<ProfileMetrics> = all.iter().cloned().chain(devin.clone()).collect();
         super::write_json(
             &mut out,
             "profiles",
@@ -45,14 +45,20 @@ pub fn run(paths: &Paths, cfg: &Config, args: &ListArgs) -> Result<()> {
     } else if args.long {
         let now = Utc::now();
         let bar = card_bar(&all, now);
-        for (m, known) in all.iter().zip(known) {
+        // API-key profiles' cards after the others' (#132).
+        let (apis, subs): (Vec<_>, Vec<_>) =
+            all.iter().zip(known).partition(|(m, _)| m.auth.is_some());
+        for (m, known) in subs.into_iter().chain(apis) {
             card(&mut out, m, known && !show_email, bar, now, paths)?;
         }
         if let Some(d) = &devin {
             devin_card(&mut out, d, now, paths)?;
         }
     } else {
+        let (subs, apis) = split_api_keys(&all);
+        let shown: Vec<ProfileMetrics> = subs.iter().cloned().chain(devin.clone()).collect();
         table(&mut out, &shown)?;
+        api_key_table(&mut out, &apis, shown.len())?;
         if !cfg.projects.is_empty() {
             writeln!(out)?;
             for line in project_lines(paths, cfg, &all) {
@@ -76,11 +82,7 @@ pub fn run(paths: &Paths, cfg: &Config, args: &ListArgs) -> Result<()> {
             ui::human_size(total)
         ));
         sharing_notes(&all, cfg);
-        let names: Vec<&str> = all.iter().map(|m| m.name.as_str()).collect();
-        let usages: Vec<&Usage> = all.iter().map(|m| &m.usage).collect();
-        if let Some(hint) = usage::no_data_hint(&names, &usages) {
-            ui::hint(&hint);
-        }
+        usage_hints(&all);
         if let Some(hint) = devin
             .as_ref()
             .and_then(|d| devin::not_looked_up_hint(&d.usage, true))
@@ -128,6 +130,86 @@ pub(super) fn profiles(
         attach_usage(paths, live, &mut all);
     }
     all
+}
+
+/// The profiles with a Claude login, and the API-key profiles (#132), which
+/// `mcc list` and bare `mcc` show apart, after the table.
+pub(super) fn split_api_keys(all: &[ProfileMetrics]) -> (Vec<ProfileMetrics>, Vec<ProfileMetrics>) {
+    all.iter().cloned().partition(|m| m.auth.is_none())
+}
+
+/// The hints under the table: profiles with no usage cached (API-key
+/// profiles have none to cache), and API-key profiles with no spend
+/// recorded yet.
+pub(super) fn usage_hints(all: &[ProfileMetrics]) {
+    let (subs, apis) = split_api_keys(all);
+    let names: Vec<&str> = subs.iter().map(|m| m.name.as_str()).collect();
+    let usages: Vec<&Usage> = subs.iter().map(|m| &m.usage).collect();
+    if let Some(hint) = usage::no_data_hint(&names, &usages) {
+        ui::hint(&hint);
+    }
+    let names: Vec<&str> = apis.iter().map(|m| m.name.as_str()).collect();
+    let usages: Vec<&Usage> = apis
+        .iter()
+        .map(|m| &m.usage)
+        .filter(|u| u.reason != Some(Reason::Disabled))
+        .collect();
+    if usages.len() == names.len()
+        && let Some(hint) = usage::no_cost_hint(&names, &usages)
+    {
+        ui::hint(&hint);
+    }
+}
+
+/// The API-key profiles' table under the main one (#132), numbered on from
+/// its `after` rows: no 5-hour or weekly window, the estimated spend this
+/// month instead (and the budget, when set). Nothing without any.
+///
+/// ```text
+/// # API KEY  ACCOUNT  EST. SPEND (THIS MONTH, THIS MACHINE)         LAST USED  SYNC
+/// 3 api      Acme     est. $1.23 this month of $50.00 budget (2%)  2h ago     ✓
+/// ```
+pub(super) fn api_key_table(
+    out: &mut impl Write,
+    apis: &[ProfileMetrics],
+    after: usize,
+) -> Result<()> {
+    if apis.is_empty() {
+        return Ok(());
+    }
+    let total = after + apis.len();
+    let head = indexed("API KEY", None, total);
+    let headers = [
+        head.as_str(),
+        "ACCOUNT",
+        "EST. SPEND (THIS MONTH, THIS MACHINE)",
+        "LAST USED",
+        "SYNC",
+    ];
+    let rows: Vec<Vec<String>> = apis
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let name = ui::paint(&m.name, m.color.as_deref());
+            let name = if m.exists {
+                name
+            } else {
+                format!("{name} (missing)")
+            };
+            vec![
+                indexed(&name, Some(after + i), total),
+                account_cell(m),
+                usage::spend_text(&m.usage),
+                metrics::ago(m.last_used_time),
+                sync_cell(m),
+            ]
+        })
+        .collect();
+    writeln!(out)?;
+    for line in aligned(&headers, rows) {
+        writeln!(out, "{line}")?;
+    }
+    Ok(())
 }
 
 /// Devin's row when Devin is set up here (its CLI's credentials file
@@ -243,6 +325,8 @@ fn attach_usage(paths: &Paths, live: bool, all: &mut [ProfileMetrics]) {
             name: m.name.clone(),
             config_dir: m.config_dir.clone(),
             is_default: m.is_default,
+            api_key: m.auth.is_some(),
+            budget_usd: m.budget_usd,
         })
         .collect();
     for (m, u) in all.iter_mut().zip(usage::lookup(paths, &targets, live)) {
@@ -544,6 +628,12 @@ fn table_lines(all: &[ProfileMetrics], bar: usize, now: DateTime<Utc>) -> Vec<St
             ]
         })
         .collect();
+    aligned(&headers, rows)
+}
+
+/// The bold header and the rows, each column as wide as its widest cell,
+/// two spaces apart.
+fn aligned(headers: &[&str], rows: Vec<Vec<String>>) -> Vec<String> {
     let widths: Vec<usize> = (0..headers.len())
         .map(|i| {
             rows.iter()
@@ -679,6 +769,13 @@ fn card(
         "Directory",
         format!("{}{}", m.dir, if m.exists { "" } else { " (missing)" }),
     )?;
+    if m.auth.is_some() {
+        row(
+            out,
+            "Auth",
+            "API key, through apiKeyHelper (API usage billing; no Claude login)".into(),
+        )?;
+    }
     row(
         out,
         "Account",
@@ -687,6 +784,7 @@ fn card(
             (Some(a), None) => a.clone(),
             (None, Some(o)) if email_hidden => format!("{o} (email hidden; --show-email shows it)"),
             (None, None) if email_hidden => "email hidden (--show-email shows it)".into(),
+            _ if m.auth.is_some() => "— (an API key has no Claude account)".into(),
             _ => "— (no account info yet; log in by running the command)".into(),
         },
     )?;
@@ -699,8 +797,12 @@ fn card(
     if let Some(color) = &m.color {
         row(out, "Color", ui::paint(color, Some(color)))?;
     }
-    for (k, v) in usage_rows(&m.usage, bar, now) {
-        row(out, k, v)?;
+    if m.auth.is_some() {
+        row(out, "Est. spend", usage::spend_text(&m.usage))?;
+    } else {
+        for (k, v) in usage_rows(&m.usage, bar, now) {
+            row(out, k, v)?;
+        }
     }
     if let Some(model) = &m.model {
         row(out, "Model", model.clone())?;

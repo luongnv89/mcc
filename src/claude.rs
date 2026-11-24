@@ -287,6 +287,20 @@ mod tests {
         assert_eq!(s.config_directory.as_deref(), Some("/h/.mcc/profiles/work"));
     }
 
+    /// #132 (probe P5): a profile whose key comes from `apiKeyHelper` is
+    /// logged in, with no account, and is no Console sign-in, so `mcc add`
+    /// never warns about one.
+    #[test]
+    fn an_api_key_helper_login_is_no_console_sign_in() {
+        let s = parse_status(serde_json::json!({
+            "loggedIn": true, "authMethod": "api_key_helper", "apiKeySource": "apiKeyHelper"
+        }));
+        assert!(s.logged_in);
+        assert!(!s.is_console());
+        assert_eq!(s.method.as_deref(), Some("api_key_helper"));
+        assert_eq!(s.email, None);
+    }
+
     #[test]
     fn console_logins_are_told_apart() {
         // A Console sign-in, as Claude Code 2.1.286 reports it.

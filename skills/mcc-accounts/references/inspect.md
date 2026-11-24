@@ -22,6 +22,7 @@ Read this when you need a JSON field, a `reason` code, an exit code, or when `sc
 | `launcher_current` | `false` → suggest `mcc refresh-launchers` |
 | `usage` | See below |
 | `provider` | mcc 0.11.0+: `claude` for a Claude Code profile, `devin` for Devin's row (see below). Missing before 0.11.0 |
+| `auth` | mcc after 0.11.0: `"api_key"` for an API-key profile (see below); missing for every other row |
 
 `mcc list` measures every profile on disk, so it can take several seconds. `mcc usage --json-v2` is fast but has no `dir`.
 
@@ -35,6 +36,7 @@ mcc 0.11.0+: when the Devin CLI is signed in, `profiles[]` in `list` and `usage`
 - A window whose reset time has passed is dropped (`null`). `null` is unknown, not 0%.
 - `source: cache` comes from the opt-in `mcc statusline` cache. Report `updated_at` as the age. Team and Enterprise seats may report no rate limits at all.
 - Devin's row (mcc 0.11.0+) has `five_hour: null` and may have a `daily` window (same shape as `weekly`; absent when Devin's plan hides it or the saved one has reset) and `overage_usd` (dollars; absent when not reported). Both keys are left out when the row is unavailable. Claude Code profiles' `usage` never has either key.
+- An API-key profile's row (`auth: "api_key"`, mcc after 0.11.0) is `unavailable` with `no_data` (or `not_logged_in` with a live lookup) and never has a window: those codes don't mean it needs a login. Its `usage` adds `est_cost_usd` (US dollars spent this UTC month, Claude Code's own list-price estimate for sessions on this machine; absent before the first session is recorded) and `budget_usd` (the monthly budget the user set; absent when none). It is an estimate, not the bill: mcc can't read the Console balance or spend limit.
 
 | `reason` | Meaning |
 | --- | --- |

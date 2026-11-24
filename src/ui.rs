@@ -376,6 +376,14 @@ pub fn input(prompt: &str, flag_hint: &str) -> anyhow::Result<String> {
     Ok(v.trim().to_string())
 }
 
+/// A hidden prompt (nothing echoed), e.g. for an API key. Never logged.
+pub fn password(prompt: &str, flag_hint: &str) -> anyhow::Result<String> {
+    require_interactive(prompt, flag_hint)?;
+    Ok(dialoguer::Password::with_theme(&theme())
+        .with_prompt(prompt)
+        .interact()?)
+}
+
 pub fn select(
     prompt: &str,
     items: &[&str],

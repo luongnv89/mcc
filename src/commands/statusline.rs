@@ -11,7 +11,8 @@
 //! Claude Code runs the shim (bare `mcc statusline`) on every status-line
 //! refresh with the session's JSON on stdin. It works out the profile from
 //! `CLAUDE_CONFIG_DIR`, saves `rate_limits` to
-//! `~/.mcc/state/<profile>/usage.json`, then runs the previous `statusLine`
+//! `~/.mcc/state/<profile>/usage.json` (for an API-key profile, which has
+//! none, the session's cost to its ledger: [`crate::cost`]), then runs the previous `statusLine`
 //! command with the same stdin and prints its output. That path runs many
 //! times a minute: it never takes the config lock, never writes
 //! `~/.mcc/config.toml`, never logs, and never fails because of mcc's own
@@ -74,10 +75,15 @@ pub fn render(paths: &Paths, prefix: bool) -> Result<()> {
 
     if let Some(name) = &profile
         && let Ok(status) = serde_json::from_slice::<Value>(&input)
-        && let Some(usage) = usage_record(name, &status, chrono::Utc::now())
     {
-        // Best effort: a full disk must not blank the status line.
-        let _ = write_json(&paths.profile_state_dir(name).join(USAGE_FILE), &usage);
+        let now = chrono::Utc::now();
+        if let Some(usage) = usage_record(name, &status, now) {
+            // Best effort: a full disk must not blank the status line.
+            let _ = write_json(&paths.profile_state_dir(name).join(USAGE_FILE), &usage);
+        } else if cfg.profiles.get(name).is_some_and(|p| p.is_api_key()) {
+            // An API key has no rate limits: its session's cost instead (#132).
+            crate::cost::record(paths, name, &status, now);
+        }
     }
 
     let output = match wrapped_command(paths, &cfg, profile.as_deref()) {
@@ -517,6 +523,34 @@ fn install_into(
     Ok(Installed::New(backup))
 }
 
+/// Give the API-key profile `alias` (at `dir`) the shim, so its spend is
+/// recorded (#132): in its `settings.json` (wrapping the statusLine it has,
+/// recorded as `install` does), then the same `statusLine` in its settings
+/// overlay (`settings.mcc.json`). Overlay keys are the profile's own: `mcc
+/// sync` and the launch-time catch-up never replace them, and never take
+/// them into the default or other profiles. A shim already there (cloned
+/// from a default that has it) is kept as it is.
+pub(crate) fn install_in_overlay(paths: &Paths, alias: &str, dir: &Path) -> Result<()> {
+    let settings_path = dir.join(copy::SETTINGS_FILE);
+    let has_shim = read_settings(&settings_path)?
+        .get("statusLine")
+        .and_then(|v| v.get("command"))
+        .and_then(Value::as_str)
+        .is_some_and(is_shim);
+    if !has_shim {
+        let cmd = shim_command(&shim_binary()?, false);
+        install_into(paths, alias, &settings_path, &cmd)?;
+    }
+    let status_line = read_settings(&settings_path)?
+        .get("statusLine")
+        .cloned()
+        .context("the statusLine just installed")?;
+    let overlay_path = dir.join(copy::OVERLAY_FILE);
+    let mut overlay = read_settings(&overlay_path)?;
+    overlay.insert("statusLine".into(), status_line);
+    write_json(&overlay_path, &Value::Object(overlay))
+}
+
 fn install(paths: &Paths, cfg: &Config, prefix: bool, yes: bool) -> Result<()> {
     ui::header("Install the mcc statusline");
     if !paths.default_dir.is_dir() {
@@ -796,6 +830,8 @@ mod tests {
                 settings: None,
                 link: Vec::new(),
                 auto_sync: None,
+                auth: None,
+                api_budget_usd: None,
             },
         );
         let f = |d: Option<&str>| profile_for(&p, &cfg, d.map(OsStr::new));
