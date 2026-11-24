@@ -59,11 +59,15 @@
         <p class="hero-release"><a class="pill pill-link" href="changelog.html#v0.12.0"><span class="pill-tag">v0.12.0</span> What's new: API-key profiles and usage across machines<span aria-hidden="true">→</span></a></p>
         <span class="eyebrow">Open-source CLI · macOS &amp; Linux</span>
         <h1>Run every Claude Code account <span class="hl">side by side.</span></h1>
-        <p class="lede">mcc gives each account its own login, its own command, and a copy of your main setup. Type <code>work</code> for one account and <code>claude</code> for the other. No logging out in between.</p>
+        <p class="lede">Claude Code keeps one login in <code>~/.claude</code>. mcc gives each account its own command and a copy of your setup: <code>work</code> for one, <code>claude</code> for the other.</p>
         <div class="cta-row">
           <a class="btn btn-primary" href="#install">Install mcc</a>
-          <a class="btn btn-ghost" href="docs.html">Read the docs</a>
+          <a class="btn btn-ghost" href="#demo">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13l11-6.5z"/></svg>
+            Watch it run
+          </a>
         </div>
+        <div class="code hero-cmd"><pre><span class="p">$ </span>brew install luongnv89/tap/mcc</pre></div>
         <ul class="trust" aria-label="Project facts">
           <li>Apache-2.0</li>
           <li>Written in Rust</li>
@@ -72,116 +76,471 @@
         </ul>
       </div>
 
-      <figure class="term" data-tour style="margin:0" aria-label="Terminal: a tour of basic mcc commands">
-        <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>~/code/app — zsh</span></div>
-        <div class="tour-screen">
-<pre><span class="p">$ </span><span class="c">mcc list</span>
-<span class="w"># NAME       ACCOUNT  5H          WEEK      LAST USED  SYNC</span>
-1 default ★  —        85%! (35m)  62% (3d)  just now   —
-2 work       Acme     12% (4h)    30% (5d)  48m ago    ✓
-<span class="soft">  <span class="b">●</span> 2 profiles · 1.6 GB on disk · add one with `mcc add &lt;alias&gt;`</span>
-<span class="p">$ </span><span class="c">mcc usage</span>
-<span class="w"># PROFILE    5-HOUR  RESETS IN  WEEKLY  RESETS IN  UPDATED</span>
-1 work       12%     4h 10m     30%     5d 2h      48m ago
-2 default ★  85%!    35m        62%     3d 4h      just now
-<span class="p">$ </span><span class="c">work</span>     <span class="d"># Claude Code on the work account</span>
-<span class="p">$ </span><span class="c">claude</span>   <span class="d"># your default account, unchanged</span>
-<span class="p">$ </span><span class="c">mcc project set work</span>
-  <span class="g">✓</span> ~/code/app: `mcc run` starts `work` here
-<span class="soft d">    → when it is at its limit, `mcc run` asks whether to wait (the default) or start it anyway; `mcc list` shows every project</span>
-<span class="p">$ </span><span class="c">mcc run</span>
-<span class="soft">  <span class="b">●</span> starting `work` — the default for ~/code/app (5h 12%, week 30% used · 48m ago)</span></pre>
-        </div>
+      <!-- Example setup: the same accounts and numbers as the replays below. -->
+      <figure class="board" aria-label="Example setup: each command starts its own account">
+        <figcaption class="board-cap"><strong>Example setup</strong><span>one table for all of it: <code>mcc usage</code></span></figcaption>
+        <ol class="board-rows">
+          <li class="board-row">
+            <code class="board-cmd">claude</code>
+            <span class="board-wire" aria-hidden="true"></span>
+            <a class="board-acct" href="#sim-accounts">
+              <span class="board-name">default ★ <small>~/.claude</small><span class="kind">Subscription</span></span>
+              <span class="gauge"><span>5h</span><span class="meter is-warn" style="--v:85;--i:0"><i></i></span><b>85%!</b></span>
+              <span class="gauge"><span>week</span><span class="meter" style="--v:62;--i:1"><i></i></span><b>62%</b></span>
+            </a>
+          </li>
+          <li class="board-row">
+            <code class="board-cmd">work</code>
+            <span class="board-wire" aria-hidden="true"></span>
+            <a class="board-acct" href="#sim-accounts">
+              <span class="board-name">work <small>~/.mcc/profiles/work</small><span class="kind">Subscription</span></span>
+              <span class="gauge"><span>5h</span><span class="meter" style="--v:12;--i:2"><i></i></span><b>12%</b></span>
+              <span class="gauge"><span>week</span><span class="meter" style="--v:30;--i:3"><i></i></span><b>30%</b></span>
+            </a>
+          </li>
+          <li class="board-row">
+            <code class="board-cmd">api</code>
+            <span class="board-wire" aria-hidden="true"></span>
+            <a class="board-acct" href="#sim-api">
+              <span class="board-name">api <small>est. $12.40 of $50.00</small><span class="kind">API key</span></span>
+              <span class="gauge"><span>month</span><span class="meter" style="--v:25;--i:4"><i></i></span><b>25%</b></span>
+            </a>
+          </li>
+          <li class="board-row">
+            <code class="board-cmd">mcc devin</code>
+            <span class="board-wire" aria-hidden="true"></span>
+            <a class="board-acct" href="#sim-devin">
+              <span class="board-name">devin <small>Main team</small><span class="kind">Devin</span></span>
+              <span class="gauge"><span>day</span><span class="meter" style="--v:12;--i:5"><i></i></span><b>12%</b></span>
+              <span class="gauge"><span>week</span><span class="meter" style="--v:54;--i:6"><i></i></span><b>54%</b></span>
+            </a>
+          </li>
+          <li class="board-row is-remote">
+            <span class="board-via">over SSH</span>
+            <span class="board-wire" aria-hidden="true"></span>
+            <a class="board-acct" href="#sim-ssh">
+              <span class="board-name">lab <small>on me@lab-box</small><span class="kind">Other machine</span></span>
+              <span class="gauge"><span>5h</span><span class="meter" style="--v:40;--i:7"><i></i></span><b>40%</b></span>
+              <span class="gauge"><span>week</span><span class="meter" style="--v:71;--i:8"><i></i></span><b>71%</b></span>
+            </a>
+          </li>
+        </ol>
       </figure>
     </div>
   </section>
 
-  <!-- PROBLEM -->
+  <!-- PROBLEM + AGITATE -->
   <section class="section-alt" aria-labelledby="problem-title">
     <div class="wrap">
       <div class="section-head">
         <span class="eyebrow">The problem</span>
         <h2 id="problem-title">Claude Code has one config directory. You have more than one account.</h2>
-        <p class="lede">Your login, settings, skills, agents and MCP servers all live in <code>~/.claude</code>. That holds up until a second account shows up.</p>
+        <ul class="scenes" aria-label="When a second account shows up">
+          <li>A personal plan and a company plan</li>
+          <li>A limit hit in the middle of a task</li>
+          <li>Client work on the client's seat</li>
+        </ul>
       </div>
-      <div class="grid grid-3">
-        <article class="card">
-          <span class="tag">Scenario 01</span>
-          <h3>A personal plan and a company plan</h3>
-          <p>You use your own subscription for side projects and your employer's for work, and the two should never share a session.</p>
-        </article>
-        <article class="card">
-          <span class="tag">Scenario 02</span>
-          <h3>A limit hit in the middle of a task</h3>
-          <p>Your 5-hour window runs out halfway through a refactor. The account that still has room is one logout and one login away.</p>
-        </article>
-        <article class="card">
-          <span class="tag">Scenario 03</span>
-          <h3>Client work on the client's seat</h3>
-          <p>A client pays for the account, so the sessions, history and billing for their project belong on their login, not yours.</p>
-        </article>
+
+      <h3 class="compare-title" id="agitate-title">Each workaround costs you something.</h3>
+      <div class="compare" role="group" aria-labelledby="agitate-title">
+        <div class="compare-head" aria-hidden="true">
+          <span class="by">By hand</span><span></span><span class="with">With mcc</span>
+        </div>
+        <ul class="compare-rows">
+          <li>
+            <div class="by"><span class="compare-k">By hand</span> <code>CLAUDE_CONFIG_DIR=~/.claude-work claude</code> on every start</div>
+            <span class="compare-arrow" aria-hidden="true"></span>
+            <div class="with"><span class="compare-k">With mcc</span> <code>work</code></div>
+          </li>
+          <li>
+            <div class="by"><span class="compare-k">By hand</span> Copy skills, agents, settings and MCP servers into each directory</div>
+            <span class="compare-arrow" aria-hidden="true"></span>
+            <div class="with"><span class="compare-k">With mcc</span> <code>mcc add work --clone</code> copies them, never the credentials</div>
+          </li>
+          <li>
+            <div class="by"><span class="compare-k">By hand</span> Fix every <code>~/.claude/...</code> path in hooks and settings</div>
+            <span class="compare-arrow" aria-hidden="true"></span>
+            <div class="with"><span class="compare-k">With mcc</span> Paths to copied items are rewritten per profile</div>
+          </li>
+          <li>
+            <div class="by"><span class="compare-k">By hand</span> Copies drift, with no record of what changed where</div>
+            <span class="compare-arrow" aria-hidden="true"></span>
+            <div class="with"><span class="compare-k">With mcc</span> Each profile catches up when it starts, keeping local edits</div>
+          </li>
+          <li>
+            <div class="by"><span class="compare-k">By hand</span> Open <code>/usage</code> in each account to see its limits</div>
+            <span class="compare-arrow" aria-hidden="true"></span>
+            <div class="with"><span class="compare-k">With mcc</span> <code>mcc usage</code>: every account's 5-hour and weekly limits in one table</div>
+          </li>
+          <li>
+            <div class="by"><span class="compare-k">By hand</span> Remember which repository belongs to which account</div>
+            <span class="compare-arrow" aria-hidden="true"></span>
+            <div class="with"><span class="compare-k">With mcc</span> <code>mcc project set work</code> once, then <code>mcc run</code></div>
+          </li>
+        </ul>
       </div>
     </div>
   </section>
 
-  <!-- AGITATE -->
-  <section aria-labelledby="agitate-title">
-    <div class="wrap">
-      <div class="section-head">
-        <span class="eyebrow">The workarounds</span>
-        <h2 id="agitate-title">Each workaround costs you something.</h2>
-      </div>
-      <ul class="costs">
-        <li><strong>Logging out and back in</strong><span>Every switch breaks your flow, and every new session runs on whichever account you touched last.</span></li>
-        <li><strong>Setting <code>CLAUDE_CONFIG_DIR</code> by hand</strong><span>You get a bare profile. None of your skills, agents, hooks, plugins or MCP servers come with it.</span></li>
-        <li><strong>Copying <code>~/.claude</code> yourself</strong><span>The copy drags credentials along, keeps paths that point back at the original directory, and falls out of date the day you add a skill to your main setup.</span></li>
-        <li><strong>Guessing which account has room</strong><span>Nothing shows the 5-hour and weekly limits of all your accounts in one place, so you find out when a session stops.</span></li>
-      </ul>
-    </div>
-  </section>
-
-  <!-- SOLUTION -->
-  <section class="section-alt" aria-labelledby="solution-title">
+  <!-- SOLUTION: the simulator -->
+  <section id="demo" aria-labelledby="solution-title">
     <div class="wrap">
       <div class="section-head">
         <span class="eyebrow">What mcc does</span>
         <h2 id="solution-title">One command per account. One setup across all of them.</h2>
+        <p class="lede">Replays of real mcc 0.12.0 output, captured in a sandbox with test accounts and trimmed for length.</p>
+      </div>
+
+      <div class="sim" data-sim>
+        <div class="sim-tabs" role="tablist" aria-label="Feature replays">
+          <button class="sim-tab" type="button" role="tab" id="tab-accounts" aria-controls="sim-accounts" aria-selected="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 17l6-5-6-5"/><path d="M12 19h8"/></svg>Accounts
+          </button>
+          <button class="sim-tab" type="button" role="tab" id="tab-api" aria-controls="sim-api" aria-selected="false" tabindex="-1">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9"/><path d="M16 7l3 3"/></svg>API key
+          </button>
+          <button class="sim-tab" type="button" role="tab" id="tab-usage" aria-controls="sim-usage" aria-selected="false" tabindex="-1">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M22 20H2"/></svg>Usage
+          </button>
+          <button class="sim-tab" type="button" role="tab" id="tab-devin" aria-controls="sim-devin" aria-selected="false" tabindex="-1">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="8" width="16" height="11" rx="2"/><path d="M12 8V4"/><path d="M9 13v2"/><path d="M15 13v2"/></svg>Devin
+          </button>
+          <button class="sim-tab" type="button" role="tab" id="tab-ssh" aria-controls="sim-ssh" aria-selected="false" tabindex="-1">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01"/><path d="M7 16.5h.01"/></svg>Over SSH
+          </button>
+          <button class="sim-tab" type="button" role="tab" id="tab-projects" aria-controls="sim-projects" aria-selected="false" tabindex="-1">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>Projects
+          </button>
+          <button class="sim-tab" type="button" role="tab" id="tab-sync" aria-controls="sim-sync" aria-selected="false" tabindex="-1">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 01-15.5 6.2L3 16"/><path d="M3 12a9 9 0 0115.5-6.2L21 8"/><path d="M21 3v5h-5"/><path d="M3 21v-5h5"/></svg>Sync
+          </button>
+        </div>
+
+        <div class="sim-panel" id="sim-accounts" role="tabpanel" aria-labelledby="tab-accounts" data-label="Accounts">
+          <div class="sim-cap">
+            <div>
+              <h3>A command for each account</h3>
+              <p><code>mcc add work</code> builds the profile, its launcher and a shell alias, then opens the sign-in. <code>claude</code> stays exactly as it was.</p>
+            </div>
+            <ul class="sim-facts">
+              <li>A failed <code>add</code> rolls itself back</li>
+              <li><a href="docs.html#cmd-add">mcc add</a></li>
+            </ul>
+          </div>
+          <figure class="term" aria-label="Terminal: adding a profile named work">
+            <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>~ — zsh</span></div>
+            <div class="sim-screen">
+<pre><span class="p">$ </span><span class="c">mcc add work --clone</span>
+<span class="a">◆ Add Claude Code profile "work"</span>
+  [1/8] Validate alias
+        <span class="g">✓</span> done — "work" is available (1ms)
+  [2/8] Create ~/.mcc/profiles/work
+        <span class="g">✓</span> done (0ms)
+  [3/8] Copy setup from the default profile
+<span class="soft">        <span class="g">✓</span> done — 14 items (settings 1, claude-md 1, agents 3, skills 7, commands 1, hooks 1), 1 MCP servers; plugins shared with the default; no credentials copied (9ms)</span>
+  [4/8] Install launcher ~/.local/bin/work
+        <span class="g">✓</span> done (0ms)
+  [5/8] Add shell alias
+        <span class="g">✓</span> done — ~/.zshrc (0ms)
+  [6/8] Register profile
+        <span class="g">✓</span> done — ~/.mcc/config.toml (0ms)
+  [7/8] Log in (complete the sign-in in your browser)
+Login successful.
+        <span class="g">✓</span> done (10ms)
+  [8/8] Verify login
+        <span class="g">✓</span> done — dev@acme.example (8ms)
+
+  Result: profile "work" is ready — start it with `work`
+    Command:           work
+    Account:           dev@acme.example
+    Directory:         ~/.mcc/profiles/work
+    Setup:             cloned from default (sync later with `mcc sync`)
+    Launcher:          ~/.local/bin/work
+    Shell alias:       ~/.zshrc
+<span class="p">$ </span><span class="c">work</span><span class="d">     # Claude Code on the work account</span>
+<span class="p">$ </span><span class="c">claude</span><span class="d">   # your default account, unchanged</span></pre>
+            </div>
+          </figure>
+        </div>
+
+        <div class="sim-panel" id="sim-api" role="tabpanel" aria-labelledby="tab-api" data-label="API key">
+          <div class="sim-cap">
+            <div>
+              <h3>Profiles that run on an API key</h3>
+              <p>Paying with an Anthropic API key instead of a subscription? The key goes in by pipe or hidden prompt, never as an argument, and the profile needs no sign-in.</p>
+            </div>
+            <ul class="sim-facts">
+              <li>Key kept in a <code>0600</code> file</li>
+              <li>Spend against a budget you set</li>
+              <li><a href="docs.html#cmd-add">API-key profiles</a></li>
+            </ul>
+          </div>
+          <figure class="term" aria-label="Terminal: adding a profile that uses an API key, then listing profiles">
+            <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>~ — zsh</span></div>
+            <div class="sim-screen">
+<pre><span class="p">$ </span><span class="c">mcc add api --clone --api-key-stdin --budget 50 &lt; key.txt</span>
+<span class="a">◆ Add Claude Code profile "api"</span>
+  [1/9] Validate alias
+        <span class="g">✓</span> done — "api" is available (0ms)
+<span class="d">  ⋮</span>
+  [6/9] Store the API key
+        <span class="g">✓</span> done — ~/.mcc/keys/api-c3eeea3b.key (only you can read it) (7ms)
+  [7/9] Install the mcc statusline (records the estimated spend)
+        <span class="g">✓</span> done — in settings.json and its settings overlay settings.mcc.json (1ms)
+  [8/9] Set apiKeyHelper
+        <span class="g">✓</span> done — apiKeyHelper set (0ms)
+  [9/9] Register profile
+        <span class="g">✓</span> done — ~/.mcc/config.toml (0ms)
+
+  Result: API-key profile "api" is ready — start it with `api`
+    Command:           api
+    Auth:              API key, in ~/.mcc/keys/api-c3eeea3b.key
+    Budget:            $50.00 a month
+<span class="p">$ </span><span class="c">mcc list</span><span class="d">     # after a few sessions on the key</span>
+<span class="w"># NAME       ACCOUNT   5H                     WEEK                 LAST USED  SYNC</span>
+1 default ★  Personal  <span class="y">█████████</span><span class="d">░</span> <span class="y">85%!</span> (35m)  <span class="g">██████</span><span class="d">░░░░</span> 62% (3d)  just now   —
+2 work       Acme      <span class="g">█</span><span class="d">░░░░░░░░░</span> 12% (4h)    <span class="g">███</span><span class="d">░░░░░░░</span> 30% (5d)  just now   <span class="g">✓</span>
+
+<span class="w"># API KEY  ACCOUNT  EST. SPEND (THIS MONTH, THIS MACHINE)          LAST USED  SYNC</span>
+3 api      —        est. $12.40 this month of $50.00 budget (25%)  just now   <span class="g">✓</span>
+  <span class="b">●</span> 3 profiles · 4.2 KB on disk · add one with `mcc add &lt;alias&gt;`</pre>
+            </div>
+          </figure>
+        </div>
+
+        <div class="sim-panel" id="sim-usage" role="tabpanel" aria-labelledby="tab-usage" data-label="Usage">
+          <div class="sim-cap">
+            <div>
+              <h3>Every limit on one screen</h3>
+              <p><code>mcc usage</code> shows each account's 5-hour and weekly usage and when it resets. Anything at 80% gets a <code>!</code>, at 95% a <code>!!</code>, so it reads the same without colour.</p>
+            </div>
+            <ul class="sim-facts">
+              <li>Reads no token, touches no network</li>
+              <li>Emails hidden by default</li>
+              <li><a href="docs.html#cmd-usage">mcc usage</a></li>
+            </ul>
+          </div>
+          <figure class="term" aria-label="Terminal: mcc usage output for two subscriptions, an API-key profile and Devin">
+            <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>~ — zsh</span></div>
+            <div class="sim-screen">
+<pre><span class="p">$ </span><span class="c">mcc usage</span>
+<span class="w"># PROFILE    LAST ACTIVE  LOGIN ENDS  5-HOUR           RESETS IN                 WEEKLY          RESETS IN                 UPDATED</span>
+1 work       48m ago      1d 3h       <span class="g">█</span><span class="d">░░░░░░░░░</span> 12%   4h 5m <span class="d">(Tue Nov 24 22:46)</span>  <span class="g">███</span><span class="d">░░░░░░░</span> 30%  5d 1h <span class="d">(Sun Nov 29 20:36)</span>  53m ago
+2 default ★  1m ago       27d 2h      <span class="y">█████████</span><span class="d">░</span> <span class="y">85%!</span>  30m <span class="d">(Tue Nov 24 19:11)</span>    <span class="g">██████</span><span class="d">░░░░</span> 62%  3d 3h <span class="d">(Fri Nov 27 22:36)</span>  6m ago
+
+<span class="w"># API KEY  LAST ACTIVE  EST. SPEND (THIS MONTH, THIS MACHINE)</span>
+3 api      2h ago       est. $12.40 this month of $50.00 budget (25%)
+
+<span class="w"># PROVIDER  DAILY           RESETS IN                  WEEKLY          RESETS IN                 OVERAGE  UPDATED</span>
+4 devin     <span class="g">█</span><span class="d">░░░░░░░░░</span> 12%  7h 55m <span class="d">(Wed Nov 25 02:36)</span>  <span class="g">█████</span><span class="d">░░░░░</span> 54%  3d 3h <span class="d">(Fri Nov 27 22:36)</span>  $3.50    17m ago
+  <span class="y">⚠</span> Login for 'work' expires in 1d 3h <span class="d">(Wed Nov 25 22:36)</span> — run `mcc login work` to renew it</pre>
+            </div>
+          </figure>
+        </div>
+
+        <div class="sim-panel" id="sim-devin" role="tabpanel" aria-labelledby="tab-devin" data-label="Devin">
+          <div class="sim-cap">
+            <div>
+              <h3>Devin beside your accounts</h3>
+              <p>Signed in to the Devin CLI? <code>mcc devin</code> starts it with its own settings and login, and its daily and weekly quota shows up beside your accounts.</p>
+            </div>
+            <ul class="sim-facts">
+              <li>mcc only reads Devin's login</li>
+              <li><a href="docs.html#cmd-devin">mcc devin</a></li>
+            </ul>
+          </div>
+          <figure class="term" aria-label="Terminal: starting Devin and reading its quota">
+            <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>~ — zsh</span></div>
+            <div class="sim-screen">
+<pre><span class="p">$ </span><span class="c">mcc devin</span><span class="d">     # starts the Devin CLI, with its own login and settings</span>
+<span class="p">$ </span><span class="c">mcc usage devin</span>
+<span class="w"># PROVIDER  DAILY           RESETS IN                  WEEKLY          RESETS IN                 OVERAGE  UPDATED</span>
+1 devin     <span class="g">█</span><span class="d">░░░░░░░░░</span> 12%  7h 55m <span class="d">(Wed Nov 25 02:36)</span>  <span class="g">█████</span><span class="d">░░░░░</span> 54%  3d 3h <span class="d">(Fri Nov 27 22:36)</span>  $3.50    17m ago
+<span class="p">$ </span><span class="c">mcc list</span>
+<span class="w"># NAME       ACCOUNT    5H                     WEEK                 LAST USED  SYNC</span>
+1 default ★  Personal   <span class="y">█████████</span><span class="d">░</span> <span class="y">85%!</span> (35m)  <span class="g">██████</span><span class="d">░░░░</span> 62% (3d)  just now   —
+2 work       Acme       <span class="g">█</span><span class="d">░░░░░░░░░</span> 12% (4h)    <span class="g">███</span><span class="d">░░░░░░░</span> 30% (5d)  just now   <span class="g">✓</span>
+3 devin      Main team  n/a                    <span class="g">█████</span><span class="d">░░░░░</span> 54% (3d)  —          —
+
+<span class="w"># API KEY  ACCOUNT  EST. SPEND (THIS MONTH, THIS MACHINE)          LAST USED  SYNC</span>
+4 api      —        est. $12.40 this month of $50.00 budget (25%)  just now   <span class="g">✓</span>
+  <span class="b">●</span> 3 profiles · 4.2 KB on disk · add one with `mcc add &lt;alias&gt;`</pre>
+            </div>
+          </figure>
+        </div>
+
+        <div class="sim-panel" id="sim-ssh" role="tabpanel" aria-labelledby="tab-ssh" data-label="Over SSH">
+          <div class="sim-cap">
+            <div>
+              <h3>Your other machines, over SSH</h3>
+              <p>List a machine once in <code>~/.mcc/config.toml</code>. <code>mcc usage</code> then reads its accounts over SSH with your own keys, one table per machine.</p>
+              <div class="code sim-snippet"><pre>[machines.lab]
+host = "me@lab-box"</pre></div>
+            </div>
+            <ul class="sim-facts">
+              <li>No login or token leaves any machine</li>
+              <li><a href="docs.html#machines">Multiple machines</a></li>
+            </ul>
+          </div>
+          <figure class="term" aria-label="Terminal: mcc usage with one table for this machine and one for a machine named lab">
+            <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>~ — zsh</span></div>
+            <div class="sim-screen">
+<pre><span class="p">$ </span><span class="c">mcc usage</span>
+<span class="d">── </span><span class="w">local</span><span class="d"> · updated 3m ago ─────────────────────────────────────────────────────────────────────────</span>
+<span class="w"># PROFILE    ALSO ON  LAST ACTIVE  LOGIN ENDS  5-HOUR      RESETS IN  WEEKLY     RESETS IN  UPDATED</span>
+1 work       —        48m ago      1d 3h       <span class="g">█</span><span class="d">░░░░</span> 12%   4h 8m      <span class="g">██</span><span class="d">░░░</span> 30%  5d 1h      50m ago
+2 default ★  lab      1m ago       27d 2h      <span class="y">████</span><span class="d">░</span> <span class="y">85%!</span>  33m        <span class="g">███</span><span class="d">░░</span> 62%  3d 3h      3m ago
+
+<span class="w"># API KEY  LAST ACTIVE  EST. SPEND (THIS MONTH, THIS MACHINE)</span>
+3 api      2h ago       est. $12.40 this month of $50.00 budget (25%)
+
+<span class="w"># PROVIDER  DAILY      RESETS IN  WEEKLY     RESETS IN  OVERAGE  UPDATED</span>
+4 devin     <span class="g">█</span><span class="d">░░░░</span> 12%  7h 58m     <span class="g">███</span><span class="d">░░</span> 54%  3d 3h      $3.50    14m ago
+
+<span class="d">── </span><span class="w">lab (me@lab-box)</span><span class="d"> · updated 7m ago ──────────────────────────────────────────────────────────────</span>
+<span class="w"># PROFILE    ALSO ON  LAST ACTIVE  LOGIN ENDS  5-HOUR      RESETS IN  WEEKLY     RESETS IN  UPDATED</span>
+1 default ★  local    3h ago       unknown     <span class="y">████</span><span class="d">░</span> <span class="y">85%!</span>  33m        <span class="g">███</span><span class="d">░░</span> 62%  3d 3h      3m ago
+2 lab        —        5m ago       unknown     <span class="g">██</span><span class="d">░░░</span> 40%   2h 12m     <span class="g">████</span><span class="d">░</span> 71%  5d 23h     7m ago</pre>
+            </div>
+          </figure>
+        </div>
+
+        <div class="sim-panel" id="sim-projects" role="tabpanel" aria-labelledby="tab-projects" data-label="Projects">
+          <div class="sim-cap">
+            <div>
+              <h3>Each project on its own account</h3>
+              <p><code>mcc project set work</code> makes <code>work</code> the profile <code>mcc run</code> starts in this repository. At its limit, <code>mcc run</code> asks first, with waiting as the default.</p>
+            </div>
+            <ul class="sim-facts">
+              <li>mcc never switches accounts for you</li>
+              <li><a href="docs.html#per-project">Per-project profiles</a></li>
+            </ul>
+          </div>
+          <figure class="term" aria-label="Terminal: giving a project its profile, then mcc run at the limit">
+            <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>~/code/app — zsh</span></div>
+            <div class="sim-screen">
+<pre><span class="p">$ </span><span class="c">mcc project set work --allow lab</span>
+  <span class="g">✓</span> ~/code/app: `mcc run` starts `work` here; at its limit it can also offer `lab`
+<span class="p">$ </span><span class="c">mcc here</span>
+Here: `work` — the default for ~/code/app
+  directory  ~/code/app
+  account    Acme (email hidden)
+  config     ~/.mcc/profiles/work
+<span class="p">$ </span><span class="c">mcc run</span>
+  <span class="b">●</span> starting `work` — the default for ~/code/app (5h 12%, week 30% used · 53m ago)
+<span class="p">$ </span><span class="c">mcc run</span><span class="d">     # later, with `work` at its 5-hour limit</span>
+  <span class="y">⚠</span> `work` (the default for ~/code/app) is at its 5-hour limit, resets in 36m
+? Wait, or start a profile? ›
+<span class="a">❯ Wait — `work` resets in 36m</span>
+  Start `work` anyway
+  Start `lab` instead</pre>
+            </div>
+          </figure>
+        </div>
+
+        <div class="sim-panel" id="sim-sync" role="tabpanel" aria-labelledby="tab-sync" data-label="Sync">
+          <div class="sim-cap">
+            <div>
+              <h3>Sync when your main setup changes</h3>
+              <p><code>mcc sync work</code> pulls new skills, settings and MCP servers from your default profile and keeps the changes you made in the profile.</p>
+            </div>
+            <ul class="sim-facts">
+              <li>Every overwritten file is backed up first</li>
+              <li>Auto sync is on by default</li>
+              <li><a href="docs.html#clone-sync">Clone and sync</a></li>
+            </ul>
+          </div>
+          <figure class="term" aria-label="Terminal: previewing a sync, then applying it">
+            <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>~ — zsh</span></div>
+            <div class="sim-screen">
+<pre><span class="p">$ </span><span class="c">mcc sync work --dry-run</span>
+<span class="a">◆ Sync default → "work"</span>
+  [1/1] Compare with the default profile
+        <span class="g">✓</span> done — 2 to add, 1 to update, 0 to remove, 5 unchanged, 1 local edit (1ms)
+    claude-md:         1 local edit (kept)
+    agents:            ~1 changed
+    skills:            +2 new
+  <span class="b">●</span> = CLAUDE.md (local edit, kept)
+  <span class="b">●</span> ~ agents/reviewer.md
+  <span class="b">●</span> + skills/changelog
+  <span class="b">●</span> + skills/changelog/SKILL.md
+
+<span class="soft">  Result: dry run — 3 change(s) would be applied to "work", except 1 local edit (kept); nothing was written</span>
+<span class="p">$ </span><span class="c">mcc sync work</span>
+<span class="a">◆ Sync default → "work"</span>
+  [1/3] Compare with the default profile
+        <span class="g">✓</span> done — 2 to add, 1 to update, 0 to remove, 5 unchanged, 1 local edit (1ms)
+<span class="d">  ⋮</span>
+  [2/3] Back up profile config
+        <span class="g">✓</span> done — ~/.mcc/profiles/work/.mcc-backup/20261124-183703.820 (0ms)
+  [3/3] Apply changes
+        <span class="g">✓</span> done — 3 change(s) (1ms)
+
+  Result: "work" now matches the default profile's setup, except 1 local edit (kept)</pre>
+            </div>
+          </figure>
+        </div>
+      </div>
+
+      <ul class="never" aria-label="What mcc never does">
+        <li>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg>
+          <div><strong>Never copies a login</strong><span>Each profile signs in separately, or uses its own API key.</span></div>
+        </li>
+        <li>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M10 9v6"/><path d="M14 9v6"/></svg>
+          <div><strong>Never switches accounts for you</strong><span>At a limit, <code>mcc run</code> asks, and waiting is the default.</span></div>
+        </li>
+        <li>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3l18 18"/><path d="M8.5 16.5a5 5 0 017 0"/><path d="M5 13a10 10 0 014-2.6"/><path d="M19 13a10 10 0 00-5-2.9"/><path d="M12 20h.01"/></svg>
+          <div><strong>Nothing over the network by default</strong><span><code>mcc list</code>, <code>mcc usage</code> and <code>mcc run</code> read a cache on your machine.</span></div>
+        </li>
+        <li>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 5.1A10 10 0 0112 5c5 0 9 4 10 7a12 12 0 01-3.2 4.3"/><path d="M6.5 6.6A12 12 0 002 12c1 3 5 7 10 7a10 10 0 004-.8"/><path d="M9.9 9.9a3 3 0 004.2 4.2"/></svg>
+          <div><strong>No telemetry</strong><span>mcc has no telemetry or analytics.</span></div>
+        </li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- SOLUTION: the rest -->
+  <section class="section-alt" aria-labelledby="more-title">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">Also included</span>
+        <h2 id="more-title">The parts you need less often.</h2>
       </div>
       <div class="features">
         <article class="card feature">
-          <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-5-6-5"/><path d="M12 19h8"/></svg></div>
-          <h3>A command for each account</h3>
-          <p><code>mcc add work</code> creates <code>~/.mcc/profiles/work</code>, a <code>work</code> launcher and a shell alias, then opens the login. <code>claude</code> stays exactly as it was. Rename a profile later with <code>mcc rename work job</code>; it stays logged in. Paying with an Anthropic API key instead of a subscription? <code>mcc add api --api-key-prompt</code> makes a profile that uses the key, with no sign-in.</p>
-        </article>
-        <article class="card feature">
-          <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 00-2-2H6a2 2 0 00-2 2v8a2 2 0 002 2h2"/></svg></div>
-          <h3>Your setup, without your login</h3>
-          <p>Cloning copies settings, <code>CLAUDE.md</code>, skills, agents, commands, hooks and MCP servers, and shares your default's plugins instead of copying them. Credentials, history and sessions stay behind, and paths to copied items are rewritten to the new profile. To resume sessions across accounts, opt each profile in with <code>mcc share work</code>: only sessions are shared, never logins.</p>
-        </article>
-        <article class="card feature">
-          <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 01-15.5 6.2L3 16"/><path d="M3 12a9 9 0 0115.5-6.2L21 8"/><path d="M21 3v5h-5"/><path d="M3 21v-5h5"/></svg></div>
-          <h3>Sync when your main setup changes</h3>
-          <p><code>mcc sync work</code> pulls new skills, settings and MCP servers from your default profile and keeps the changes you made in the profile. A setting you change in any profile reaches all the others, and a password or token is copied only after you agree. A file changed on both sides is reported as a conflict, not overwritten. <code>mcc diff work</code> shows what differs, <code>--dry-run</code> previews the sync, and every file it overwrites or removes is backed up first. With auto sync, on by default, profiles also catch up on their own as they start, copying only what the default added or updated.</p>
-        </article>
-        <article class="card feature">
-          <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M22 20H2"/></svg></div>
-          <h3>Every limit on one screen</h3>
-          <p><code>mcc usage</code> shows each account's 5-hour and weekly usage and when it resets. Anything at 80% gets a <code>!</code>, at 95% a <code>!!</code>, so it reads the same without colour. The account with the most weekly room comes first; <code>--sort</code> orders the rows by name, 5-hour or weekly usage, or the soonest reset. Signed in to the Devin CLI? Its daily and weekly quota shows up beside your accounts, and <a href="docs.html#cmd-devin"><code>mcc devin</code></a> starts Devin with its own settings and login. Use Claude Code on other computers too? List them once in your config and <code>mcc usage</code> reads their accounts over SSH, one table per machine. An API-key profile shows its estimated spend this month, against a budget you set. <code>mcc usage --all</code> looks every account up live for one run, with a risk notice each time, and caches what it finds; if an account's token has expired, it first has Claude Code refresh it, and says so before each refresh. It also shows when each login ends and, by default, warns two days ahead; <code>mcc login work</code> renews it in place. In <a href="https://herdr.dev">Herdr</a>, the separate <a href="https://github.com/luongnv89/mcc-herdr-plugin">mcc-herdr-plugin</a> shows the same numbers in a pane under the agent list.</p>
-        </article>
-        <article class="card feature">
           <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 00-15-6.7L3 13"/></svg></div>
-          <h3>Every change can be undone</h3>
-          <p>A failed <code>add</code> rolls itself back. Your rc file is backed up before each edit. <code>mcc delete</code> logs the profile out and removes only what mcc created.</p>
+          <h3>Rollback and backups</h3>
+          <p>A failed <code>add</code> rolls itself back. Your rc file is backed up before each edit.</p>
         </article>
         <article class="card feature">
-          <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg></div>
-          <h3>Each project on its own account</h3>
-          <p><code>mcc project set work</code> makes <code>work</code> the profile <code>mcc run</code> starts in this repository. Set it on a workspace folder (<code>--path ~/work</code>) and every folder below it uses it too; <code>mcc here</code> shows which account <code>mcc run</code> uses there, and why. At its limit, <code>mcc run</code> asks first, with waiting as the default: mcc never switches accounts for you. <code>eval "$(mcc env)"</code> points plain <code>claude</code>, IDE extensions and scripts at the same profile. Outside projects, <code>mcc run</code> starts <code>~/.claude</code>, and <code>mcc default work</code> trades the accounts of <code>~/.claude</code> and <code>work</code>, after asking.</p>
+          <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/></svg></div>
+          <h3><code>mcc doctor</code></h3>
+          <p>Checks every profile and prints a fix for each problem.</p>
+        </article>
+        <article class="card feature">
+          <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div>
+          <h3>Login expiry warnings</h3>
+          <p>A warning two days before a login ends, by default. <code>mcc login work</code> renews it in place.</p>
+        </article>
+        <article class="card feature">
+          <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8.2 10.9l7.6-3.8"/><path d="M8.2 13.1l7.6 3.8"/></svg></div>
+          <h3>Opt-in session sharing</h3>
+          <p><code>mcc share work</code> lets <code>--resume</code> list sessions across your own profiles. Only sessions are shared, never logins.</p>
         </article>
         <article class="card feature">
           <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg></div>
           <h3>Ask your agent about your accounts</h3>
-          <p>The <a href="https://github.com/luongnv89/mcc/blob/main/skills/mcc-accounts/docs/README.md">mcc-accounts</a> agent skill lets an AI agent answer from mcc: which account a session or project uses, how much 5-hour and weekly usage each one has left, and when its login ends. It runs a command or a headless Claude task as an account you name, and changes mcc settings only when you ask. It reads no tokens and, at a limit, tells you when it resets instead of switching accounts.</p>
+          <p>The <a href="https://github.com/luongnv89/mcc/blob/main/skills/mcc-accounts/docs/README.md">mcc-accounts</a> agent skill lets an AI agent answer from mcc. It reads no tokens.</p>
+        </article>
+        <article class="card feature">
+          <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3v5"/><path d="M15 3v5"/><path d="M6 8h12v3a6 6 0 01-12 0z"/><path d="M12 17v4"/></svg></div>
+          <h3>Shared plugins</h3>
+          <p>A clone shares your default's plugins instead of copying them.</p>
         </article>
         <article class="card feature feature-wide">
           <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 015.8 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg></div>
@@ -192,42 +551,8 @@
     </div>
   </section>
 
-  <!-- USAGE DEMO -->
-  <section aria-labelledby="usage-title">
-    <div class="wrap">
-      <div class="stack-head">
-        <div>
-        <span class="eyebrow">mcc usage</span>
-        <h2 id="usage-title">See which account has room before you start.</h2>
-        <p class="lede" style="margin:0">Each profile's 5-hour and weekly limits, as Claude Code last reported them to <code>mcc statusline</code>, or as the last <code>mcc usage --all</code> found them. Plain <code>mcc usage</code> reads no token and touches no network.</p>
-        </div>
-        <ul class="checks">
-          <li>One compact, numbered table: percent used, time until reset, the reset time in your time zone, and how old the numbers are, plus when each profile was last active and when its login ends</li>
-          <li>A warning for each login that ends within two days (by default), with the command that renews it in place: <code>mcc login work</code></li>
-          <li>Account emails stay hidden unless you ask for them, so it is safe to share on screen</li>
-          <li>Bars shrink to fit narrow terminals; <code>--json</code> for scripts</li>
-          <li>Rows run from least to most weekly usage; <code>--sort</code> picks another order for one run, and <code>mcc config set usage.sort ORDER</code> keeps it</li>
-          <li>Signed in to the Devin CLI? Its daily and weekly quota and overage balance follow the table</li>
-          <li>Accounts on your other machines, read over SSH with your own keys, in one table per machine; an account you use on several machines shows its newest numbers everywhere</li>
-          <li>API-key profiles show their estimated spend this month on this machine, against a monthly budget if you set one</li>
-          <li>A profile with nothing current cached shows <em>—</em> and a hint to run <code>/usage</code> in Claude Code. The command still exits 0</li>
-          <li>Set it up once with <code>mcc statusline install</code>. Asking Anthropic with each profile's login is opt-in: <code>mcc config set usage.live true</code>, or <code>mcc usage --all</code> for one run of every account, with a risk notice; what it finds is cached for the next <code>mcc usage</code></li>
-        </ul>
-      </div>
-      <figure class="term" style="margin:0" aria-label="Terminal: mcc usage output for three profiles">
-        <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>~ — zsh</span></div>
-<pre><span class="p">$ </span><span class="c">mcc usage</span>
-<span class="w"># PROFILE    LAST ACTIVE  LOGIN ENDS  5-HOUR           RESETS IN                  WEEKLY            RESETS IN                 UPDATED</span>
-1 default ★  12m ago      27d 3h      <span class="g">████</span><span class="d">░░░░░░</span> 42%   2h 14m <span class="d">(Sat Oct 10 16:00)</span>  <span class="g">██</span><span class="d">░░░░░░░░</span> 18%    3d 4h <span class="d">(Wed Oct 14 00:00)</span>  12m ago
-2 work       just now     unknown     <span class="y">█████████</span><span class="d">░</span> <span class="y">85%!</span>  35m <span class="d">(Sat Oct 10 14:21)</span>     <span class="r">██████████</span> <span class="r">96%!!</span>  3d 4h <span class="d">(Wed Oct 14 00:00)</span>  just now
-3 lab        16d ago      1d 4h       <span class="d">— (no usage cached; run /usage)</span>
-  <span class="y">⚠</span> Login for 'lab' expires in 1d 4h (Sun Oct 11 16:00) — run `mcc login lab` to renew it</pre>
-      </figure>
-    </div>
-  </section>
-
   <!-- HOW IT WORKS -->
-  <section class="section-alt" aria-labelledby="how-title">
+  <section aria-labelledby="how-title">
     <div class="wrap">
       <div class="section-head">
         <span class="eyebrow">How it works</span>
@@ -236,32 +561,55 @@
       <div class="steps">
         <div class="card step">
           <span class="step-num">Install</span>
-          <p>Download the prebuilt mcc for your platform. You need Claude Code, not Rust.</p>
-          <div class="code"><pre><span class="p">$ </span>curl -fsSL https://raw.githubusercontent.com/luongnv89/mcc/main/install.sh | sh</pre></div>
+          <p>You need Claude Code, not Rust.</p>
+          <div class="code"><pre><span class="p">$ </span>brew install luongnv89/tap/mcc</pre></div>
         </div>
         <div class="card step">
           <span class="step-num">Add a profile</span>
-          <p>Clone your default setup into a new profile, then finish the sign-in in your browser.</p>
+          <p>Finish the sign-in in your browser.</p>
           <div class="code"><pre><span class="p">$ </span>mcc add work --clone</pre></div>
         </div>
         <div class="card step">
           <span class="step-num">Run it</span>
-          <p>Start Claude Code on that account by typing its name. Your default <code>claude</code> keeps working.</p>
+          <p>Your default <code>claude</code> keeps working.</p>
           <div class="code"><pre><span class="p">$ </span>work</pre></div>
         </div>
       </div>
 
-      <div style="margin-top: clamp(40px, 6vw, 64px)">
-        <h3 style="margin-bottom:6px">Built on the variable Claude Code already reads</h3>
-        <p style="color:var(--ink-2); max-width:70ch">Claude Code takes its config from <code>CLAUDE_CONFIG_DIR</code>, which defaults to <code>~/.claude</code>. An mcc profile is a directory plus a launcher that sets that variable. Nothing is patched or wrapped.</p>
-        <div class="flow" style="margin-top:20px">
+      <div class="how-block">
+        <h3>Built on the variable Claude Code already reads</h3>
+        <div class="flow">
           <div class="flow-node"><span class="k">You type</span><code>work</code><p>Launcher in <code>~/.local/bin</code>, plus a shell alias</p></div>
           <div class="flow-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg></div>
           <div class="flow-node"><span class="k">It sets</span><code>CLAUDE_CONFIG_DIR=~/.mcc/profiles/work</code><p>The profile's own login, settings and skills</p></div>
           <div class="flow-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg></div>
           <div class="flow-node"><span class="k">And runs</span><code>claude</code><p>The same Claude Code binary you already have</p></div>
         </div>
-        <div class="cta-row" style="margin-top:28px; margin-bottom:0">
+      </div>
+
+      <div class="how-block">
+        <h3>Your setup, without your login</h3>
+        <div class="carry">
+          <div class="carry-col">
+            <span class="k">Copied into the profile</span>
+            <ul class="chips">
+              <li>settings</li><li>CLAUDE.md</li><li>skills</li><li>agents</li><li>commands</li><li>hooks</li><li>MCP servers</li>
+            </ul>
+          </div>
+          <div class="carry-col">
+            <span class="k">Shared with your default</span>
+            <ul class="chips">
+              <li>plugins</li>
+            </ul>
+          </div>
+          <div class="carry-col is-never">
+            <span class="k">Stays behind</span>
+            <ul class="chips">
+              <li>credentials</li><li>history</li><li>sessions</li>
+            </ul>
+          </div>
+        </div>
+        <div class="cta-row how-cta">
           <a class="btn btn-primary" href="#install">Install mcc</a>
           <a class="btn btn-ghost" href="docs.html#commands">See every command</a>
         </div>
@@ -270,7 +618,7 @@
   </section>
 
   <!-- FAQ -->
-  <section aria-labelledby="faq-title">
+  <section class="section-alt" aria-labelledby="faq-title">
     <div class="wrap">
       <div class="section-head">
         <span class="eyebrow">FAQ</span>
@@ -279,27 +627,27 @@
       <div class="faq">
         <details>
           <summary>Does mcc copy or share my login between profiles?</summary>
-          <div><p>No. Each profile signs in separately through <code>claude auth login</code>, or uses its own API key. Clone and sync never copy credentials or account identity (<code>oauthAccount</code>, <code>userID</code>), nor the settings that tie a profile to its account, such as its API key or endpoint, and never copy history, sessions or projects. A password or token in your shared settings, such as a tool's API key, is copied to another profile only after you agree, and is never shown.</p></div>
+          <div><p>No. Each profile signs in separately through <code>claude auth login</code>, or uses its own API key. Clone and sync never copy credentials, account identity, history, sessions or projects. A password or token in your shared settings is copied to another profile only after you agree, and is never shown.</p></div>
+        </details>
+        <details>
+          <summary>Does mcc switch to another account when one hits its limit?</summary>
+          <div><p>No. <code>mcc run</code> asks you to wait (the default), start it anyway, or pick a profile the project allows. Anthropic's seat rules and terms rule out automatic switching; see <a href="docs.html#per-project">Per-project profiles</a>.</p></div>
         </details>
         <details>
           <summary>Will it change my existing <code>claude</code> setup?</summary>
-          <div><p>Your default profile stays in <code>~/.claude</code> and keeps the <code>claude</code> command, and sync copies from the default into a profile. Five things do reach the default: <code>mcc sync</code> takes a <code>settings.json</code> key changed in a profile into the default's, after backing it up (never an account's own credentials, an API key only once you agree, and a removed key only once you confirm); a cloned profile shares its plugins, so installing or removing a plugin in it does so for the default too (clone with <code>--copy-plugins</code> to avoid that); items you link with <code>mcc link</code> are the default's own files; the opt-in <code>mcc statusline install</code> sets the default's <code>statusLine</code>, after backing up its settings; and <code>mcc default</code> changes the account <code>~/.claude</code> is signed in to, after asking. Setting up mcc keeps the login plain <code>claude</code> already has, so you don't sign in again.</p></div>
+          <div><p>Your default profile stays in <code>~/.claude</code> and keeps the <code>claude</code> command, and you don't sign in again. Five things do reach it: a <code>settings.json</code> key you change in a profile (through <code>mcc sync</code>, after a backup), plugins a cloned profile shares with it, items you link with <code>mcc link</code>, the opt-in <code>mcc statusline install</code>, and <code>mcc default</code>, which asks first. The <a href="docs.html#clone-sync">docs</a> cover each one.</p></div>
         </details>
         <details>
           <summary>What does mcc send over the network?</summary>
-          <div><p>By default, nothing: <code>mcc list</code>, <code>mcc usage</code> and <code>mcc run</code> read the usage <code>mcc statusline</code> cached on your machine. Only if you turn on the live lookup (<code>mcc config set usage.live true</code>), or run <code>mcc usage --all</code> for one live look at every account (it prints a risk notice each time), does mcc ask Anthropic's usage endpoint, each profile with its own token, and, when the Devin CLI is signed in, Devin's quota API with Devin's own login. If you list other machines in your config, <code>mcc usage</code> also runs <code>mcc usage</code> on each of them over SSH, with your own SSH keys; no login or token passes between machines. A login token is never printed, logged or written to disk. mcc has no telemetry or analytics. Details are on the <a href="privacy.html">privacy page</a>.</p></div>
+          <div><p>By default, nothing: <code>mcc list</code>, <code>mcc usage</code> and <code>mcc run</code> read the usage <code>mcc statusline</code> cached on your machine. The live lookup is opt-in (<code>mcc usage --all</code>, with a risk notice each time), and machines you list are read over SSH with your own keys. A login token is never printed, logged or written to disk. Details are on the <a href="privacy.html">privacy page</a>.</p></div>
         </details>
         <details>
           <summary>Is the usage data official?</summary>
-          <div><p>By default it is what Claude Code itself passes to its status line, the session's 5-hour and weekly rate limits, which <code>mcc statusline</code> caches. The opt-in live lookup uses the same endpoint as Claude Code's <code>/usage</code> screen. That endpoint is undocumented and may change. If it does, mcc shows <em>unavailable</em> instead of failing.</p></div>
+          <div><p>By default it is what Claude Code itself passes to its status line, which <code>mcc statusline</code> caches. The opt-in live lookup uses the same endpoint as Claude Code's <code>/usage</code> screen. That endpoint is undocumented and may change. If it does, mcc shows <em>unavailable</em> instead of failing.</p></div>
         </details>
         <details>
-          <summary>Which platforms and shells are supported?</summary>
-          <div><p>macOS and Linux, with zsh, bash or fish. mcc detects your shell and rc file on first run. Windows is not supported.</p></div>
-        </details>
-        <details>
-          <summary>Do I need Rust?</summary>
-          <div><p>Not with Homebrew: <code>brew install luongnv89/tap/mcc</code> builds mcc with Homebrew's own Rust. Not with the install script either: it downloads a prebuilt, checksum-verified binary from the latest GitHub release (falling back to building with <code>cargo</code> when a release has none for your platform). Building from a clone or with <code>cargo install</code> needs <code>cargo</code> (Rust 1.88 or newer). Get Rust from <a href="https://rustup.rs">rustup.rs</a>.</p></div>
+          <summary>Which platforms are supported, and do I need Rust?</summary>
+          <div><p>macOS and Linux, with zsh, bash or fish. Windows is not supported. You don't need Rust with Homebrew, or with the install script when the release has a prebuilt, checksum-verified binary for your platform. Building from source needs <code>cargo</code> (Rust 1.88 or newer).</p></div>
         </details>
         <details>
           <summary>How do I remove a profile, or mcc itself?</summary>
@@ -310,28 +658,26 @@
   </section>
 
   <!-- FINAL CTA -->
-  <section id="install" class="final" aria-labelledby="install-title" style="padding-top:0">
+  <section id="install" class="final" aria-labelledby="install-title">
     <div class="wrap">
       <div class="final-box">
         <div>
           <span class="eyebrow">Install</span>
           <h2 id="install-title">Give your next account its own command.</h2>
-          <p class="lede" style="margin-bottom:22px">Free and open source under Apache-2.0. You need Claude Code. Building from source also needs Rust (<code>cargo</code>).</p>
-          <div class="cta-row" style="margin-bottom:0">
+          <p class="lede final-lede">Free and open source under Apache-2.0. <code>mcc delete</code> logs a profile out and removes only what mcc created.</p>
+          <div class="cta-row final-cta">
             <a class="btn btn-primary" href="docs.html#quick-start">Start the quick start</a>
             <a class="btn btn-ghost" href="https://github.com/luongnv89/mcc">View the source</a>
           </div>
         </div>
         <div>
-          <p class="label">One-liner</p>
-          <div class="code"><pre><span class="p">$ </span>curl -fsSL https://raw.githubusercontent.com/luongnv89/mcc/main/install.sh | sh</pre></div>
           <p class="label">Homebrew (macOS and Linux)</p>
           <div class="code"><pre><span class="p">$ </span>brew install luongnv89/tap/mcc</pre></div>
-          <p class="label">With Cargo</p>
-          <div class="code"><pre><span class="p">$ </span>cargo install --git https://github.com/luongnv89/mcc --locked</pre></div>
-          <p class="label">From a clone</p>
-          <div class="code" style="margin-bottom:0"><pre><span class="p">$ </span>git clone https://github.com/luongnv89/mcc &amp;&amp; cd mcc &amp;&amp; ./install.sh</pre></div>
-          <p class="note">Then run <code>mcc add work --clone</code>. First run detects your OS, shell and rc file automatically.</p>
+          <p class="label">One-liner</p>
+          <div class="code"><pre><span class="p">$ </span>curl -fsSL https://raw.githubusercontent.com/luongnv89/mcc/main/install.sh | sh</pre></div>
+          <p class="label">Then add your first profile</p>
+          <div class="code final-last"><pre><span class="p">$ </span>mcc add work --clone</pre></div>
+          <p class="note">Cargo and source builds are in the <a href="docs.html#install">install docs</a>.</p>
         </div>
       </div>
     </div>
