@@ -28,8 +28,10 @@ start goes straight to the prompt.
 The key is never taken as an argument, where it would land in your shell
 history and the process list. A value that contains `sk-ant-` is refused as
 an alias, and mcc replaces it with `<redacted>` in `~/.mcc/logs/mcc.log`
-and with `[redacted]` in its own usage errors. The `--api-key-helper` command
-is redacted from the log too.
+and with `[redacted]` in its argument-parsing (usage) errors. The
+`--api-key-helper` command is redacted from the log too. Other commands'
+errors (an unknown profile name, say) may still repeat a mistyped value, so
+never paste a key as an argument.
 
 `--budget USD` records a monthly budget to compare the spend with; change or
 remove it later with `mcc config set profiles.ALIAS.api_budget_usd 75` (`""`
