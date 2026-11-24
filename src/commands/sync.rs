@@ -44,6 +44,20 @@ pub(crate) trait Ask {
 /// [`Ask`] at the terminal.
 pub(crate) struct Terminal;
 
+/// [`Ask`] with no one to ask (`--yes`, which never agrees for the user):
+/// what needs an answer is skipped.
+pub(crate) struct Unattended;
+
+impl Ask for Unattended {
+    fn interactive(&self) -> bool {
+        false
+    }
+
+    fn confirm(&mut self, prompt: &str) -> Result<bool> {
+        unreachable!("never asked: {prompt}")
+    }
+}
+
 impl Ask for Terminal {
     fn interactive(&self) -> bool {
         ui::is_interactive()
