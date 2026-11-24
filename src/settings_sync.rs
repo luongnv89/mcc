@@ -106,13 +106,14 @@ static CREDENTIAL_URL: LazyLock<Regex> = LazyLock::new(|| {
 
 /// An HTTP credential in a command line: an `Authorization:` header with
 /// its scheme and credential, a header named like a key or token
-/// (`X-API-Key:`, `DD-API-KEY:`, `X-Auth-Token:`, `PRIVATE-TOKEN:`) with a
-/// value, or `Bearer` and 16+ characters anywhere. Each group is the
+/// (`X-API-Key:`, `DD-API-KEY:`, `X-Auth-Token:`, `PRIVATE-TOKEN:`, or
+/// after `-H`/`--header` any name such as `apikey:`) with a value, or
+/// `Bearer` and 16+ characters anywhere. Each group is the
 /// credential: one that only names a shell variable (`$TOKEN`) is not in
 /// the file ([`holds_auth_header`]).
 static AUTH_HEADER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r#"(?i)\bauthorization\s*:\s*(?:bearer|basic|token|bot)\s+([^\s'"]+)|(?:^|[\s'"])(?:[a-z0-9]+-)+(?:api-?key|key|token|secret|auth)\s*:\s*([^\s'"]+)|\bbearer\s+([$A-Za-z0-9._~+/=-]{16,})"#,
+        r#"(?i)\bauthorization\s*:\s*(?:bearer|basic|token|bot)\s+([^\s'"]+)|(?:^|[\s'"])(?:[a-z0-9]+-)+(?:api-?key|key|token|secret|auth)\s*:\s*([^\s'"]+)|(?:^|\s)(?:-H|--header)[\s=]*['"]?[a-z0-9_-]*(?:key|token|secret|auth)\s*:\s*([^\s'"]+)|\bbearer\s+([$A-Za-z0-9._~+/=-]{16,})"#,
     )
     .expect("static regex")
 });
@@ -1229,6 +1230,10 @@ mod tests {
             format!("curl --header 'X-Auth-Token: {short}' https://x.example.invalid"),
             format!("curl -H 'PRIVATE-TOKEN: {short}' https://x.example.invalid"),
             format!("notify --auth Bearer {hex32}"),
+            format!("curl -H 'apikey: {hex32}' https://x.example.invalid"),
+            format!("curl -H 'Token: {hex32}' https://x.example.invalid"),
+            format!("curl -H 'X_API_KEY: {hex32}' https://x.example.invalid"),
+            format!("curl --header=\"x-secret:{hex32}\" https://x.example.invalid"),
         ] {
             let v = json!({"Stop": [{"hooks": [{"type": "command", "command": cmd}]}]});
             assert_eq!(basic("hooks", v), Category::SharedSecret, "{cmd}");
@@ -1250,6 +1255,8 @@ mod tests {
             "curl -H \"DD-API-KEY: $DD_API_KEY\" https://api.example.invalid",
             "curl -H 'Content-Type: application/json' https://api.example.invalid",
             "echo monkey: 1",
+            "curl -H 'apikey: $SUPABASE_KEY' https://x.example.invalid",
+            "curl -H 'Token: ${TOKEN}' https://x.example.invalid",
         ] {
             let v = json!({"Stop": [{"hooks": [{"type": "command", "command": cmd}]}]});
             assert_eq!(basic("hooks", v), Category::Basic, "{cmd}");
