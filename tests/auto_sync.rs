@@ -731,3 +731,130 @@ fn auto_sync_keeps_only_its_latest_backups_and_never_prunes_mcc_syncs() {
         "# my rules v10\n"
     );
 }
+
+/// #129: settings are caught up key by key on launch too. A profile with
+/// its own provider still gets a new key of the default, and keeps its
+/// own; a key set in a profile is never taken into the default, nor into
+/// the other profiles, without `mcc sync`.
+#[test]
+fn a_launch_catches_settings_up_key_by_key_and_never_gathers() {
+    let sb = sandbox();
+    let edit = |rel: &str, f: &dyn Fn(&mut serde_json::Value)| {
+        let mut s = json(sb.read(rel).as_bytes());
+        f(&mut s);
+        sb.write(rel, &s.to_string());
+    };
+    edit(".mcc/profiles/work/settings.json", &|s| {
+        s["env"] =
+            serde_json::json!({"ANTHROPIC_BASE_URL": "https://gw.example.invalid", "MINE": "1"});
+    });
+    edit(".claude/settings.json", &|s| {
+        s["alwaysThinkingEnabled"] = true.into()
+    });
+    let default_before = sb.read(".claude/settings.json");
+
+    launch(&sb, "work");
+    let s = json(sb.read(".mcc/profiles/work/settings.json").as_bytes());
+    assert_eq!(s["alwaysThinkingEnabled"], true, "{s}");
+    assert_eq!(
+        s["env"]["ANTHROPIC_BASE_URL"], "https://gw.example.invalid",
+        "{s}"
+    );
+    assert_eq!(s["env"]["MINE"], "1", "{s}");
+    assert_eq!(sb.read(".claude/settings.json"), default_before);
+    assert!(!sb.exists(".claude/.mcc-backup"));
+    let lab = json(sb.read(".mcc/profiles/lab/settings.json").as_bytes());
+    assert_eq!(lab["alwaysThinkingEnabled"], true, "{lab}");
+    assert!(lab.get("env").is_none(), "{lab}");
+    // The profile's own key is a local edit until `mcc sync` takes it.
+    let cell = sync_cell(&sb, "work");
+    assert!(cell.contains("1 local edit"), "{cell}");
+}
+
+/// #129 QA: a settings.json mcc wrote and the profile deleted stays
+/// deleted on launch (a local edit), never written back as `{}`, and the
+/// default is left as it is.
+#[test]
+fn a_launch_leaves_a_deleted_settings_file_deleted() {
+    let sb = sandbox();
+    std::fs::remove_file(sb.path(".mcc/profiles/work/settings.json")).unwrap();
+    // A change in the default, settings included, so the launch catches up.
+    change_default(&sb);
+    let mut d = json(sb.read(".claude/settings.json").as_bytes());
+    d["alwaysThinkingEnabled"] = true.into();
+    sb.write(".claude/settings.json", &d.to_string());
+    let default_before = sb.read(".claude/settings.json");
+    launch(&sb, "work");
+    assert!(caught_up(&sb, "work"));
+    assert!(!sb.exists(".mcc/profiles/work/settings.json"));
+    assert_eq!(sb.read(".claude/settings.json"), default_before);
+    let lab = json(sb.read(".mcc/profiles/lab/settings.json").as_bytes());
+    assert_eq!(lab["alwaysThinkingEnabled"], true, "{lab}");
+    let cell = sync_cell(&sb, "work");
+    assert!(cell.contains("1 local edit"), "{cell}");
+}
+
+/// AC3 of #129: a shared secret new in the default never reaches a profile
+/// on launch (nothing is asked there); a basic key next to it does, and
+/// the secret is left for `mcc sync` to ask about.
+#[test]
+fn a_launch_never_copies_a_shared_secret_from_the_default() {
+    let sb = sandbox();
+    // Built at run time, so the source holds no token-shaped literal.
+    let tavily = ["tvly", "LEAKCHECK", "launch0123456789"].join("-");
+    let mut d = json(sb.read(".claude/settings.json").as_bytes());
+    d["env"] = serde_json::json!({"TAVILY_API_KEY": tavily});
+    d["alwaysThinkingEnabled"] = true.into();
+    sb.write(".claude/settings.json", &d.to_string());
+    for _ in 0..2 {
+        launch(&sb, "work");
+        for p in ["work", "lab"] {
+            let s = json(
+                sb.read(&format!(".mcc/profiles/{p}/settings.json"))
+                    .as_bytes(),
+            );
+            assert_eq!(s["alwaysThinkingEnabled"], true, "{p}: {s}");
+            assert!(s.get("env").is_none(), "{p}: {s}");
+            let record = sb.read(&format!(".mcc/profiles/{p}/.mcc-sync.json"));
+            assert!(!record.contains("TAVILY_API_KEY"), "{p}: {record}");
+        }
+    }
+    assert!(!sb.read(".mcc/logs/mcc.log").contains(&tavily));
+    // `mcc sync` without a terminal holds it too, and says so.
+    let o = sb.mcc().args(["sync", "work"]).output().unwrap();
+    assert!(o.status.success(), "{o:?}");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("env.TAVILY_API_KEY: shared secret · from the default · skipped"),
+        "{err}"
+    );
+}
+
+/// AC3 of #129, for settings.local.json: a launch catches its basic keys
+/// up but never copies a shared secret the default's adds or rotates.
+#[test]
+fn a_launch_never_copies_a_shared_secret_of_the_default_local_settings() {
+    let sb = sandbox();
+    let local = |p: &str| {
+        json(
+            sb.read(&format!(".mcc/profiles/{p}/settings.local.json"))
+                .as_bytes(),
+        )
+    };
+    let token = ["tok", "LEAKCHECK", "launch0123456789"].join("-");
+    let rotated = ["tok", "LEAKCHECK", "rotated0123456789"].join("-");
+    for (value, flag) in [(&token, "1"), (&rotated, "2")] {
+        sb.write(
+            ".claude/settings.local.json",
+            &serde_json::json!({"env": {"LOCAL_FLAG": flag, "SEARCH_TOKEN": value}}).to_string(),
+        );
+        launch(&sb, "work");
+        for p in ["work", "lab"] {
+            let s = local(p);
+            assert_eq!(s["env"]["LOCAL_FLAG"], flag, "{p}: {s}");
+            assert!(s["env"].get("SEARCH_TOKEN").is_none(), "{p}: {s}");
+        }
+    }
+    let log = sb.read(".mcc/logs/mcc.log");
+    assert!(!log.contains(&token) && !log.contains(&rotated));
+}

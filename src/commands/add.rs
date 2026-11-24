@@ -1,5 +1,6 @@
 //! `mcc add` — create the default profile, or a new aliased profile.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -574,7 +575,13 @@ fn add_profile(paths: &Paths, cfg: &mut Config, env: &EnvInfo, args: &AddArgs) -
             "Set up an empty profile"
         });
         if clone {
-            step.ok(&clone_setup(paths, cfg, &profile_dir, &link)?);
+            // --yes never agrees to copy a shared secret: it is left out.
+            let ask: &mut dyn super::sync::Ask = if args.yes {
+                &mut super::sync::Unattended
+            } else {
+                &mut super::sync::Terminal
+            };
+            step.ok(&clone_setup(paths, cfg, &alias, &profile_dir, &link, ask)?);
             let symlinked: Vec<String> = link
                 .iter()
                 .filter(|l| *l != plugins::ITEM)
@@ -759,22 +766,46 @@ fn now() -> String {
 }
 
 /// Copy the default's setup into the new profile, linking the items in
-/// `link` to the default's copy instead (see `mcc link`).
-fn clone_setup(paths: &Paths, cfg: &Config, profile_dir: &Path, link: &[String]) -> Result<String> {
+/// `link` to the default's copy instead (see `mcc link`). A shared secret
+/// in the default's settings is copied only once the user agrees at a
+/// terminal, asked through `ask` (#129); without one, or with `--yes`, it
+/// is left out, so `mcc sync ALIAS` offers it later.
+fn clone_setup(
+    paths: &Paths,
+    cfg: &Config,
+    alias: &str,
+    profile_dir: &Path,
+    link: &[String],
+    ask: &mut dyn super::sync::Ask,
+) -> Result<String> {
     let spec = copy::spec(None, &cfg.sync)?.without(link);
     // The same rewriter sync uses, so a clone and a sync write the same.
     let mut rw = Rewriter::for_profile(paths, cfg, profile_dir)?;
     if plugins::in_link(link) {
         rw = rw.sharing_plugins();
     }
-    let plan = copy::plan(
-        &paths.default_dir,
-        &paths.default_json,
-        profile_dir,
-        &spec,
-        &rw,
-        false,
-    )?;
+    let (plan, consent) =
+        super::sync::plan_asking(alias, &BTreeSet::new(), None, false, ask, &mut |approved| {
+            copy::plan_with(
+                &paths.default_dir,
+                &paths.default_json,
+                profile_dir,
+                &spec,
+                &rw,
+                false,
+                &copy::Base {
+                    secrets: copy::Secrets::HeldExcept(approved),
+                    ..copy::Base::default()
+                },
+            )
+        })?;
+    super::sync::report_secrets(&consent, &format!("mcc sync {alias}"));
+    for rel in &plan.unreadable {
+        ui::warn(&format!(
+            "{} is not a JSON object (or not valid JSON), so it is not copied: the keys tied to one account in it can't be told apart; fix it, then run `mcc sync`",
+            paths.display(&paths.default_dir.join(rel))
+        ));
+    }
     copy::apply(
         &plan,
         &paths.default_dir,
@@ -784,7 +815,9 @@ fn clone_setup(paths: &Paths, cfg: &Config, profile_dir: &Path, link: &[String])
     )?;
     // What was copied, so `mcc sync` can later tell the default's changes
     // from edits made in the profile.
-    plan.manifest(None).save(profile_dir)?;
+    let mut record = plan.manifest(None);
+    record.declined_secrets.extend(consent.declined);
+    record.save(profile_dir)?;
     super::link::link_new_profile(paths, profile_dir, link)?;
     let groups: Vec<String> = plan
         .by_group()
@@ -925,6 +958,86 @@ fn summary(paths: &Paths, cfg: &Config, alias: &str, clone: bool, logged_in: boo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [`super::super::sync::Ask`] with scripted answers, recording every
+    /// prompt; asking past the script fails the test.
+    struct Scripted(Vec<bool>, Vec<String>);
+
+    impl super::super::sync::Ask for Scripted {
+        fn interactive(&self) -> bool {
+            true
+        }
+
+        fn confirm(&mut self, prompt: &str) -> Result<bool> {
+            self.1.push(prompt.to_string());
+            assert!(!self.0.is_empty(), "asked once too often: {prompt}");
+            Ok(self.0.remove(0))
+        }
+    }
+
+    /// AC3 of #129: a clone copies a shared secret of the default only
+    /// once agreed to (asked without its value); a declined one is left
+    /// out and recorded, so `mcc sync` doesn't ask again; with `--yes`
+    /// nothing is asked and nothing is copied. Basic keys always are.
+    #[test]
+    fn a_clone_copies_shared_secrets_only_once_agreed_to() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths::new(d.path().to_path_buf());
+        std::fs::create_dir_all(&paths.default_dir).unwrap();
+        std::fs::write(
+            paths.default_dir.join(copy::SETTINGS_FILE),
+            serde_json::json!({"model": "opus", "env": {"TAVILY_API_KEY": "tvly-x", "SERP_TOKEN": "tok-y"}})
+                .to_string(),
+        )
+        .unwrap();
+        let cfg = Config::default();
+        let settings = |dir: &Path| -> serde_json::Value {
+            serde_json::from_slice(&std::fs::read(dir.join(copy::SETTINGS_FILE)).unwrap()).unwrap()
+        };
+        // Keys in the default's order: env.TAVILY_API_KEY, then env.SERP_TOKEN.
+        let dir = paths.profile_dir("work");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut ask = Scripted(vec![true, false], Vec::new());
+        clone_setup(&paths, &cfg, "work", &dir, &[], &mut ask).unwrap();
+        assert_eq!(ask.1.len(), 2, "{:?}", ask.1);
+        assert!(
+            ask.1[0].starts_with("Sync env.TAVILY_API_KEY "),
+            "{:?}",
+            ask.1
+        );
+        for p in &ask.1 {
+            assert!(
+                p.contains("(shared secret) from the default to \"work\""),
+                "{p}"
+            );
+            assert!(!p.contains("tvly-x") && !p.contains("tok-y"), "{p}");
+        }
+        let s = settings(&dir);
+        assert_eq!(s["model"], "opus");
+        assert_eq!(s["env"]["TAVILY_API_KEY"], "tvly-x");
+        assert!(s["env"].get("SERP_TOKEN").is_none(), "{s}");
+        let m = crate::manifest::load(&dir).manifest().cloned().unwrap();
+        assert_eq!(
+            m.declined_secrets["env.SERP_TOKEN"],
+            crate::settings_sync::declined_from_default(Some(&serde_json::json!("tok-y")))
+        );
+        // --yes: never asked, nothing copied.
+        let dir = paths.profile_dir("lab");
+        std::fs::create_dir_all(&dir).unwrap();
+        clone_setup(
+            &paths,
+            &cfg,
+            "lab",
+            &dir,
+            &[],
+            &mut super::super::sync::Unattended,
+        )
+        .unwrap();
+        let s = settings(&dir);
+        assert_eq!(s["model"], "opus");
+        assert!(s["env"].get("TAVILY_API_KEY").is_none(), "{s}");
+        assert!(s["env"].get("SERP_TOKEN").is_none(), "{s}");
+    }
 
     #[test]
     fn email_check() {

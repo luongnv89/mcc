@@ -37,10 +37,26 @@ pub struct Manifest {
     /// items are compared two-way.
     #[serde(default)]
     pub items: BTreeSet<String>,
+    /// `settings.json` key (`model`, or `env.NAME` for one variable) → hash
+    /// of the value mcc last wrote or found there ([`hash_json`]): the base
+    /// that tells which side changed a key. Recorded once [`SETTINGS_ITEM`]
+    /// is in `items`; manifests from before keep only the whole file's hash.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub settings: BTreeMap<String, String>,
+    /// Shared secrets of this profile's `settings.json`, and keys only it
+    /// had that `mcc sync` proposed taking into the default, the user chose
+    /// not to sync: key → hash of the value declined (never the value), so
+    /// it is not asked about again until the value changes.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub declined_secrets: BTreeMap<String, String>,
 }
 
 /// The [`Manifest::items`] entry for MCP servers.
 pub const MCP_ITEM: &str = ":mcp";
+
+/// The [`Manifest::items`] entry saying [`Manifest::settings`] holds the
+/// per-key base of `settings.json`.
+pub const SETTINGS_ITEM: &str = ":settings";
 
 impl Default for Manifest {
     fn default() -> Self {
@@ -49,6 +65,8 @@ impl Default for Manifest {
             files: BTreeMap::new(),
             mcp: BTreeMap::new(),
             items: BTreeSet::new(),
+            settings: BTreeMap::new(),
+            declined_secrets: BTreeMap::new(),
         }
     }
 }
@@ -153,6 +171,13 @@ mod tests {
         m.files.insert("skills/a/SKILL.md".into(), hash_file(b"a"));
         m.mcp
             .insert("fs".into(), hash_json(&serde_json::json!({"c": 1})));
+        m.items.insert(SETTINGS_ITEM.into());
+        m.settings
+            .insert("env.CODE_MODE".into(), hash_json(&serde_json::json!("1")));
+        m.declined_secrets.insert(
+            "env.TAVILY_API_KEY".into(),
+            hash_json(&serde_json::json!("x")),
+        );
         m.save(d.path()).unwrap();
         match load(d.path()) {
             Loaded::Found(got) => assert_eq!(got, m),
@@ -162,6 +187,27 @@ mod tests {
         assert!(matches!(load(d.path()), Loaded::Invalid(_)));
         std::fs::write(d.path().join(FILE), r#"{"version":99}"#).unwrap();
         assert!(matches!(load(d.path()), Loaded::Invalid(r) if r.contains("99")));
+    }
+
+    /// A manifest from before per-key settings (#129) still loads, with no
+    /// per-key base, and one without per-key state is written as before.
+    #[test]
+    fn manifests_without_per_key_settings_load_and_save_unchanged() {
+        let d = tempfile::tempdir().unwrap();
+        let old =
+            r#"{"version":1,"files":{"settings.json":"abc"},"mcp":{},"items":["settings.json"]}"#;
+        std::fs::write(d.path().join(FILE), old).unwrap();
+        let Loaded::Found(m) = load(d.path()) else {
+            panic!("an old manifest must load");
+        };
+        assert!(m.settings.is_empty() && m.declined_secrets.is_empty());
+        assert!(!m.items.contains(SETTINGS_ITEM));
+        assert_eq!(m.files["settings.json"], "abc");
+        let text = serde_json::to_string(&m).unwrap();
+        assert!(
+            !text.contains("settings\":") && !text.contains("declined"),
+            "{text}"
+        );
     }
 
     #[test]

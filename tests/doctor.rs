@@ -662,13 +662,13 @@ fn the_statusline_shim_is_expected_in_every_profile() {
 #[test]
 fn a_statusline_blocked_by_a_settings_conflict_is_fixed_with_force() {
     let sb = healthy();
-    // Edited in the profile since its last sync…
+    // Edited in the profile since its last sync (every other key dropped)…
     sb.write(".mcc/profiles/work/settings.json", r#"{"model":"sonnet"}"#);
     // …and changed in the default by `mcc statusline install`.
-    sb.write(
-        ".claude/settings.json",
-        r#"{"model":"opus","statusLine":{"type":"command","command":"/usr/local/bin/mcc statusline"}}"#,
-    );
+    let mut d = json(sb.read(".claude/settings.json").as_bytes());
+    d["statusLine"] =
+        serde_json::json!({"type": "command", "command": "/usr/local/bin/mcc statusline"});
+    sb.write(".claude/settings.json", &d.to_string());
     let err = passing(&sb);
     assert!(
         err.contains("fix: `mcc sync work --only settings --force`"),
@@ -676,17 +676,39 @@ fn a_statusline_blocked_by_a_settings_conflict_is_fixed_with_force() {
     );
     assert!(err.contains("--force backs it up first"), "{err}");
 
+    // The default after each sync: the profile's model taken in (a basic
+    // key it changed), but the keys it dropped kept (--yes never removes
+    // them from the default), and the default's statusLine kept.
+    let default_kept = |sb: &Sandbox| {
+        let d = json(sb.read(".claude/settings.json").as_bytes());
+        assert_eq!(d["model"], "sonnet", "{d}");
+        assert_eq!(d["enabledPlugins"]["p1@m"], true, "{d}");
+        assert!(d["hooks"]["Stop"].is_array(), "{d}");
+        assert_eq!(
+            d["statusLine"]["command"], "/usr/local/bin/mcc statusline",
+            "{d}"
+        );
+    };
     // The plain sync would skip it; the printed fix clears the warning.
-    sb.mcc()
+    let o = sb
+        .mcc()
         .args(["sync", "work", "--only", "settings", "--yes"])
-        .assert()
-        .success();
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{o:?}");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("hooks: basic · from \"work\" · skipped (needs confirmation)"),
+        "{err}"
+    );
+    default_kept(&sb);
     let all = findings(&sb, &[]);
     assert_eq!(one(&all, Some("work"), "statusline")["status"], "warn");
     sb.mcc()
         .args(["sync", "work", "--only", "settings", "--force", "--yes"])
         .assert()
         .success();
+    default_kept(&sb);
     let all = findings(&sb, &[]);
     assert_eq!(one(&all, Some("work"), "statusline")["status"], "ok");
 }

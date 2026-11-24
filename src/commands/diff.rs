@@ -1,20 +1,22 @@
 //! `mcc diff` — how a profile differs from the default profile's setup, path
 //! by path, classified as `mcc sync` would (see `copy::plan_with`). Read-only.
+//! `settings.json` is compared key by key, with the values of secret keys
+//! hidden; so are they in `settings.local.json`.
 
 use std::io::Write;
 use std::path::Path;
 
 use anyhow::Result;
 use console::style;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::cli::DiffArgs;
 use crate::config::Config;
-use crate::copy::{self, Action, Change, Rewriter};
+use crate::copy::{self, Action, Change, Rewriter, SettingsChange};
 use crate::error::CliError;
 use crate::manifest;
 use crate::paths::Paths;
-use crate::ui;
+use crate::{settings_sync, ui};
 
 /// Files larger than this (in lines, per side) are reported without a diff.
 const MAX_DIFF_LINES: usize = 5_000;
@@ -67,12 +69,44 @@ pub fn run(paths: &Paths, cfg: &Config, args: &DiffArgs) -> Result<()> {
     let mut out = std::io::stdout().lock();
     let mut shown = 0;
     for c in &plan.changes {
-        // A missing directory's files are listed one by one.
-        if c.dir && c.action == Action::Add {
+        // A missing directory's files are listed one by one; per-key
+        // settings below.
+        if c.dir && c.action == Action::Add
+            || plan.settings.is_some() && c.rel == Path::new(copy::SETTINGS_FILE)
+        {
             continue;
         }
         shown += 1;
         file_diff(&mut out, paths, &dir, alias, c, &rw)?;
+    }
+    if let Some(s) = &plan.settings
+        && s.differs()
+    {
+        shown += 1;
+        settings_diff(&mut out, alias, s, &rw)?;
+    }
+    // A shared secret of the default's settings.local.json held back from
+    // the profile (`mcc sync` asks about it): the file as the default
+    // gives it, secret values hidden.
+    let local = Path::new(copy::LOCAL_SETTINGS_FILE);
+    if plan
+        .held()
+        .iter()
+        .any(|h| h.file == copy::LOCAL_SETTINGS_FILE)
+        && !plan.changes.iter().any(|c| c.rel == local)
+        && let Some(item) = spec.items.iter().find(|i| i.rel == local)
+    {
+        shown += 1;
+        header(&mut out, "shared secret held", copy::LOCAL_SETTINGS_FILE)?;
+        let (src, dst) = (paths.default_dir.join(local), dir.join(local));
+        local_settings_diff(
+            &mut out,
+            &format!("default/{}", copy::LOCAL_SETTINGS_FILE),
+            &format!("{alias}/{}", copy::LOCAL_SETTINGS_FILE),
+            &side(&src, Some((item.rewrite, &rw)))?,
+            &side(&dst, None)?,
+            &rw,
+        )?;
     }
     if spec.mcp {
         let (src, dst) = copy::mcp_servers(&paths.default_json, &dir.join(".claude.json"), &rw)?;
@@ -171,16 +205,31 @@ fn file_diff(
         rel.clone()
     };
     header(out, label(c), &shown)?;
+    if rel == copy::SETTINGS_FILE {
+        if !dir.join(&c.rel).exists() {
+            writeln!(
+                out,
+                "  (deleted in the profile; `mcc sync {alias} --force` restores it from the default)"
+            )?;
+            return Ok(());
+        }
+        // Compared as a whole file: one side (or its `env`) isn't a JSON
+        // object, so its keys, and which of them are secret, can't be told
+        // apart.
+        writeln!(
+            out,
+            "  (not shown: one side is not a JSON object, and settings.json may hold secrets)"
+        )?;
+        return Ok(());
+    }
     let src = paths.default_dir.join(&c.rel);
     let dst = dir.join(&c.rel);
     let (a, b) = (side(&src, Some((c.rewrite, rw)))?, side(&dst, None)?);
-    // The default's settings.json as the profile receives it: with its overlay.
-    let from = if rel == copy::SETTINGS_FILE && rw.has_overlay() {
-        format!("default/{rel} + {alias} overlay")
-    } else {
-        format!("default/{rel}")
-    };
+    let from = format!("default/{rel}");
     let to = format!("{alias}/{rel}");
+    if rel == copy::LOCAL_SETTINGS_FILE {
+        return local_settings_diff(out, &from, &to, &a, &b, rw);
+    }
     match (a, b) {
         (Side::Text(a), Side::Text(b)) => text_diff(out, &from, &to, &a, &b)?,
         (Side::Text(a), Side::Missing) => text_diff(out, &from, &to, &a, "")?,
@@ -192,6 +241,94 @@ fn file_diff(
         _ => {}
     }
     Ok(())
+}
+
+/// The profile's `settings.json` next to the default's, as sync compares
+/// them key by key: the default's side with the profile's overlay and its
+/// own account-bound keys, so only what sync deals with differs. The value
+/// of every secret key (shared or account-bound) is hidden on both sides.
+fn settings_diff(
+    out: &mut impl Write,
+    alias: &str,
+    s: &SettingsChange,
+    rw: &Rewriter,
+) -> Result<()> {
+    let label = if !s.conflicts.is_empty() {
+        "conflict"
+    } else if !s.is_empty() || !s.held.is_empty() {
+        "changed in default"
+    } else {
+        "local edit"
+    };
+    header(out, label, copy::SETTINGS_FILE)?;
+    let c = rw.classifier();
+    let text = |flat: &Map<String, Value>, other: &Map<String, Value>, mark| -> Result<String> {
+        let shown = settings_sync::unflatten(&c.masked(flat, other, mark));
+        Ok(serde_json::to_string_pretty(&Value::Object(shown))? + "\n")
+    };
+    let from = if rw.has_overlay() {
+        format!("default/{} + {alias} overlay", copy::SETTINGS_FILE)
+    } else {
+        format!("default/{}", copy::SETTINGS_FILE)
+    };
+    text_diff(
+        out,
+        &from,
+        &format!("{alias}/{}", copy::SETTINGS_FILE),
+        &text(&s.want, &s.have, false)?,
+        &text(&s.have, &s.want, true)?,
+    )
+}
+
+/// `settings.local.json` on both sides, as JSON with the value of every
+/// secret key hidden ([`settings_sync::Classifier::masked`]); not shown
+/// at all when a side is something else than a JSON object (or missing).
+fn local_settings_diff(
+    out: &mut impl Write,
+    from: &str,
+    to: &str,
+    a: &Side,
+    b: &Side,
+    rw: &Rewriter,
+) -> Result<()> {
+    let flat = |s: &Side| -> Option<Map<String, Value>> {
+        match s {
+            Side::Missing => Some(Map::new()),
+            Side::Text(t) => match serde_json::from_str::<Value>(t) {
+                Ok(Value::Object(m)) => Some(settings_sync::flatten(&m)),
+                _ => None,
+            },
+            _ => None,
+        }
+    };
+    let (Some(fa), Some(fb)) = (flat(a), flat(b)) else {
+        if let (Side::Link(_) | Side::Dir, _) | (_, Side::Link(_) | Side::Dir) = (a, b) {
+            writeln!(out, "  {from}: {}", a.describe())?;
+            writeln!(out, "  {to}: {}", b.describe())?;
+        } else {
+            writeln!(
+                out,
+                "  (not shown: one side is not a JSON object, and {} may hold secrets)",
+                copy::LOCAL_SETTINGS_FILE
+            )?;
+        }
+        return Ok(());
+    };
+    let c = rw.classifier();
+    let text = |side: &Side, flat: &Map<String, Value>, other: &Map<String, Value>, mark| {
+        if *side == Side::Missing {
+            return Ok::<_, anyhow::Error>(String::new());
+        }
+        let shown = settings_sync::unflatten(&c.masked(flat, other, mark));
+        Ok(serde_json::to_string_pretty(&Value::Object(shown))? + "\n")
+    };
+    text_diff(
+        out,
+        from,
+        to,
+        &text(a, &fa, &fb, false)?,
+        &text(b, &fb, &fa, true)?,
+    )
 }
 
 #[derive(PartialEq)]
@@ -220,8 +357,9 @@ fn side(p: &Path, rewrite: Option<(bool, &Rewriter)>) -> Result<Side> {
     let Ok(meta) = std::fs::symlink_metadata(p) else {
         return Ok(Side::Missing);
     };
-    let overlaid = rewrite.is_some_and(|(_, rw)| rw.overlays(p));
-    if meta.file_type().is_symlink() && !overlaid {
+    // The default's settings files are written as files, even from a link.
+    let as_file = rewrite.is_some_and(|(_, rw)| rw.settings_like(p));
+    if meta.file_type().is_symlink() && !as_file {
         let target = std::fs::read_link(p).unwrap_or_default();
         return Ok(Side::Link(target.display().to_string()));
     }

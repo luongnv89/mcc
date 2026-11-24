@@ -18,6 +18,7 @@ use crate::error::CliError;
 use crate::fsutil;
 use crate::manifest::{self, Manifest};
 use crate::paths::Paths;
+use crate::settings_sync::{self, Category, Classifier, KeyBase, KeyState, SettingsView};
 
 /// One whitelisted path inside a config dir.
 #[derive(Debug, Clone)]
@@ -55,6 +56,11 @@ pub const BACKUP_DIR: &str = ".mcc-backup";
 
 /// The settings file a profile's overlay is merged onto.
 pub const SETTINGS_FILE: &str = "settings.json";
+
+/// The local settings file: synced as a whole file, but like
+/// `settings.json` never with the default's account-bound keys, and
+/// keeping the profile's own ([`desired_bytes`]).
+pub const LOCAL_SETTINGS_FILE: &str = "settings.local.json";
 
 /// A profile's own settings overlay file, inside the profile dir. Never part
 /// of the sync set.
@@ -325,6 +331,10 @@ pub struct Rewriter {
     /// The profile's settings overlay, merged onto the default's
     /// `settings.json` after paths are rewritten (see [`settings_overlay`]).
     overlay: Option<Map<String, Value>>,
+    /// Maps the profile's paths back to the default's (see [`Rewriter::to_default`]).
+    back: Regex,
+    /// Sorts `settings.json` keys: account-bound ones are never copied.
+    classifier: Classifier,
 }
 
 impl Rewriter {
@@ -346,6 +356,13 @@ impl Rewriter {
             .strip_prefix(&paths.home)
             .ok()
             .map(|r| r.to_string_lossy().to_string());
+        let abs_to = regex::escape(&to_dir.to_string_lossy());
+        let rel_to = match &home_rel_to {
+            Some(rel) => format!(r"|(?P<p>~|\$HOME|\$\{{HOME\}})/{}", regex::escape(rel)),
+            None => String::new(),
+        };
+        let back = Regex::new(&format!(r#"(?:{abs_to}{rel_to})(?P<b>$|[/"'\s),;:\]}}])"#))
+            .expect("static regex");
         Self {
             re,
             copied,
@@ -356,7 +373,30 @@ impl Rewriter {
                 .unwrap_or_else(|_| paths.default_dir.clone()),
             to_dir: to_dir.to_path_buf(),
             overlay: None,
+            back,
+            classifier: Classifier::new(sync_cfg),
         }
+    }
+
+    /// The default's settings object `obj` as it may reach this profile:
+    /// without the keys [`Classifier::shared`] leaves out (account-bound),
+    /// everything else as it is, in its order. The `bool` says whether any
+    /// key was left out.
+    fn shared_settings(&self, obj: Map<String, Value>) -> (Map<String, Value>, bool) {
+        let flat = settings_sync::flatten(&obj);
+        let shared = self.classifier.shared(flat.clone()).into_map();
+        let mut kept = obj;
+        let mut dropped = false;
+        for k in flat.keys().filter(|k| !shared.contains_key(*k)) {
+            settings_sync::set_flat(&mut kept, k, None);
+            dropped = true;
+        }
+        (kept, dropped)
+    }
+
+    /// How this profile's `settings.json` keys are sorted.
+    pub fn classifier(&self) -> &Classifier {
+        &self.classifier
     }
 
     /// The rewriter for the profile at `to_dir`, with its settings overlay
@@ -387,6 +427,21 @@ impl Rewriter {
         self
     }
 
+    /// Whether the profile's overlay sets the flat settings key `key`.
+    fn overlay_sets(&self, key: &str) -> bool {
+        let Some(overlay) = &self.overlay else {
+            return false;
+        };
+        match key.strip_prefix(settings_sync::ENV_PREFIX) {
+            Some(name) => match overlay.get("env") {
+                Some(Value::Object(vars)) => vars.contains_key(name),
+                Some(_) => true,
+                None => false,
+            },
+            None => overlay.contains_key(key),
+        }
+    }
+
     /// Whether the profile has a settings overlay.
     pub fn has_overlay(&self) -> bool {
         self.overlay.is_some()
@@ -396,7 +451,51 @@ impl Rewriter {
     /// to one, which is then written as a file) and this profile has an
     /// overlay for it.
     pub fn overlays(&self, src: &Path) -> bool {
-        self.overlay.is_some() && src == self.from_dir.join(SETTINGS_FILE) && src.is_file()
+        self.overlay.is_some() && self.settings_file(src)
+    }
+
+    /// Whether `src` is the default's `settings.json`, a file or a symlink
+    /// to one: always written as a file, without the default's
+    /// account-bound keys ([`desired_bytes`]).
+    fn settings_file(&self, src: &Path) -> bool {
+        src == self.from_dir.join(SETTINGS_FILE) && src.is_file()
+    }
+
+    /// Whether `src` is the default's `settings.json` or
+    /// `settings.local.json`, a file or a symlink to one: written as a
+    /// file, never with the default's account-bound keys.
+    pub fn settings_like(&self, src: &Path) -> bool {
+        (self.settings_file(src) || self.local_settings_file(src)) && src.is_file()
+    }
+
+    /// Whether `src` is the default's `settings.local.json`.
+    fn local_settings_file(&self, src: &Path) -> bool {
+        src == self.from_dir.join(LOCAL_SETTINGS_FILE)
+    }
+
+    /// The account-bound keys of this profile's own `settings.json` or
+    /// `settings.local.json` (flattened), kept when the default's is copied
+    /// over it whole-file. None when it is missing, not a JSON object, or
+    /// the default's own file (a symlink to it, as an older mcc left it):
+    /// what is read through it is the default's.
+    fn own_account_keys(&self, src: &Path) -> Map<String, Value> {
+        let Some(name) = src.file_name() else {
+            return Map::new();
+        };
+        let dst = self.to_dir.join(name);
+        if same_file(&dst, src) {
+            return Map::new();
+        }
+        match std::fs::read(&dst)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        {
+            Some(Value::Object(m)) => settings_sync::flatten(&m)
+                .into_iter()
+                .filter(|(k, _)| self.classifier.is_account_bound(k))
+                .collect(),
+            _ => Map::new(),
+        }
     }
 
     pub fn apply(&self, text: &str) -> String {
@@ -430,6 +529,50 @@ impl Rewriter {
                 format!("{target}{}", &c["b"])
             })
             .into_owned()
+    }
+
+    /// [`Rewriter::apply`] undone: the profile's paths in `text` pointing
+    /// at what it receives from the default, back to the default's.
+    fn unapply(&self, text: &str) -> String {
+        self.back
+            .replace_all(text, |c: &regex::Captures| {
+                let whole = c.get(0).expect("match");
+                if &c["b"] == "/" {
+                    let rest: String = text[whole.end()..]
+                        .chars()
+                        .take_while(|ch| {
+                            !matches!(ch, '"' | '\'' | ')' | ',' | ';' | ':' | ']' | '}')
+                                && !ch.is_whitespace()
+                        })
+                        .collect();
+                    let copied = self.copied.iter().any(|rel| {
+                        rest == *rel
+                            || rest
+                                .strip_prefix(rel.as_str())
+                                .is_some_and(|r| r.starts_with('/'))
+                    });
+                    if !copied {
+                        return whole.as_str().to_string();
+                    }
+                }
+                let from = match c.name("p") {
+                    Some(p) => format!("{}/.claude", p.as_str()),
+                    None => self.from_dir.to_string_lossy().to_string(),
+                };
+                format!("{from}{}", &c["b"])
+            })
+            .into_owned()
+    }
+
+    /// The profile's `settings.json` value `v` as the default would hold
+    /// it: its paths mapped back to the default's. `None` when that can't
+    /// be done exactly (rewriting the result for the profile again would
+    /// not give `v`).
+    pub fn to_default(&self, v: &Value) -> Option<Value> {
+        let text = serde_json::to_string(v).ok()?;
+        let back = self.unapply(&text);
+        let out = serde_json::from_str(&back).ok()?;
+        (self.apply(&back) == text).then_some(out)
     }
 
     /// Where a copy of the symlink `link` (pointing at `target`) should point.
@@ -531,6 +674,35 @@ pub struct Base<'a> {
     pub manifest: Option<&'a Manifest>,
     /// Overwrite conflicts instead of keeping them.
     pub force: bool,
+    /// Whether a shared secret new or changed in the default's
+    /// `settings.json` is written into the profile.
+    pub secrets: Secrets<'a>,
+}
+
+/// How a shared secret ([`Category::SharedSecret`]) new or changed in the
+/// default's `settings.json` reaches a profile's, key by key (#129).
+#[derive(Debug, Default, Clone, Copy)]
+pub enum Secrets<'a> {
+    /// Held ([`SettingsChange::held`]): never written; `mcc sync` asks
+    /// about each, auto sync leaves them to it.
+    #[default]
+    Held,
+    /// Held, except the keys in this set, which the user agreed to.
+    HeldExcept(&'a BTreeSet<String>),
+    /// Copied as any key is: items `mcc link` copies back from the
+    /// default when a profile stops linking them.
+    Copied,
+}
+
+impl Secrets<'_> {
+    /// Whether the shared secret `key` is held.
+    fn holds(&self, key: &str) -> bool {
+        match self {
+            Secrets::Held => true,
+            Secrets::HeldExcept(approved) => !approved.contains(key),
+            Secrets::Copied => false,
+        }
+    }
 }
 
 /// How a profile compares with the default, in counts of files, symlinks
@@ -545,11 +717,81 @@ pub struct Status {
     pub conflicts: usize,
 }
 
+/// How a profile's `settings.json` compares with the default's, key by
+/// key (see `settings_sync`): keys only, never their values.
+#[derive(Debug, Default)]
+pub struct SettingsChange {
+    pub added: Vec<String>,
+    pub updated: Vec<String>,
+    pub removed: Vec<String>,
+    /// Keys changed (or removed) in the profile only; kept.
+    pub local: Vec<String>,
+    /// Keys changed on both sides; kept unless `--force`.
+    pub conflicts: Vec<String>,
+    /// Conflicts that `--force` overwrites (also in added/updated/removed).
+    pub forced: Vec<String>,
+    /// Shared secrets new or changed in the default, not written: held
+    /// until the user agrees ([`Secrets`]). Their record is left as it is,
+    /// so they are held again next time; a held forced conflict is also
+    /// in `conflicts`.
+    pub held: Vec<String>,
+    /// What to write to the profile's `settings.json`; `None` when it
+    /// already has it.
+    merged: Option<Vec<u8>>,
+    /// The category of each key taken from (or held by) the default, the
+    /// overlay's left out: for sync's report.
+    pub categories: BTreeMap<String, Category>,
+    /// Hash of every key of the profile's settings once synced.
+    hashes: BTreeMap<String, String>,
+    /// The base to record for a kept key the previous record has none for.
+    kept_base: BTreeMap<String, String>,
+    /// Hash of the whole file once synced (as [`Manifest::files`] has it).
+    file_hash: String,
+    /// The default's side, as the profile receives it, with the profile's
+    /// own account-bound keys (so they never show as a difference), and
+    /// the profile's side; flattened. For `mcc diff`.
+    pub want: Map<String, Value>,
+    pub have: Map<String, Value>,
+}
+
+impl SettingsChange {
+    /// Nothing to add, update or remove.
+    pub fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.updated.is_empty() && self.removed.is_empty()
+    }
+
+    /// The profile differs in some key sync deals with.
+    pub fn differs(&self) -> bool {
+        !self.is_empty()
+            || !self.local.is_empty()
+            || !self.conflicts.is_empty()
+            || !self.held.is_empty()
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Plan {
     pub changes: Vec<Change>,
     pub unchanged: usize,
     pub mcp: Option<McpChange>,
+    /// `settings.json` key by key; `None` when it is synced as a whole
+    /// file (it isn't a JSON object on one side, or isn't synced).
+    pub settings: Option<SettingsChange>,
+    /// The default's settings files left out because they aren't a JSON
+    /// object (a trailing comma left mid-edit, say): never copied, as
+    /// their account-bound keys can't be told apart; the profile's are
+    /// left as they are, and so is their record.
+    pub unreadable: Vec<PathBuf>,
+    /// Shared secrets a settings file copied whole (`settings.local.json`,
+    /// or `settings.json` when the profile's isn't a JSON object) sets that
+    /// the profile's lacks or has differently, held ([`Secrets`]): left out
+    /// of what is written (the profile's own value kept), so held again
+    /// next time. Only when the file is written or already as the default
+    /// gives it.
+    file_held: Vec<Held>,
+    /// What to write for a path instead of copying it: a settings file
+    /// copied whole, with its held shared secrets left out.
+    prepared: BTreeMap<PathBuf, Vec<u8>>,
     /// Hash of every default file or symlink in the sync set, as the profile
     /// receives it (what a sync writes, or finds already there).
     hashes: BTreeMap<PathBuf, String>,
@@ -557,7 +799,57 @@ pub struct Plan {
     items: Vec<String>,
 }
 
+/// A shared secret the default sets that a plan holds ([`Secrets`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Held {
+    /// What the user's answer is kept by ([`Secrets::HeldExcept`],
+    /// `declined_secrets`): the key, prefixed with [`LOCAL_PREFIX`] for
+    /// `settings.local.json`.
+    pub id: String,
+    /// The key, as `settings_sync` flattens it (`env.NAME`).
+    pub key: String,
+    /// The settings file it is in.
+    pub file: &'static str,
+    /// The mark a decline is recorded by
+    /// ([`settings_sync::declined_from_default`]).
+    pub mark: String,
+}
+
+impl Held {
+    /// How it is named to the user: `env.NAME`, or `env.NAME in
+    /// settings.local.json`.
+    pub fn label(&self) -> String {
+        if self.file == SETTINGS_FILE {
+            self.key.clone()
+        } else {
+            format!("{} in {}", self.key, self.file)
+        }
+    }
+}
+
+/// The prefix of a [`Held::id`] of `settings.local.json`.
+pub const LOCAL_PREFIX: &str = "settings.local.json:";
+
 impl Plan {
+    /// Every shared secret this plan holds: `settings.json`'s, then
+    /// `settings.local.json`'s.
+    pub fn held(&self) -> Vec<Held> {
+        let mut out: Vec<Held> = self
+            .settings
+            .iter()
+            .flat_map(|s| {
+                s.held.iter().map(|k| Held {
+                    id: k.clone(),
+                    key: k.clone(),
+                    file: SETTINGS_FILE,
+                    mark: settings_sync::declined_from_default(s.want.get(k)),
+                })
+            })
+            .collect();
+        out.extend(self.file_held.iter().cloned());
+        out
+    }
+
     pub fn count(&self, a: Action) -> usize {
         self.changes.iter().filter(|c| c.action == a).count()
     }
@@ -568,19 +860,29 @@ impl Plan {
     }
 
     /// The summary `mcc list` and `mcc diff` show.
+    /// With per-key settings, `settings.json` counts its keys, not itself.
     pub fn status(&self) -> Status {
+        let per_key = self.settings.is_some();
         let files = |f: &dyn Fn(Action) -> bool| {
             self.changes
                 .iter()
-                .filter(|c| !c.dir && f(c.action))
+                .filter(|c| {
+                    !c.dir && f(c.action) && !(per_key && c.rel == Path::new(SETTINGS_FILE))
+                })
                 .count()
         };
         let mcp = self.mcp.as_ref();
+        let s = self.settings.as_ref();
         Status {
             behind: files(&|a| matches!(a, Action::Add | Action::Update | Action::Remove))
-                + mcp.map_or(0, |m| m.added.len() + m.updated.len() + m.removed.len()),
-            local_edits: files(&|a| a == Action::LocalEdit) + mcp.map_or(0, |m| m.local.len()),
-            conflicts: files(&|a| a == Action::Conflict) + mcp.map_or(0, |m| m.conflicts.len()),
+                + mcp.map_or(0, |m| m.added.len() + m.updated.len() + m.removed.len())
+                + s.map_or(0, |s| s.added.len() + s.updated.len() + s.removed.len()),
+            local_edits: files(&|a| a == Action::LocalEdit)
+                + mcp.map_or(0, |m| m.local.len())
+                + s.map_or(0, |s| s.local.len()),
+            conflicts: files(&|a| a == Action::Conflict)
+                + mcp.map_or(0, |m| m.conflicts.len())
+                + s.map_or(0, |s| s.conflicts.len()),
         }
     }
 
@@ -647,6 +949,20 @@ impl Plan {
                     m.mcp.insert(k.clone(), h.clone());
                 }
             }
+        }
+        if let Some(s) = &self.settings {
+            let mut next: BTreeMap<String, String> = s
+                .hashes
+                .iter()
+                .filter(|(k, _)| !s.local.contains(k) && !s.conflicts.contains(k))
+                .map(|(k, h)| (k.clone(), h.clone()))
+                .collect();
+            for k in s.local.iter().chain(&s.conflicts) {
+                if let Some(h) = m.settings.get(k).or_else(|| s.kept_base.get(k)) {
+                    next.insert(k.clone(), h.clone());
+                }
+            }
+            m.settings = next;
         }
         m
     }
@@ -749,7 +1065,7 @@ fn kind(p: &Path) -> Kind {
 /// its content (with paths rewritten when `rewrite`), or for a symlink, the
 /// target the copy points at. `None` for a directory or a missing path.
 fn desired_hash(src: &Path, rewrite: bool, rw: &Rewriter) -> Result<Option<String>> {
-    if rw.overlays(src) {
+    if rw.settings_like(src) {
         return Ok(Some(manifest::hash_file(&desired_bytes(src, rewrite, rw)?)));
     }
     Ok(match kind(src) {
@@ -759,17 +1075,179 @@ fn desired_hash(src: &Path, rewrite: bool, rw: &Rewriter) -> Result<Option<Strin
     })
 }
 
-/// What copying the file `src` writes into the profile.
-pub fn desired_bytes(src: &Path, rewrite: bool, rw: &Rewriter) -> Result<Vec<u8>> {
+/// [`desired_hash`] as mcc before per-key settings (#129) recorded the
+/// default's `settings.json`: a symlink by its target, account-bound keys
+/// kept. What an older sync record is compared with.
+fn legacy_desired_hash(src: &Path, rewrite: bool, rw: &Rewriter) -> Result<Option<String>> {
+    if !rw.overlays(src)
+        && let Kind::Link(target) = kind(src)
+    {
+        return Ok(Some(manifest::hash_link(&rw.link_target(src, &target))));
+    }
+    let bytes = rewritten_src(src, rewrite, rw)?;
+    let bytes = match &rw.overlay {
+        Some(overlay) if rw.overlays(src) => overlaid(&bytes, overlay, src)?,
+        _ => bytes,
+    };
+    Ok(Some(manifest::hash_file(&bytes)))
+}
+
+/// The file `src`, with paths rewritten when `rewrite`.
+fn rewritten_src(src: &Path, rewrite: bool, rw: &Rewriter) -> Result<Vec<u8>> {
     let bytes = std::fs::read(src).with_context(|| format!("reading {}", src.display()))?;
-    let bytes = if rewrite {
+    Ok(if rewrite {
         rewritten(&bytes, rw)
     } else {
         bytes
-    };
+    })
+}
+
+/// What copying the file `src` writes into the profile. The default's
+/// `settings.json` or `settings.local.json` loses its account-bound keys
+/// first (they never reach another profile), and is otherwise kept byte
+/// for byte; `settings.local.json` then gets the profile's own
+/// account-bound keys back; then the profile's overlay is merged on. One
+/// that isn't a JSON object is never copied (an error; [`plan_with`]
+/// leaves it out first). This is the whole-file copy: always for
+/// `settings.local.json`, and for `settings.json` when the profile's
+/// can't be synced key by key (it isn't a JSON object).
+pub fn desired_bytes(src: &Path, rewrite: bool, rw: &Rewriter) -> Result<Vec<u8>> {
+    let mut bytes = rewritten_src(src, rewrite, rw)?;
+    if rw.settings_like(src) && !rw.overlays(src) && !is_json_object(&bytes) {
+        return Err(not_an_object(src).into());
+    }
+    if rw.settings_like(src)
+        && let Ok(Value::Object(m)) = serde_json::from_slice::<Value>(&bytes)
+    {
+        let (mut kept, mut changed) = rw.shared_settings(m);
+        for (k, v) in rw.own_account_keys(src) {
+            settings_sync::set_flat(&mut kept, &k, Some(v));
+            changed = true;
+        }
+        if changed {
+            bytes = serde_json::to_vec_pretty(&Value::Object(kept))?;
+            bytes.push(b'\n');
+        }
+    }
     match &rw.overlay {
         Some(overlay) if rw.overlays(src) => overlaid(&bytes, overlay, src),
         _ => Ok(bytes),
+    }
+}
+
+/// [`desired_bytes`] for the default's settings file `src` copied whole,
+/// with each shared secret the profile's (`dst`) lacks or has differently
+/// left as the profile has it, unless `secrets` lets it through; and those
+/// held. Keys the profile's overlay sets are its own. A profile file that
+/// isn't a JSON object counts as empty; one that is the default's own file
+/// (a symlink to it) already has every value.
+fn held_desired(
+    src: &Path,
+    dst: &Path,
+    rewrite: bool,
+    rw: &Rewriter,
+    secrets: &Secrets,
+) -> Result<(Vec<u8>, Vec<Held>)> {
+    let bytes = desired_bytes(src, rewrite, rw)?;
+    let Ok(Value::Object(mut want)) = serde_json::from_slice::<Value>(&bytes) else {
+        return Ok((bytes, Vec::new()));
+    };
+    if same_file(dst, src) {
+        return Ok((bytes, Vec::new()));
+    }
+    let have = match std::fs::read(dst)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+    {
+        Some(Value::Object(m)) => settings_sync::flatten(&m),
+        _ => Map::new(),
+    };
+    let local = rw.local_settings_file(src);
+    let mut held = Vec::new();
+    for (key, v) in settings_sync::flatten(&want) {
+        let id = if local {
+            format!("{LOCAL_PREFIX}{key}")
+        } else {
+            key.clone()
+        };
+        if have.get(&key) != Some(&v)
+            && !(rw.overlays(src) && rw.overlay_sets(&key))
+            && rw.classifier.category(&key, Some(&v)) == Category::SharedSecret
+            && secrets.holds(&id)
+        {
+            settings_sync::set_flat(&mut want, &key, have.get(&key).cloned());
+            held.push(Held {
+                id,
+                mark: settings_sync::declined_from_default(Some(&v)),
+                key,
+                file: if local {
+                    LOCAL_SETTINGS_FILE
+                } else {
+                    SETTINGS_FILE
+                },
+            });
+        }
+    }
+    if held.is_empty() {
+        return Ok((bytes, held));
+    }
+    let mut out = serde_json::to_vec_pretty(&Value::Object(want))?;
+    out.push(b'\n');
+    Ok((out, held))
+}
+
+/// Whether `bytes` parse as a JSON object.
+fn is_json_object(bytes: &[u8]) -> bool {
+    matches!(serde_json::from_slice::<Value>(bytes), Ok(Value::Object(_)))
+}
+
+/// The error for the default's settings file `src` that isn't a JSON
+/// object, so is never copied.
+pub fn not_an_object(src: &Path) -> CliError {
+    CliError::input(format!(
+        "{} is not a JSON object (or not valid JSON), so it is not copied: the keys tied to one account in it can't be told apart",
+        src.display()
+    ))
+    .hint("fix the default's file (a trailing comma, say), then run `mcc sync` again")
+}
+
+/// The hash `settings.local.json` is compared and recorded by: of its keys
+/// without the account-bound ones, which are each profile's own and never
+/// synced, so a profile setting its own is no edit. The bytes' hash when it
+/// isn't a JSON object.
+fn local_settings_hash(bytes: &[u8], rw: &Rewriter) -> String {
+    match serde_json::from_slice::<Value>(bytes) {
+        Ok(Value::Object(m)) => manifest::hash_json(&Value::Object(
+            rw.classifier.shared(settings_sync::flatten(&m)).into_map(),
+        )),
+        _ => manifest::hash_file(bytes),
+    }
+}
+
+/// The profile's `settings.local.json` at `dst`, hashed as
+/// [`local_settings_hash`]; the record's own hash when the file is byte for
+/// byte what an older mcc recorded (its whole file's hash), so it still
+/// counts as untouched.
+fn local_settings_current(dst: &Path, base: &Base, rw: &Rewriter) -> Result<Option<String>> {
+    if kind(dst) != Kind::File {
+        return current_hash(dst);
+    }
+    let bytes = std::fs::read(dst).with_context(|| format!("reading {}", dst.display()))?;
+    let raw = manifest::hash_file(&bytes);
+    let last = base.manifest.and_then(|m| m.files.get(LOCAL_SETTINGS_FILE));
+    Ok(Some(if last == Some(&raw) {
+        raw
+    } else {
+        local_settings_hash(&bytes, rw)
+    }))
+}
+
+/// Whether `a` and `b` are the same file (one a symlink to the other, or
+/// both to one file). False when either can't be resolved.
+pub(crate) fn same_file(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
     }
 }
 
@@ -869,7 +1347,8 @@ fn linked_ancestor(dst_dir: &Path, rel: &Path) -> Option<PathBuf> {
 }
 
 /// Compute what a copy from `src` to `dst` would change (two-way: every
-/// difference is taken from the source).
+/// difference is taken from the source, shared secrets included: what
+/// `mcc link` copies back; a clone holds them, see [`Secrets`]).
 pub fn plan(
     src_dir: &Path,
     src_json: &Path,
@@ -885,7 +1364,10 @@ pub fn plan(
         spec,
         rw,
         prune,
-        &Base::default(),
+        &Base {
+            secrets: Secrets::Copied,
+            ..Base::default()
+        },
     )
 }
 
@@ -911,7 +1393,7 @@ pub fn plan_with(
     // Only items the manifest records are compared three-way.
     let tracked = |key: &str| Base {
         manifest: base.manifest.filter(|m| m.items.contains(key)),
-        force: base.force,
+        ..*base
     };
     for item in &spec.items {
         let src = src_dir.join(&item.rel);
@@ -951,9 +1433,86 @@ pub fn plan_with(
                     push(extra_action, item.rel.clone(), false);
                 }
             }
+            // The default's settings file isn't a JSON object: its
+            // account-bound keys can't be told apart, so it is never
+            // copied, and the profile's file and record stay as they are.
+            // (With an overlay, settings.json fails to merge instead.)
+            Kind::File | Kind::Link(_)
+                if rw.settings_like(&src)
+                    && !rw.overlays(&src)
+                    && !is_json_object(&rewritten_src(&src, item.rewrite, rw)?) =>
+            {
+                plan.items.pop();
+                plan.unreadable.push(item.rel.clone());
+            }
+            // A settings.json mcc wrote and the profile deleted stays
+            // deleted: one local edit, its record kept as it is (never a
+            // `{}` whose keys would all read as removed). `--force` writes
+            // it afresh, two-way, so no old base survives.
+            Kind::File | Kind::Link(_)
+                if item.rel == Path::new(SETTINGS_FILE)
+                    && !detached
+                    && src.is_file()
+                    && deleted_settings(&dst, base)
+                    && !base.force =>
+            {
+                push(Action::LocalEdit, item.rel.clone(), false);
+            }
+            Kind::File | Kind::Link(_)
+                if item.rel == Path::new(SETTINGS_FILE)
+                    && !detached
+                    && src.is_file()
+                    && kind(&dst) != Kind::Dir
+                    && let Some(view) = settings_view(
+                        &src,
+                        &dst,
+                        item.rewrite,
+                        rw,
+                        if deleted_settings(&dst, base) {
+                            &TWO_WAY
+                        } else {
+                            base
+                        },
+                    )? =>
+            {
+                let s = plan_settings(view, &src, &dst, item.rewrite, rw, base)?;
+                hashes.insert(item.rel.clone(), s.file_hash.clone());
+                if s.merged.is_some() {
+                    let action = if kind(&dst) == Kind::Missing {
+                        Action::Add
+                    } else {
+                        Action::Update
+                    };
+                    push(action, item.rel.clone(), false);
+                } else {
+                    plan.unchanged += 1;
+                }
+                plan.settings = Some(s);
+                plan.items.push(manifest::SETTINGS_ITEM.into());
+            }
             Kind::File | Kind::Link(_) => {
-                let want = desired_hash(&src, item.rewrite, rw)?.expect("file or symlink");
+                let local = rw.local_settings_file(&src) && rw.settings_like(&src);
+                let want = if local {
+                    local_settings_hash(&desired_bytes(&src, item.rewrite, rw)?, rw)
+                } else {
+                    desired_hash(&src, item.rewrite, rw)?.expect("file or symlink")
+                };
                 hashes.insert(item.rel.clone(), want.clone());
+                // An older mcc's record of settings.local.json is the hash
+                // of the whole file it wrote: while the default still gives
+                // that, the default is unchanged, so compare with it.
+                let want = match base.manifest.and_then(|m| m.files.get(LOCAL_SETTINGS_FILE)) {
+                    Some(last)
+                        if local
+                            && *last != want
+                            && legacy_desired_hash(&src, item.rewrite, rw)?.as_ref()
+                                == Some(last) =>
+                    {
+                        last.clone()
+                    }
+                    _ => want,
+                };
+                let mut have = None;
                 if detached {
                     push(Action::Add, item.rel.clone(), false);
                 } else if kind(&dst) == Kind::Missing {
@@ -961,14 +1520,50 @@ pub fn plan_with(
                     push(a, item.rel.clone(), f);
                 } else if is_nonempty_dir(&dst) {
                     replace_dir(&mut push, item.rel.clone(), prune);
+                } else if rw.settings_like(&src) && same_file(&dst, &src) {
+                    // A link to the default's own settings (as an older mcc
+                    // left it) is not the profile's: always replaced by a
+                    // file without the default's account-bound keys.
+                    push(Action::Update, item.rel.clone(), false);
                 } else {
-                    let have = current_hash(&dst)?;
+                    have = if local {
+                        local_settings_current(&dst, base, rw)?
+                    } else {
+                        current_hash(&dst)?
+                    };
                     if have.as_deref() == Some(want.as_str()) {
                         plan.unchanged += 1;
                     } else {
                         let (a, f) =
                             three_way(base, &item.rel, &want, have.as_deref(), Action::Update);
                         push(a, item.rel.clone(), f);
+                    }
+                }
+                // A settings file the sync writes whole (settings.local.json,
+                // or settings.json when the profile's isn't a JSON object):
+                // the shared secrets the default's adds or changes are held
+                // out of it. Where
+                // the profile's is kept (a local edit or conflict) or
+                // already as the default gives it, there is nothing to hold.
+                let writes = changes
+                    .last()
+                    .is_some_and(|c| c.rel == item.rel && !c.action.kept() && !c.dir);
+                if rw.settings_like(&src) && writes {
+                    let (bytes, held) = held_desired(&src, &dst, item.rewrite, rw, &base.secrets)?;
+                    if !held.is_empty() {
+                        let want = if local {
+                            local_settings_hash(&bytes, rw)
+                        } else {
+                            manifest::hash_file(&bytes)
+                        };
+                        hashes.insert(item.rel.clone(), want.clone());
+                        if have.as_deref() == Some(want.as_str()) {
+                            changes.pop();
+                            plan.unchanged += 1;
+                        } else {
+                            plan.prepared.insert(item.rel.clone(), bytes);
+                        }
+                        plan.file_held.extend(held);
                     }
                 }
             }
@@ -1105,6 +1700,231 @@ fn drop_unneeded_dir_adds(plan: &mut Plan) {
             || written.iter().any(|w| w.starts_with(&c.rel))
             || !hashes.keys().any(|h| h.starts_with(&c.rel))
     });
+}
+
+/// No record: compared two-way.
+const TWO_WAY: Base<'static> = Base {
+    manifest: None,
+    force: false,
+    secrets: Secrets::Held,
+};
+
+/// Whether the profile's settings.json `dst` is missing although its
+/// record says mcc wrote one: the profile deleted it.
+fn deleted_settings(dst: &Path, base: &Base) -> bool {
+    kind(dst) == Kind::Missing
+        && base.manifest.is_some_and(|m| {
+            m.files.contains_key(SETTINGS_FILE) || m.items.contains(manifest::SETTINGS_ITEM)
+        })
+}
+
+/// The default's `settings.json` (`src`) next to the profile's (`dst`),
+/// key by key ([`SettingsView`]), three-way against `base` (filtered to
+/// whether its record covers settings). `None` when either is not a JSON
+/// object (or `dst` can't be read): it is then synced as a whole file.
+/// When `dst` is the default's own file (a symlink to it, as an older mcc
+/// left it), the default's account-bound keys read through it are not
+/// taken for the profile's ([`SettingsView::linked`]).
+pub fn settings_view(
+    src: &Path,
+    dst: &Path,
+    rewrite: bool,
+    rw: &Rewriter,
+    base: &Base,
+) -> Result<Option<SettingsView>> {
+    let non_object_env = |m: &Map<String, Value>| m.get("env").is_some_and(|v| !v.is_object());
+    let text = rewritten_src(src, rewrite, rw)?;
+    let Ok(Value::Object(default)) = serde_json::from_slice::<Value>(&text) else {
+        return Ok(None);
+    };
+    if non_object_env(&default) {
+        return Ok(None);
+    }
+    let have_obj = match kind(dst) {
+        Kind::Missing => None,
+        Kind::Dir => return Ok(None),
+        _ => match std::fs::read(dst)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        {
+            Some(Value::Object(m)) if !non_object_env(&m) => Some(m),
+            _ => return Ok(None),
+        },
+    };
+    let linked = same_file(dst, src);
+    let have_obj = match have_obj {
+        Some(m) if linked => Some(rw.shared_settings(m).0),
+        other => other,
+    };
+    let (mut want_obj, _) = rw.shared_settings(default);
+    let mut overlay_keys = BTreeSet::new();
+    let mut overlay_env = false;
+    if let Some(overlay) = &rw.overlay {
+        deep_merge(&mut want_obj, overlay);
+        for (k, v) in overlay {
+            match (k.as_str(), v) {
+                ("env", Value::Object(vars)) => overlay_keys.extend(
+                    vars.keys()
+                        .map(|n| format!("{}{n}", settings_sync::ENV_PREFIX)),
+                ),
+                ("env", _) => overlay_env = true,
+                _ => {
+                    overlay_keys.insert(k.clone());
+                }
+            }
+        }
+    }
+    let have = have_obj
+        .as_ref()
+        .map(settings_sync::flatten)
+        .unwrap_or_default();
+    let key_base = match base.manifest {
+        None => KeyBase::TwoWay,
+        Some(m) if m.items.contains(manifest::SETTINGS_ITEM) => KeyBase::Keys(m.settings.clone()),
+        Some(m) => {
+            // A record from before per-key settings: the whole file's hash.
+            let last = m.files.get(SETTINGS_FILE);
+            if last.is_some() && current_hash(dst)?.as_ref() == last {
+                // Untouched since mcc wrote it: every key is as mcc wrote it.
+                KeyBase::Keys(
+                    have.iter()
+                        .map(|(k, v)| (k.clone(), manifest::hash_json(v)))
+                        .collect(),
+                )
+            } else if last.is_none() && have_obj.is_none() {
+                KeyBase::Keys(BTreeMap::new())
+            } else {
+                KeyBase::Guess {
+                    default_unchanged: last.is_some()
+                        && legacy_desired_hash(src, rewrite, rw)?.as_ref() == last,
+                }
+            }
+        }
+    };
+    Ok(Some(SettingsView {
+        want: settings_sync::flatten(&want_obj),
+        have,
+        have_obj,
+        base: key_base,
+        overlay_keys,
+        overlay_env,
+        linked,
+    }))
+}
+
+/// Plan the profile's `settings.json` key by key from `view`: a key the
+/// profile's overlay sets is taken as the overlay has it; an account-bound
+/// key stays as the profile has it (never added, changed or removed); any
+/// other key is three-way, as [`three_way`] classifies a path, except that
+/// a shared secret the default sets is held as `base.secrets` says. What
+/// is written keeps the profile's key order, with new keys after.
+fn plan_settings(
+    view: SettingsView,
+    src: &Path,
+    dst: &Path,
+    rewrite: bool,
+    rw: &Rewriter,
+    base: &Base,
+) -> Result<SettingsChange> {
+    let mut s = SettingsChange::default();
+    let mut result = view.have_obj.clone().unwrap_or_default();
+    for k in view.keys() {
+        let (w, p) = (view.want.get(&k), view.have.get(&k));
+        // A shared secret the default sets reaches the profile only once
+        // the user agrees; removing one needs no consent.
+        let held = w.is_some()
+            && rw.classifier.category(&k, w) == Category::SharedSecret
+            && base.secrets.holds(&k);
+        let category = rw
+            .classifier
+            .category(&k, w)
+            .max(rw.classifier.category(&k, p));
+        let take = if view.overlaid(&k) {
+            w != p
+        } else if rw.classifier.is_account_bound(&k) || w == p {
+            false
+        } else {
+            // The same reading `mcc sync` takes profile changes by.
+            match settings_sync::key_state(&view.base, &k, w, p) {
+                KeyState::Theirs if held => {
+                    s.held.push(k.clone());
+                    false
+                }
+                KeyState::Theirs => true,
+                KeyState::Ours { base } | KeyState::Lost { base } => {
+                    if let Some(h) = base {
+                        s.kept_base.insert(k.clone(), h);
+                    }
+                    s.local.push(k.clone());
+                    false
+                }
+                KeyState::Untracked => {
+                    s.local.push(k.clone());
+                    false
+                }
+                KeyState::Proposed => {
+                    s.kept_base
+                        .insert(k.clone(), settings_sync::PROPOSED_BASE.into());
+                    s.local.push(k.clone());
+                    false
+                }
+                KeyState::Both if base.force && held => {
+                    s.held.push(k.clone());
+                    s.conflicts.push(k.clone());
+                    false
+                }
+                KeyState::Both if base.force => {
+                    s.forced.push(k.clone());
+                    true
+                }
+                KeyState::Both => {
+                    s.conflicts.push(k.clone());
+                    false
+                }
+            }
+        };
+        if (take || s.held.last() == Some(&k)) && !view.overlaid(&k) {
+            s.categories.insert(k.clone(), category);
+        }
+        if take {
+            match (p, w) {
+                (None, _) => s.added.push(k.clone()),
+                (_, None) => s.removed.push(k.clone()),
+                _ => s.updated.push(k.clone()),
+            }
+            settings_sync::set_flat(&mut result, &k, w.cloned());
+        }
+    }
+    s.hashes = settings_sync::flatten(&result)
+        .iter()
+        .map(|(k, v)| (k.clone(), manifest::hash_json(v)))
+        .collect();
+    s.want = view.want.clone();
+    for (k, v) in &view.have {
+        if !view.overlaid(k) && rw.classifier.is_account_bound(k) {
+            s.want.insert(k.clone(), v.clone());
+        }
+    }
+    s.have = view.have;
+    // A link to the default's own file is always replaced by a file.
+    if !view.linked && view.have_obj.as_ref() == Some(&result) {
+        s.file_hash = current_hash(dst)?.unwrap_or_default();
+    } else {
+        // The default's own bytes when the profile gets exactly them, as
+        // a whole-file sync wrote them.
+        let text = rewritten_src(src, rewrite, rw)?;
+        let result = Value::Object(result);
+        let bytes = if serde_json::from_slice::<Value>(&text).ok().as_ref() == Some(&result) {
+            text
+        } else {
+            let mut out = serde_json::to_vec_pretty(&result)?;
+            out.push(b'\n');
+            out
+        };
+        s.file_hash = manifest::hash_file(&bytes);
+        s.merged = Some(bytes);
+    }
+    Ok(s)
 }
 
 pub(crate) fn read_json(path: &Path) -> Result<Option<Value>> {
@@ -1259,7 +2079,17 @@ pub fn apply(
             .hint("re-run the command; mcc replaces the symlink with a real directory")
             .into());
         }
+        let merged = plan
+            .settings
+            .as_ref()
+            .and_then(|s| s.merged.as_ref())
+            .filter(|_| c.rel == Path::new(SETTINGS_FILE));
+        let merged = merged.or_else(|| plan.prepared.get(&c.rel));
         match c.action {
+            Action::Add | Action::Update if let Some(bytes) = merged => {
+                // Replaces a symlink there; never writes through it.
+                fsutil::write_atomic(&dst, bytes)?;
+            }
             Action::Remove => fsutil::remove_any(&dst)?,
             Action::Add | Action::Update => copy_one(&src, &dst, c.rewrite, rw)?,
             Action::Extra | Action::LocalEdit | Action::Conflict => {}
@@ -1296,8 +2126,8 @@ fn copy_one(src: &Path, dst: &Path, rewrite: bool, rw: &Rewriter) -> Result<()> 
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
-    // The overlaid settings.json is written as a file, even from a symlink.
-    let src_kind = if rw.overlays(src) {
+    // The default's settings files are written as files, even from a symlink.
+    let src_kind = if rw.settings_like(src) {
         Kind::File
     } else {
         kind(src)
@@ -1312,7 +2142,7 @@ fn copy_one(src: &Path, dst: &Path, rewrite: bool, rw: &Rewriter) -> Result<()> 
             if matches!(kind(dst), Kind::Dir | Kind::Link(_)) {
                 fsutil::remove_any(dst)?;
             }
-            if rewrite || rw.overlays(src) {
+            if rewrite || rw.settings_like(src) {
                 fsutil::write_atomic(dst, &desired_bytes(src, rewrite, rw)?)?;
                 if let Ok(meta) = std::fs::metadata(src) {
                     let _ = std::fs::set_permissions(dst, meta.permissions());
@@ -1412,6 +2242,7 @@ mod tests {
             exclude: vec!["hooks".into()],
             extra: vec![],
             auto: None,
+            ..SyncConfig::default()
         };
         let rw = Rewriter::new(&paths, &paths.profile_dir("w"), &cfg);
         assert_eq!(rw.apply("~/.claude/hooks/h.sh"), "~/.claude/hooks/h.sh");
@@ -1883,6 +2714,10 @@ mod tests {
                 added: vec!["fs".into()],
                 ..McpChange::default()
             }),
+            settings: None,
+            unreadable: Vec::new(),
+            file_held: Vec::new(),
+            prepared: BTreeMap::new(),
         };
         let mut got = p.backup_paths(dst);
         got.sort();
@@ -1902,6 +2737,7 @@ mod tests {
             exclude: vec![],
             extra: vec![e.to_string()],
             auto: None,
+            ..SyncConfig::default()
         };
         for bad in [
             "",
@@ -1964,6 +2800,7 @@ mod tests {
             &Base {
                 manifest: Some(m),
                 force,
+                ..Base::default()
             },
         )
         .unwrap()
@@ -2154,6 +2991,254 @@ mod tests {
         assert_eq!(mcp.updated, vec!["fs".to_string()]);
     }
 
+    fn write_settings(p: &Path, v: Value) {
+        std::fs::write(p.join(SETTINGS_FILE), v.to_string()).unwrap();
+    }
+
+    fn read_settings(p: &Path) -> Value {
+        serde_json::from_slice(&std::fs::read(p.join(SETTINGS_FILE)).unwrap()).unwrap()
+    }
+
+    /// #129: settings.json is planned key by key; the default's
+    /// account-bound keys never reach a profile, the profile's own are kept.
+    #[test]
+    fn settings_are_planned_key_by_key() {
+        let (_d, paths, dst) = setup();
+        let src = paths.default_dir.clone();
+        write_settings(
+            &src,
+            serde_json::json!({"model": "opus", "theme": "dark", "env": {
+                "ANTHROPIC_API_KEY": "default-key", "ANTHROPIC_BASE_URL": "https://default", "TAVILY_API_KEY": "t"
+            }}),
+        );
+        let m = cloned(&paths, &dst);
+        let s = read_settings(&dst);
+        assert!(s["env"].get("ANTHROPIC_API_KEY").is_none(), "{s}");
+        assert!(s["env"].get("ANTHROPIC_BASE_URL").is_none(), "{s}");
+        assert_eq!(s["env"]["TAVILY_API_KEY"], "t");
+        assert!(m.items.contains(manifest::SETTINGS_ITEM));
+        assert!(m.settings.contains_key("env.TAVILY_API_KEY"), "{m:?}");
+
+        // The profile sets its own provider and model; the default adds a key.
+        let mut s = read_settings(&dst);
+        s["env"]["ANTHROPIC_BASE_URL"] = "https://mine".into();
+        s["model"] = "sonnet".into();
+        write_settings(&dst, s);
+        let mut d = read_settings(&src);
+        d["newKey"] = true.into();
+        write_settings(&src, d);
+        let p = plan3(&paths, &dst, &m, false);
+        let st = p.settings.as_ref().unwrap();
+        assert_eq!(st.added, vec!["newKey".to_string()]);
+        assert_eq!(st.local, vec!["model".to_string()]);
+        assert!(st.conflicts.is_empty() && st.updated.is_empty() && st.removed.is_empty());
+        assert_eq!(
+            p.status(),
+            Status {
+                behind: 1,
+                local_edits: 1,
+                conflicts: 0
+            }
+        );
+        let rw = Rewriter::new(&paths, &dst, &SyncConfig::default());
+        apply(&p, &paths.default_dir, &dst, &rw, false).unwrap();
+        let s = read_settings(&dst);
+        assert_eq!(s["newKey"], true, "{s}");
+        assert_eq!(s["model"], "sonnet", "{s}");
+        assert_eq!(s["env"]["ANTHROPIC_BASE_URL"], "https://mine", "{s}");
+        assert!(s["env"].get("ANTHROPIC_API_KEY").is_none(), "{s}");
+
+        // Both sides change one key: a conflict, kept unless forced; a key
+        // the default drops is removed (an update, not a deletion).
+        let m2 = p.manifest(Some(&m));
+        let mut d = read_settings(&src);
+        d["model"] = "haiku".into();
+        d.as_object_mut().unwrap().shift_remove("theme");
+        write_settings(&src, d);
+        let p = plan3(&paths, &dst, &m2, false);
+        let st = p.settings.as_ref().unwrap();
+        assert_eq!(st.conflicts, vec!["model".to_string()]);
+        assert_eq!(st.removed, vec!["theme".to_string()]);
+        assert_eq!(p.deletes(&dst), 0);
+        let p = plan3(&paths, &dst, &m2, true);
+        let st = p.settings.as_ref().unwrap();
+        assert_eq!(st.forced, vec!["model".to_string()]);
+        assert_eq!(st.updated, vec!["model".to_string()]);
+        // Nothing to do once synced.
+        apply(&p, &paths.default_dir, &dst, &rw, false).unwrap();
+        let m3 = p.manifest(Some(&m2));
+        let p = plan3(&paths, &dst, &m3, false);
+        assert_eq!(p.actionable(), 0, "{:?}", p.settings);
+        assert_eq!(p.status(), Status::default());
+    }
+
+    /// A record from before per-key settings holds only the whole file's
+    /// hash: an untouched profile takes every default change; an edited
+    /// one gets new keys, keys both have otherwise conflict, and a key only
+    /// the profile has is kept as a pending proposal (it may be new there,
+    /// or one the default dropped; `mcc sync` asks before taking it).
+    #[test]
+    fn settings_with_a_whole_file_record_are_planned_per_key() {
+        let (_d, paths, dst) = setup();
+        let src = paths.default_dir.clone();
+        write_settings(
+            &src,
+            serde_json::json!({"model": "opus", "env": {"TAVILY_API_KEY": "t0"}}),
+        );
+        let mut m = cloned(&paths, &dst);
+        m.items.remove(manifest::SETTINGS_ITEM);
+        m.settings.clear();
+        assert!(m.files.contains_key(SETTINGS_FILE));
+        write_settings(
+            &src,
+            serde_json::json!({"model": "haiku", "env": {"TAVILY_API_KEY": "t0"}}),
+        );
+        let p = plan3(&paths, &dst, &m, false);
+        assert_eq!(
+            p.settings.as_ref().unwrap().updated,
+            vec!["model".to_string()]
+        );
+
+        // Edited in the profile too: the default's new key is still taken.
+        write_settings(
+            &dst,
+            serde_json::json!({"model": "opus", "env": {"TAVILY_API_KEY": "t1", "CODE": "1"}}),
+        );
+        let mut d = read_settings(&src);
+        d["newKey"] = true.into();
+        write_settings(&src, d);
+        let p = plan3(&paths, &dst, &m, false);
+        let st = p.settings.as_ref().unwrap();
+        assert_eq!(st.added, vec!["newKey".to_string()]);
+        assert_eq!(st.local, vec!["env.CODE".to_string()]);
+        assert_eq!(
+            st.conflicts,
+            vec!["model".to_string(), "env.TAVILY_API_KEY".to_string()]
+        );
+        // --force gives the profile the default's side of a conflict, but
+        // leaves a proposal alone, and holds a shared secret until the
+        // user agrees to it (AC3 of #129).
+        let forced = plan3(&paths, &dst, &m, true);
+        let st = forced.settings.as_ref().unwrap();
+        assert_eq!(st.local, vec!["env.CODE".to_string()]);
+        assert_eq!(st.forced, vec!["model".to_string()]);
+        assert_eq!(st.held, vec!["env.TAVILY_API_KEY".to_string()]);
+        assert!(st.conflicts.contains(&"env.TAVILY_API_KEY".to_string()));
+        let agreed = BTreeSet::from(["env.TAVILY_API_KEY".to_string()]);
+        let rw = Rewriter::new(&paths, &dst, &SyncConfig::default());
+        let sp = spec(None, &SyncConfig::default()).unwrap();
+        let forced = plan_with(
+            &paths.default_dir,
+            &paths.default_json,
+            &dst,
+            &sp,
+            &rw,
+            false,
+            &Base {
+                manifest: Some(&m),
+                force: true,
+                secrets: Secrets::HeldExcept(&agreed),
+            },
+        )
+        .unwrap();
+        assert_eq!(forced.settings.as_ref().unwrap().forced.len(), 2);
+        // Once synced, the record is per key: the conflicts, with no base,
+        // stay conflicts; the proposal stays one.
+        let rw = Rewriter::new(&paths, &dst, &SyncConfig::default());
+        apply(&p, &paths.default_dir, &dst, &rw, false).unwrap();
+        let m2 = p.manifest(Some(&m));
+        assert!(m2.items.contains(manifest::SETTINGS_ITEM));
+        assert!(!m2.settings.contains_key("model"));
+        assert_eq!(m2.settings["env.CODE"], settings_sync::PROPOSED_BASE);
+        let p = plan3(&paths, &dst, &m2, false);
+        let st = p.settings.as_ref().unwrap();
+        assert!(st.is_empty(), "{st:?}");
+        assert_eq!(st.conflicts.len(), 2);
+        assert_eq!(st.local, vec!["env.CODE".to_string()]);
+        // Once the default has it too, the record holds its real hash.
+        let mut d = read_settings(&src);
+        d["env"]["CODE"] = "1".into();
+        write_settings(&src, d);
+        let p = plan3(&paths, &dst, &m2, false);
+        let m3 = p.manifest(Some(&m2));
+        assert_eq!(
+            m3.settings["env.CODE"],
+            manifest::hash_json(&serde_json::json!("1"))
+        );
+        assert_eq!(read_settings(&dst)["env"]["TAVILY_API_KEY"], "t1");
+        assert_eq!(read_settings(&dst)["env"]["CODE"], "1");
+    }
+
+    /// settings.local.json after upgrading: an older mcc recorded the hash
+    /// of the whole file it wrote (the default's, account-bound keys and
+    /// all). An edit in the profile alone stays a local edit, a change in
+    /// the default alone is an update, both are a conflict.
+    #[test]
+    fn local_settings_with_a_whole_file_record_are_three_way() {
+        let local_action = |p: &Plan| {
+            p.changes
+                .iter()
+                .find(|c| c.rel == Path::new(LOCAL_SETTINGS_FILE))
+                .map(|c| c.action)
+        };
+        let old = r#"{"env":{"ANTHROPIC_API_KEY":"k","A":"1"}}"#;
+        let edited = r#"{"env":{"ANTHROPIC_API_KEY":"k","A":"1","B":"2"}}"#;
+        let changed = r#"{"env":{"ANTHROPIC_API_KEY":"k","A":"9"}}"#;
+        for (profile, default, want) in [
+            (old, old, None),
+            (edited, old, Some(Action::LocalEdit)),
+            (old, changed, Some(Action::Update)),
+            (edited, changed, Some(Action::Conflict)),
+        ] {
+            let (_d, paths, dst) = setup();
+            let src = paths.default_dir.join(LOCAL_SETTINGS_FILE);
+            std::fs::write(&src, old).unwrap();
+            let mut m = cloned(&paths, &dst);
+            // As the older mcc copied and recorded it.
+            std::fs::write(dst.join(LOCAL_SETTINGS_FILE), profile).unwrap();
+            m.files.insert(
+                LOCAL_SETTINGS_FILE.into(),
+                manifest::hash_file(old.as_bytes()),
+            );
+            std::fs::write(&src, default).unwrap();
+            let p = plan3(&paths, &dst, &m, false);
+            assert_eq!(local_action(&p), want, "{profile} / {default}");
+            // Kept as it is, it stays what it was on the next plan.
+            if want == Some(Action::LocalEdit) {
+                let m2 = p.manifest(Some(&m));
+                let p = plan3(&paths, &dst, &m2, false);
+                assert_eq!(local_action(&p), want);
+            }
+        }
+    }
+
+    #[test]
+    fn profile_paths_map_back_to_the_default() {
+        let paths = Paths::new("/h".into());
+        let rw = Rewriter::new(&paths, &paths.profile_dir("w"), &SyncConfig::default());
+        let v = serde_json::json!({"command": "bash /h/.mcc/profiles/w/hooks/x.sh ~/.mcc/profiles/w/skills"});
+        assert_eq!(
+            rw.to_default(&v).unwrap(),
+            serde_json::json!({"command": "bash /h/.claude/hooks/x.sh ~/.claude/skills"})
+        );
+        // A path the profile doesn't receive from the default stays as is.
+        let own = serde_json::json!("~/.mcc/profiles/w/statusline/run.sh");
+        assert_eq!(rw.to_default(&own).unwrap(), own);
+        // Not another profile's paths, nor a longer name.
+        let other = serde_json::json!("/h/.mcc/profiles/w2/hooks/x.sh");
+        assert_eq!(rw.to_default(&other).unwrap(), other);
+        // Quotes, backslashes and non-ASCII text come back exactly.
+        let odd =
+            serde_json::json!({"command": "say \"héllo\" \\ é /h/.mcc/profiles/w/hooks/x.sh"});
+        assert_eq!(
+            rw.to_default(&odd).unwrap(),
+            serde_json::json!({"command": "say \"héllo\" \\ é /h/.claude/hooks/x.sh"})
+        );
+        // A default path the profile would rewrite can't come back exactly.
+        let mixed = serde_json::json!("/h/.claude/hooks/a.sh /h/.mcc/profiles/w/hooks/b.sh");
+        assert_eq!(rw.to_default(&mixed), None);
+    }
+
     #[test]
     fn deep_merge_semantics() {
         let mut base = serde_json::json!({
@@ -2286,7 +3371,7 @@ mod tests {
             false,
             &Base {
                 manifest: Some(&m),
-                force: false,
+                ..Base::default()
             },
         )
         .unwrap();
@@ -2303,7 +3388,7 @@ mod tests {
             false,
             &Base {
                 manifest: Some(&m),
-                force: false,
+                ..Base::default()
             },
         )
         .unwrap();
@@ -2316,6 +3401,7 @@ mod tests {
             exclude: vec![],
             extra: vec!["settings.mcc.json".into()],
             auto: None,
+            ..SyncConfig::default()
         };
         assert!(spec(None, &cfg).is_err());
     }
@@ -2359,7 +3445,9 @@ mod tests {
         std::fs::rename(paths.default_dir.join("settings.json"), &real).unwrap();
         std::os::unix::fs::symlink(&real, paths.default_dir.join("settings.json")).unwrap();
         let sp = spec(Some(&["settings".to_string()]), &SyncConfig::default()).unwrap();
-        // Without an overlay the symlink is kept, as before.
+        // Without an overlay, settings are synced key by key too (#129): a
+        // file, so the default's account-bound keys never reach the profile
+        // through a link.
         let rw = Rewriter::new(&paths, &dst, &SyncConfig::default());
         let p = plan(
             &paths.default_dir,
@@ -2371,8 +3459,12 @@ mod tests {
         )
         .unwrap();
         apply(&p, &paths.default_dir, &dst, &rw, false).unwrap();
-        assert!(dst.join("settings.json").is_symlink());
-        // With one, the merged result replaces the link (never its target).
+        assert!(!dst.join("settings.json").is_symlink());
+        // A link there (as an older mcc copied it) is replaced by the merged
+        // result, never written through.
+        std::fs::remove_file(dst.join("settings.json")).unwrap();
+        std::os::unix::fs::symlink(&real, dst.join("settings.json")).unwrap();
+        // With an overlay, the merged result replaces the link (never its target).
         std::fs::write(dst.join(OVERLAY_FILE), r#"{"model": "x"}"#).unwrap();
         let rw = Rewriter::for_profile(&paths, &Config::default(), &dst).unwrap();
         let p = plan(
