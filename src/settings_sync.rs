@@ -52,14 +52,16 @@ const ACCOUNT_KEYS: &[&str] = &[
     "env.CLAUDE_CODE_USE_FOUNDRY",
 ];
 
-/// An `env` variable named like a secret: `PASSWORD`, `PASSWD`, `SECRET`,
-/// `CREDENTIAL`, `PRIVATE_KEY` or `WEBHOOK` anywhere in it
-/// (`PGPASSWORD`); one of the shorter words as a whole `_`-separated part
-/// (so `MAX_THINKING_TOKENS`, `BYPASS_PROXY` and `OLDPWD` are not one);
+/// An `env` variable named like a secret: `PASSWORD`, `PASSWD`,
+/// `PASSPHRASE`, `SECRET`, `CREDENTIAL`, `PRIVATE_KEY` or `WEBHOOK`
+/// anywhere in it (`PGPASSWORD`); one of the shorter words as a whole
+/// `_`-separated part, `HEADERS` among them (`OTEL_EXPORTER_OTLP_HEADERS`,
+/// `ANTHROPIC_CUSTOM_HEADERS` carry auth headers), so `MAX_THINKING_TOKENS`,
+/// `BYPASS_PROXY` and `OLDPWD` are not one;
 /// or `KEY` as its last part (`SERPAPI_KEY`).
 static SECRET_NAME: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)PASSWORD|PASSWD|SECRET|CREDENTIAL|PRIVATE_?KEY|WEBHOOK|(?:^|_)(?:API_?KEY|TOKEN|ACCESS_KEY|AUTH|PASS|PWD|DSN)(?:_|$)|(?:^|_)KEY$",
+        r"(?i)PASSWORD|PASSWD|PASSPHRASE|SECRET|CREDENTIAL|PRIVATE_?KEY|WEBHOOK|(?:^|_)(?:API_?KEY|TOKEN|ACCESS_KEY|AUTH|PASS|PWD|DSN|HEADERS)(?:_|$)|(?:^|_)KEY$",
     )
     .expect("static regex")
 });
@@ -107,15 +109,40 @@ static CREDENTIAL_URL: LazyLock<Regex> = LazyLock::new(|| {
 /// An HTTP credential in a command line: an `Authorization:` header with
 /// its scheme and credential, a header named like a key or token
 /// (`X-API-Key:`, `DD-API-KEY:`, `X-Auth-Token:`, `PRIVATE-TOKEN:`, or
-/// after `-H`/`--header` any name such as `apikey:`) with a value, or
-/// `Bearer` and 16+ characters anywhere. Each group is the
+/// after `-H`/`--header` any name such as `apikey:`) with a value of 8+
+/// credential characters (so neither `print-access-token:*)` in a
+/// permission rule nor `cache-key: %s` is one; `-H` is case-sensitive, so
+/// `du -h` isn't either), or `Bearer` and 16+ characters anywhere. Each
+/// group is the
 /// credential: one that only names a shell variable (`$TOKEN`) is not in
 /// the file ([`holds_auth_header`]).
 static AUTH_HEADER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r#"(?i)\bauthorization\s*:\s*(?:bearer|basic|token|bot)\s+([^\s'"]+)|(?:^|[\s'"])(?:[a-z0-9]+-)+(?:api-?key|key|token|secret|auth)\s*:\s*([^\s'"]+)|(?:^|\s)(?:-H|--header)[\s=]*['"]?[a-z0-9_-]*(?:key|token|secret|auth)\s*:\s*([^\s'"]+)|\bbearer\s+([$A-Za-z0-9._~+/=-]{16,})"#,
+        r#"(?i)\bauthorization\s*:\s*(?:bearer|basic|token|bot)\s+([^\s'"]+)|(?:^|[\s'"])(?:[a-z0-9]+-)+(?:api-?key|key|token|secret|auth)\s*:\s*([A-Za-z0-9._~+/=-]{8,})(?:[\s'"]|$)|(?:^|\s)(?-i:-H|--header)[\s=]*['"]?[a-z0-9_-]*(?:key|token|secret|auth)\s*:\s*([A-Za-z0-9._~+/=-]{8,})(?:[\s'"]|$)|\bbearer\s+([$A-Za-z0-9._~+/=-]{16,})"#,
     )
     .expect("static regex")
+});
+
+/// A password given to curl: `-u user:pass`, `-uuser:pass`, `--user
+/// user:pass`, `--user=user:pass`; the groups are the user and password.
+static CURL_USER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?:^|\s)(?:-u\s*|--user[=\s]+)['"]?([^\s:'"]+):([^\s'"]+)"#)
+        .expect("static regex")
+});
+
+/// A shell assignment in a command line: `NAME=value`, maybe after
+/// `export`; the groups are the name and the value (maybe quoted).
+static ASSIGNMENT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?:^|[\s;&|(])(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=([^\s'";&|]+|'[^']*'|"[^"]*")"#,
+    )
+    .expect("static regex")
+});
+
+/// A value that only names a shell variable: `$X` or `${X}`: the secret
+/// is not in the file.
+static SHELL_VAR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}]*\})$").expect("static regex")
 });
 
 /// A run of 32 or more hex digits standing alone: in an `env` value, an
@@ -236,6 +263,7 @@ fn holds_token(v: &Value) -> bool {
             TOKEN_SHAPE.is_match(s)
                 || CREDENTIAL_URL.is_match(s)
                 || holds_auth_header(s)
+                || holds_curl_password(s)
                 || URL.find_iter(s).any(|u| SECRET_URL.is_match(u.as_str()))
                 || LONG_RUN.find_iter(s).any(|m| {
                     let run = m.as_str();
@@ -259,6 +287,15 @@ fn holds_auth_header(s: &str) -> bool {
             .skip(1)
             .flatten()
             .any(|m| !m.as_str().starts_with('$'))
+    })
+}
+
+/// Whether `s` gives curl a password ([`CURL_USER`]) other than a shell
+/// variable's, with a user that isn't a numeric id (`docker -u 1000:1000`).
+fn holds_curl_password(s: &str) -> bool {
+    CURL_USER.captures_iter(s).any(|c| {
+        let (user, pass) = (&c[1], &c[2]);
+        !pass.starts_with('$') && !user.bytes().all(|b| b.is_ascii_digit())
     })
 }
 
@@ -315,11 +352,32 @@ impl Classifier {
         } else if self.secret.iter().any(|k| k == key)
             || env_name.is_some_and(|name| SECRET_NAME.is_match(name))
             || value.is_some_and(holds_token)
+            || (env_name.is_none() && value.is_some_and(|v| self.holds_secret_assignment(v)))
             || (env_name.is_some() && value.is_some_and(holds_hex))
         {
             Category::SharedSecret
         } else {
             Category::Basic
+        }
+    }
+
+    /// Whether a string in `v` (at any depth) assigns a value to a shell
+    /// variable named like a secret, or like an account-bound `env`
+    /// variable (`PGPASSWORD=… psql`, `export GITHUB_TOKEN=…`): a value
+    /// that only names another variable (`API_TOKEN=$API_TOKEN`) isn't one.
+    fn holds_secret_assignment(&self, v: &Value) -> bool {
+        match v {
+            Value::String(s) => ASSIGNMENT.captures_iter(s).any(|c| {
+                let name = &c[1];
+                let value = c[2].trim_matches(['\'', '"']);
+                (SECRET_NAME.is_match(name)
+                    || self.is_account_bound(&format!("{ENV_PREFIX}{name}")))
+                    && !value.is_empty()
+                    && !SHELL_VAR.is_match(value)
+            }),
+            Value::Array(a) => a.iter().any(|v| self.holds_secret_assignment(v)),
+            Value::Object(m) => m.values().any(|v| self.holds_secret_assignment(v)),
+            _ => false,
         }
     }
 
@@ -1260,6 +1318,112 @@ mod tests {
         ] {
             let v = json!({"Stop": [{"hooks": [{"type": "command", "command": cmd}]}]});
             assert_eq!(basic("hooks", v), Category::Basic, "{cmd}");
+        }
+        // Claude Code's own permission rules and format strings name a
+        // token without holding one: never held.
+        let permissions = json!({
+            "allow": [
+                "Bash(gcloud auth print-access-token:*)",
+                "Bash(aws sts get-session-token:*)",
+                "Bash(az account get-access-token:*)",
+                "Bash(npm run test:*)",
+                "Bash(git status:*)",
+                "Bash(gh auth token:*)",
+                "WebFetch(domain:docs.anthropic.com)",
+                "Read(~/.config/gh/hosts.yml)"
+            ],
+            "deny": ["Bash(rm -rf:*)"],
+            "defaultMode": "acceptEdits"
+        });
+        assert_eq!(basic("permissions", permissions), Category::Basic);
+        for cmd in [
+            "printf 'cache-key: %s' x",
+            "du -h key: x",
+            "du -h token: abcdefghijkl",
+            "echo 'x-api-key: %s'",
+        ] {
+            assert_eq!(
+                basic("statusLine", json!({"command": cmd})),
+                Category::Basic,
+                "{cmd}"
+            );
+        }
+        // A shell assignment to a secret-named (or account-bound) variable
+        // in a command; not one to another name, nor of another variable.
+        let fake = "abc123".repeat(2);
+        for cmd in [
+            "PGPASSWORD=hunter2 psql -h db -tc 'select 1'".to_string(),
+            format!("API_TOKEN={fake} ./notify.sh"),
+            format!("export GITHUB_TOKEN={fake}; gh pr list"),
+            format!("cd x && DB_PASS='{fake}' ./run"),
+            format!("ANTHROPIC_API_KEY=\"{fake}\" claude -p hi"),
+        ] {
+            assert_eq!(
+                basic("statusLine", json!({"command": cmd})),
+                Category::SharedSecret,
+                "{cmd}"
+            );
+            let v = json!({"Stop": [{"hooks": [{"type": "command", "command": cmd}]}]});
+            assert_eq!(basic("hooks", v), Category::SharedSecret, "{cmd}");
+        }
+        for cmd in [
+            "FOO=bar cmd",
+            "NODE_ENV=production npm start",
+            "API_TOKEN=$API_TOKEN ./x",
+            "API_TOKEN=${API_TOKEN} ./x",
+            "PATH=/usr/bin:$PATH make",
+            "API_TOKEN= ./x",
+        ] {
+            assert_eq!(
+                basic("statusLine", json!({"command": cmd})),
+                Category::Basic,
+                "{cmd}"
+            );
+        }
+        // An env value is classed by its own name, not by assignments in it.
+        assert_eq!(
+            basic("env.RUNNER", json!("FOO_TOKEN=x ./run")),
+            Category::Basic
+        );
+        // A password given to curl.
+        for cmd in [
+            "curl -u admin:pw https://api.example.invalid/notify",
+            "curl -uadmin:pw https://api.example.invalid/notify",
+            "curl --user admin:pw https://api.example.invalid/notify",
+            "curl --user=admin:pw https://api.example.invalid/notify",
+            "curl -u 'admin:pw' https://api.example.invalid/notify",
+        ] {
+            let v = json!({"Stop": [{"hooks": [{"type": "command", "command": cmd}]}]});
+            assert_eq!(basic("hooks", v), Category::SharedSecret, "{cmd}");
+        }
+        for cmd in [
+            "curl -u $USER:$PASS https://api.example.invalid",
+            "curl -u user https://api.example.invalid",
+            "sort -u file",
+            "ps -u root",
+            "docker run -u 1000:1000 img",
+        ] {
+            let v = json!({"Stop": [{"hooks": [{"type": "command", "command": cmd}]}]});
+            assert_eq!(basic("hooks", v), Category::Basic, "{cmd}");
+        }
+        // PASSPHRASE, and the header variables Claude Code reads.
+        for name in [
+            "GPG_PASSPHRASE",
+            "OTEL_EXPORTER_OTLP_HEADERS",
+            "ANTHROPIC_CUSTOM_HEADERS",
+        ] {
+            assert_eq!(
+                basic(&format!("env.{name}"), json!("x-api-key=AbCdEfGhIjKlMnOp")),
+                Category::SharedSecret,
+                "{name}"
+            );
+        }
+        for name in ["CLAUDE_CODE_MAX_OUTPUT_TOKENS", "HEADER_STYLE"] {
+            assert_eq!(
+                basic(&format!("env.{name}"), json!("8000")),
+                Category::Basic,
+                "{name}"
+            );
         }
         // Multi-byte whitespace or quotes before a run never break the
         // reading (NBSP is 2 bytes, U+3000 3, an emoji 4).
