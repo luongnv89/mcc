@@ -1,4 +1,5 @@
-//! `mcc delete` — log out and remove everything belonging to a profile.
+//! `mcc delete` — log out and remove everything belonging to a profile,
+//! an API-key profile's key file included (#132).
 
 use std::path::{Component, Path};
 
@@ -100,7 +101,15 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &DeleteArgs) -> Result<()> {
         }
     }
 
-    let mut steps = ui::Steps::new(5);
+    // An API-key profile's key file (#132), found from its settings before
+    // the directory goes: only the one mcc wrote, never a helper's target.
+    let api_key = registered.as_ref().is_some_and(|p| p.is_api_key());
+    let managed_key = crate::api_key::managed_key_of(paths, &dir);
+    let mut steps = ui::Steps::new(if api_key || managed_key.is_some() {
+        6
+    } else {
+        5
+    });
     let mut warnings = 0;
 
     let step = steps.start("Log out");
@@ -179,6 +188,24 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &DeleteArgs) -> Result<()> {
         step.skip("no alias block found");
     } else {
         step.ok(&removed.join(", "));
+    }
+
+    if api_key || managed_key.is_some() {
+        let step = steps.start("Remove managed API key");
+        match &managed_key {
+            None => step.skip("its apiKeyHelper is your own command — left alone"),
+            Some(key) if args.keep_auth => {
+                step.skip(&format!("--keep-auth — kept {}", paths.display(key)));
+            }
+            Some(key) if std::fs::symlink_metadata(key).is_err() => step.skip("not present"),
+            Some(key) => match fsutil::remove_any(key) {
+                Ok(()) => step.ok(&paths.display(key)),
+                Err(e) => {
+                    warnings += 1;
+                    step.warn(&format!("{e:#}"));
+                }
+            },
+        }
     }
 
     let step = steps.start(&format!("Remove {}", paths.display(&dir)));

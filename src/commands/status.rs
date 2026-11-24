@@ -45,8 +45,11 @@ pub fn run(paths: &Paths, cfg: &Config) -> Result<()> {
     let mut out = std::io::stdout().lock();
     writeln!(out, "{}", here.line)?;
     writeln!(out)?;
-    let shown: Vec<ProfileMetrics> = all.iter().cloned().chain(devin).collect();
+    // API-key profiles (#132) apart, after the table, as `mcc list` does.
+    let (subs, apis) = super::list::split_api_keys(&all);
+    let shown: Vec<ProfileMetrics> = subs.into_iter().chain(devin).collect();
     super::list::table(&mut out, &shown)?;
+    super::list::api_key_table(&mut out, &apis, shown.len())?;
     drop(out);
 
     let mut problems = 0;
@@ -66,11 +69,7 @@ pub fn run(paths: &Paths, cfg: &Config) -> Result<()> {
     }
     super::list::sharing_notes(&all, cfg);
     problems += all.iter().filter(|m| !m.launcher_current).count();
-    let names: Vec<&str> = all.iter().map(|m| m.name.as_str()).collect();
-    let usages: Vec<&usage::Usage> = all.iter().map(|m| &m.usage).collect();
-    if let Some(hint) = usage::no_data_hint(&names, &usages) {
-        ui::hint(&hint);
-    }
+    super::list::usage_hints(&all);
     if let Some(hint) = devin_hint {
         ui::hint(hint);
     }

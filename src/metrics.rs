@@ -86,6 +86,14 @@ pub struct ProfileMetrics {
     /// What the row is: a Claude Code profile (`claude`), or Devin
     /// (`devin`, #124), which has no Claude Code metrics (null in JSON).
     pub provider: Provider,
+    /// `api_key` for an API-key profile (#132), which `mcc list` shows
+    /// apart, without windows; its `usage` has its estimated spend and
+    /// budget. Left out of the JSON for every other row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth: Option<crate::config::AuthKind>,
+    /// An API-key profile's monthly budget, for its usage.
+    #[serde(skip)]
+    pub budget_usd: Option<f64>,
     /// The config dir as Claude Code sees it (`CLAUDE_CONFIG_DIR`).
     #[serde(skip)]
     pub config_dir: PathBuf,
@@ -280,6 +288,10 @@ fn collect(
         // Set by `mcc list`, which knows the config.
         is_global_default: false,
         provider: Provider::Claude,
+        auth: reg
+            .filter(|r| r.is_api_key())
+            .map(|_| crate::config::AuthKind::ApiKey),
+        budget_usd: reg.and_then(|r| r.api_budget_usd),
         config_dir: dir.to_path_buf(),
         last_used_time,
         warnings,
@@ -331,6 +343,8 @@ pub fn devin_row(paths: &Paths, d: &crate::devin::Devin) -> ProfileMetrics {
         usage: d.usage.clone(),
         is_global_default: false,
         provider: Provider::Devin,
+        auth: None,
+        budget_usd: None,
         config_dir: dir.to_path_buf(),
         last_used_time: None,
         warnings: Vec::new(),
@@ -503,6 +517,17 @@ pub fn ago_str(rfc3339: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #132: an API-key profile's state file has no `oauthAccount`, so it
+    /// has no account (nothing to match or show).
+    #[test]
+    fn no_account_without_an_oauth_account() {
+        let d = tempfile::tempdir().unwrap();
+        let state = d.path().join(".claude.json");
+        std::fs::write(&state, r#"{"hasCompletedOnboarding":true}"#).unwrap();
+        assert_eq!(account_info(&state), None);
+        assert_eq!(account_info(&d.path().join("missing.json")), None);
+    }
 
     #[test]
     fn account_from_the_state_file() {

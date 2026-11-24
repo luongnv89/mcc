@@ -67,6 +67,14 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &DefaultArgs) -> Result<()> {
         super::add::check_label(label)
             .map_err(|m| CliError::usage(m).hint("example: mcc default work --label personal"))?;
     }
+    // #132: refused before any lock, sign-out or sign-in.
+    if let Some(alias) = args
+        .profile
+        .as_deref()
+        .filter(|a| !matches!(*a, "default" | "claude"))
+    {
+        refuse_api_key(paths, cfg, alias)?;
+    }
     match args.profile.as_deref() {
         Some("default" | "claude") => Err(CliError::usage(
             "~/.claude is the default profile already: name the profile whose account it should take",
@@ -77,6 +85,29 @@ pub fn run(paths: &Paths, cfg: &mut Config, args: &DefaultArgs) -> Result<()> {
         None if args.new => switch_new(paths, cfg, args),
         None => show(paths, cfg),
     }
+}
+
+/// A trade needs a Claude account on both sides: an API-key profile (or a
+/// ~/.claude whose settings give Claude Code a key) has none (#132).
+fn refuse_api_key(paths: &Paths, cfg: &Config, alias: &str) -> Result<()> {
+    if cfg.profiles.get(alias).is_some_and(|p| p.is_api_key()) {
+        return Err(CliError::usage(format!(
+            "`{alias}` is an API-key profile: it has no Claude account to trade with ~/.claude"
+        ))
+        .hint(format!(
+            "start it with `{alias}`; `mcc default --new` signs ~/.claude in to another account"
+        ))
+        .into());
+    }
+    if crate::config::settings_use_api_key(&paths.default_dir) {
+        return Err(CliError::usage(format!(
+            "~/.claude uses an API key (apiKeyHelper or env.ANTHROPIC_API_KEY in {}): it has no Claude account to trade with `{alias}`",
+            paths.display(&paths.default_dir.join("settings.json"))
+        ))
+        .hint(format!("remove the key from ~/.claude/settings.json first, or start `{alias}` with its own command"))
+        .into());
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------- legacy
@@ -175,6 +206,7 @@ impl Side {
                 name: "default".into(),
                 config_dir: None,
                 shares_plugins: false,
+                api_key: false,
             },
             state_json: paths.default_json.clone(),
             prefill,
@@ -191,6 +223,7 @@ impl Side {
                 name: alias.to_string(),
                 config_dir: Some(p.dir.clone()),
                 shares_plugins: crate::plugins::shared(p),
+                api_key: p.is_api_key(),
             },
             state_json: p.dir.join(".claude.json"),
             prefill,
@@ -1246,6 +1279,10 @@ fn keep_old_account(
         copy_plugins: false,
         label: None,
         color: None,
+        api_key_prompt: false,
+        api_key_stdin: false,
+        api_key_helper: None,
+        budget: None,
         yes: args.yes,
         from_default: true,
     };

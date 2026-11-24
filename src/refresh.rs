@@ -396,6 +396,15 @@ pub(crate) fn refresh_expired(
         let Some(profile) = profiles.iter().find(|p| p.name == name) else {
             continue;
         };
+        // An API-key profile has no token to refresh, and the one-turn
+        // request would be billed to its key (#132).
+        if profile.api_key || t.api_key {
+            crate::log::write(
+                "INFO",
+                &format!("refresh {name}: skipped, an API-key profile"),
+            );
+            continue;
+        }
         if refresh_one(paths, cfg, profile, t, bin.as_deref(), start, &mut found[i]) {
             return true;
         }
@@ -581,6 +590,85 @@ fn refresh_one(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// T2 of #132: an API-key profile whose usage reads as an expired
+    /// token (a leftover login) is never refreshed: no `claude -p`, which
+    /// would bill its key. The `claude` here is a stand-in that records
+    /// any run.
+    #[test]
+    fn api_key_profiles_are_never_refreshed() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths::new(d.path().to_path_buf());
+        let ran = d.path().join("claude-ran");
+        let bin = d.path().join("fake-claude");
+        std::fs::write(&bin, format!("#!/bin/sh\ntouch '{}'\n", ran.display())).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let dir = paths.profile_dir("api");
+        std::fs::create_dir_all(&dir).unwrap();
+        // A login whose access token is due, the deadline still ahead: what
+        // a subscription profile gets refreshed for.
+        let now = Utc::now().timestamp_millis();
+        std::fs::write(
+            dir.join(".credentials.json"),
+            format!(
+                r#"{{"claudeAiOauth":{{"accessToken":"leftover","expiresAt":{},"refreshTokenExpiresAt":{}}}}}"#,
+                now - 60_000,
+                now + 86_400_000
+            ),
+        )
+        .unwrap();
+        let mut cfg = Config {
+            env: Some(crate::env_detect::EnvInfo {
+                os: "test".into(),
+                os_version: String::new(),
+                arch: String::new(),
+                terminal: String::new(),
+                shell: None,
+                shell_path: String::new(),
+                rc_file: None,
+                claude_bin: Some(bin),
+                claude_version: None,
+                local_bin_on_path: false,
+                detected_at: String::new(),
+            }),
+            ..Config::default()
+        };
+        cfg.profiles.insert(
+            "api".into(),
+            crate::config::Profile {
+                dir: dir.clone(),
+                mode: "fresh".into(),
+                created_at: String::new(),
+                wrapper: None,
+                rc_file: None,
+                last_sync: None,
+                share_sessions: false,
+                share_note_acknowledged_at: None,
+                share_group: None,
+                share_cross_org_allowed_at: None,
+                label: None,
+                color: None,
+                account: None,
+                settings: None,
+                link: Vec::new(),
+                auto_sync: None,
+                auth: Some(crate::config::AuthKind::ApiKey),
+                api_budget_usd: None,
+            },
+        );
+        let targets = [usage::Target {
+            name: "api".into(),
+            config_dir: dir,
+            is_default: false,
+            api_key: true,
+            budget_usd: None,
+        }];
+        let mut found = [Usage::unavailable(Reason::TokenExpired)];
+        assert!(!refresh_expired(&paths, &cfg, &targets, &mut found));
+        assert!(!ran.exists(), "claude ran for an API-key profile");
+        assert_eq!(found[0].reason, Some(Reason::TokenExpired));
+    }
 
     #[test]
     fn a_child_that_hangs_is_stopped() {

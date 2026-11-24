@@ -334,6 +334,95 @@ pub struct Profile {
     /// file while unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_sync: Option<bool>,
+    /// How the profile authenticates when not with a Claude subscription
+    /// login: `"api_key"` for a profile `mcc add --api-key-…` created, whose
+    /// `settings.json` has an `apiKeyHelper` (#132). Left out of the file
+    /// for subscription profiles. Read it with [`Profile::is_api_key`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<AuthKind>,
+    /// An API-key profile's monthly budget in US dollars, entered by the
+    /// user (`mcc add --budget`, `mcc config set
+    /// profiles.ALIAS.api_budget_usd`): shown against its estimated spend.
+    /// mcc can't read a Console spend limit (see docs/api-key-profiles.md).
+    /// Left out of the file while unset.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_budget"
+    )]
+    pub api_budget_usd: Option<f64>,
+}
+
+/// How a profile authenticates, beside a Claude subscription login.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthKind {
+    /// An Anthropic API key, delivered by `apiKeyHelper` (#132).
+    ApiKey,
+}
+
+impl Profile {
+    /// Whether the profile authenticates with an API key: registered so
+    /// (`auth = "api_key"`), or its `settings.json` gives Claude Code a key
+    /// ([`settings_use_api_key`]), which still tells after an older mcc
+    /// dropped `auth` on save.
+    pub fn is_api_key(&self) -> bool {
+        self.auth == Some(AuthKind::ApiKey) || settings_use_api_key(&self.dir)
+    }
+}
+
+/// Whether the `settings.json` in config dir `dir` gives Claude Code an API
+/// key, which it uses before a subscription login: an `apiKeyHelper`, or
+/// `env.ANTHROPIC_API_KEY`. `false` when the file is missing or unreadable.
+pub fn settings_use_api_key(dir: &Path) -> bool {
+    let Some(settings) = std::fs::read(dir.join("settings.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+    else {
+        return false;
+    };
+    let set =
+        |v: Option<&serde_json::Value>| v.and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty());
+    set(settings.get("apiKeyHelper")) || set(settings.pointer("/env/ANTHROPIC_API_KEY"))
+}
+
+/// An API budget in US dollars: a finite number, 0 or more. The message
+/// names what is wrong, never repeats the value.
+pub fn check_budget(usd: f64) -> std::result::Result<f64, String> {
+    if usd.is_finite() && usd >= 0.0 {
+        Ok(usd)
+    } else {
+        Err("the budget must be a number of US dollars, 0 or more".into())
+    }
+}
+
+/// `--budget`, as clap reads it: [`check_budget`] on a number.
+pub fn parse_budget(text: &str) -> std::result::Result<f64, String> {
+    let usd: f64 = text
+        .trim()
+        .parse()
+        .map_err(|_| "the budget must be a number of US dollars, 0 or more".to_string())?;
+    check_budget(usd)
+}
+
+/// `api_budget_usd` as the config file has it: an integer or a float that
+/// passes [`check_budget`], so a hand-edited `nan`, `inf` or negative
+/// budget makes the file invalid instead of reaching the output.
+fn de_budget<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Option<f64>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Number {
+        Int(i64),
+        Float(f64),
+    }
+    let usd = match Option::<Number>::deserialize(d)? {
+        None => return Ok(None),
+        Some(Number::Int(i)) => i as f64,
+        Some(Number::Float(f)) => f,
+    };
+    check_budget(usd)
+        .map(Some)
+        .map_err(|m| serde::de::Error::custom(format!("api_budget_usd: {m}")))
 }
 
 /// A Claude Code account, as its state file (`oauthAccount` in
@@ -948,6 +1037,8 @@ mod tests {
                 settings: None,
                 link: Vec::new(),
                 auto_sync: None,
+                auth: None,
+                api_budget_usd: None,
             },
         );
         cfg.save(&path).unwrap();
@@ -1208,6 +1299,8 @@ mod tests {
             link: Vec::new(),
             settings: None,
             auto_sync: None,
+            auth: None,
+            api_budget_usd: None,
         }
     }
 
@@ -1664,6 +1757,74 @@ mod tests {
         for name in ["local", "Lab", "1lab", "lab;x", ""] {
             assert!(m("lab", None).check(name).is_err(), "{name:?}");
         }
+    }
+
+    /// #132: `auth` and `api_budget_usd` round-trip, stay out of the file
+    /// while unset, and a hand-written budget must be dollars.
+    #[test]
+    fn api_key_profiles_round_trip_and_others_stay_as_they_were() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("config.toml");
+        let mut cfg = Config::default();
+        cfg.profiles.insert("work".into(), work_profile());
+        cfg.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !text.contains("auth") && !text.contains("api_budget"),
+            "{text}"
+        );
+        let mut api = work_profile();
+        api.auth = Some(AuthKind::ApiKey);
+        api.api_budget_usd = Some(12.5);
+        cfg.profiles.insert("api".into(), api);
+        cfg.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("auth = \"api_key\"\napi_budget_usd = 12.5"),
+            "{text}"
+        );
+        let back = Config::load(&path).unwrap();
+        assert_eq!(back.profiles, cfg.profiles);
+        let budget = |v: &str| {
+            Config::parse(&format!(
+                "[profiles.api]\ndir = \"/x\"\nmode = \"fresh\"\ncreated_at = \"\"\napi_budget_usd = {v}\n"
+            ))
+            .map(|c| c.profiles["api"].api_budget_usd)
+        };
+        assert_eq!(budget("40").unwrap(), Some(40.0));
+        assert_eq!(budget("0.0").unwrap(), Some(0.0));
+        for bad in ["nan", "inf", "-1", "-0.5", "\"10\""] {
+            assert!(budget(bad).is_err(), "{bad}");
+        }
+    }
+
+    /// #132: a profile is an API-key one when registered so, or when its
+    /// settings give Claude Code a key (an older mcc may have dropped
+    /// `auth`).
+    #[test]
+    fn api_key_profiles_are_told_by_registry_or_settings() {
+        let d = tempfile::tempdir().unwrap();
+        let mut p = work_profile();
+        p.dir = d.path().to_path_buf();
+        assert!(!p.is_api_key());
+        std::fs::write(
+            d.path().join("settings.json"),
+            r#"{"model":"opus","apiKeyHelper":""}"#,
+        )
+        .unwrap();
+        assert!(!p.is_api_key());
+        p.auth = Some(AuthKind::ApiKey);
+        assert!(p.is_api_key());
+        p.auth = None;
+        for s in [
+            r#"{"apiKeyHelper":"cat /k"}"#,
+            r#"{"env":{"ANTHROPIC_API_KEY":"x"}}"#,
+        ] {
+            std::fs::write(d.path().join("settings.json"), s).unwrap();
+            assert!(p.is_api_key(), "{s}");
+        }
+        assert_eq!(parse_budget(" 50 "), Ok(50.0));
+        assert!(parse_budget("-1").is_err() && parse_budget("NaN").is_err());
     }
 
     #[test]

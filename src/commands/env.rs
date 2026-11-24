@@ -8,6 +8,9 @@
 //! function of `mcc default` keeps that shell on ~/.claude. Usage is never
 //! checked, and nothing is written or locked.
 //!
+//! An API-key profile's code also unsets `ANTHROPIC_API_KEY` and
+//! `ANTHROPIC_AUTH_TOKEN` (#132).
+//!
 //! A profile sharing the default's plugins also gets
 //! `CLAUDE_CODE_PLUGIN_CACHE_DIR`; for any other profile, mcc's own value of
 //! it (the default's plugins root) is unset, and a value of the user's is
@@ -44,6 +47,9 @@ pub fn run(paths: &Paths, cfg: &Config, args: &EnvArgs) -> Result<()> {
     let fish = matches!(shell(args.shell), Some(Shell::Fish));
     println!("{}", export_line(p.config_dir.as_deref(), fish)?);
     println!("{}", marker_line(p.config_dir.is_none(), fish));
+    if p.api_key {
+        println!("{}", unset_api_env_line(fish));
+    }
     let inherited = std::env::var_os(plugins::ENV);
     let root = plugins::shared_root(paths);
     let plugins_root = if p.shares_plugins {
@@ -82,6 +88,16 @@ fn plugins_line(root: Option<&Path>, fish: bool) -> Result<String> {
     } else {
         format!("export {var}={}", sh_quote(root))
     })
+}
+
+/// For an API-key profile (#132): clear the shell's `ANTHROPIC_API_KEY` and
+/// `ANTHROPIC_AUTH_TOKEN`, which would replace its `apiKeyHelper`.
+fn unset_api_env_line(fish: bool) -> &'static str {
+    if fish {
+        "set -e ANTHROPIC_API_KEY; set -e ANTHROPIC_AUTH_TOKEN"
+    } else {
+        crate::shell::UNSET_API_ENV
+    }
 }
 
 /// The shell to print for: `--shell`, else bash inside a direnv `.envrc`

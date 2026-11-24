@@ -48,6 +48,17 @@ pub fn run(paths: &Paths, cfg: &Config, args: &LoginArgs) -> Result<()> {
     let all = run::profiles(cfg);
     let profile = run::find(&all, &args.profile)?;
     let is_default = profile.config_dir.is_none();
+    // #132: before anything looks for or runs `claude`, in both modes.
+    if profile.api_key || (is_default && crate::config::settings_use_api_key(&paths.default_dir)) {
+        let name = &profile.name;
+        return Err(CliError::usage(format!(
+            "`{name}` uses an API key: it has no Claude login to renew"
+        ))
+        .hint(format!(
+            "Claude Code gets its key from apiKeyHelper (or env.ANTHROPIC_API_KEY) in its settings.json; to use another key, run `mcc delete {name}` and add it again with --api-key-stdin"
+        ))
+        .into());
+    }
     let config_dir = profile
         .config_dir
         .clone()

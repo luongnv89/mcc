@@ -63,10 +63,13 @@ fn cached(paths: &Paths, cfg: &Config, name: &str) -> Usage {
         .profiles
         .get(name)
         .map_or(paths.default_dir.clone(), |p| p.dir.clone());
+    let profile = cfg.profiles.get(name);
     let target = usage::Target {
         name: name.to_string(),
         config_dir,
-        is_default: !cfg.profiles.contains_key(name),
+        is_default: profile.is_none(),
+        api_key: profile.is_some_and(|p| p.is_api_key()),
+        budget_usd: profile.and_then(|p| p.api_budget_usd),
     };
     usage::read_all(paths, std::slice::from_ref(&target))
         .pop()

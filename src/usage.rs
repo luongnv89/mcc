@@ -202,6 +202,16 @@ pub struct Usage {
     /// for Claude Code profiles, and left out of their JSON.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overage_usd: Option<f64>,
+    /// An API-key profile's estimated spend this UTC month, in US dollars,
+    /// from the cost Claude Code reported to `mcc statusline` on this
+    /// machine ([`crate::cost`], #132). Left out of the JSON for every other
+    /// row, and when nothing is recorded yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub est_cost_usd: Option<f64>,
+    /// An API-key profile's monthly budget in US dollars, as the user set it
+    /// (`api_budget_usd`, #132). Left out of the JSON otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_usd: Option<f64>,
     /// Set only when these numbers came from another machine (#130):
     /// when the machine holding them last updated them itself (`None`
     /// when it never had), so its own last update is never taken for
@@ -221,6 +231,8 @@ impl Usage {
             updated_at: None,
             daily: None,
             overage_usd: None,
+            est_cost_usd: None,
+            budget_usd: None,
             own_updated_at: None,
         }
     }
@@ -235,6 +247,8 @@ impl Usage {
             updated_at: None,
             daily: None,
             overage_usd: None,
+            est_cost_usd: None,
+            budget_usd: None,
             own_updated_at: None,
         }
     }
@@ -824,17 +838,44 @@ pub struct Target {
     pub name: String,
     pub config_dir: PathBuf,
     pub is_default: bool,
+    /// An API-key profile (#132): no OAuth login, so no usage windows to
+    /// look up; its estimated spend instead ([`api_key_usage`]).
+    pub api_key: bool,
+    /// An API-key profile's monthly budget (`api_budget_usd`).
+    pub budget_usd: Option<f64>,
 }
 
 /// Every target's usage, in target order: looked up live with `live`
 /// (`[usage] live = true`, or `mcc usage --all`), else read from the
-/// statusline cache.
+/// statusline cache. API-key profiles are never looked up live: they get
+/// [`api_key_usage`].
 pub fn lookup(paths: &Paths, targets: &[Target], live: bool) -> Vec<Usage> {
     if live {
-        fetch_all(targets)
+        let mut all = fetch_all(targets);
+        for (t, u) in targets.iter().zip(all.iter_mut()) {
+            if t.api_key {
+                *u = api_key_usage(paths, t, true);
+            }
+        }
+        all
     } else {
         read_all(paths, targets)
     }
+}
+
+/// An API-key profile's row (#132): no 5-hour or weekly window, with the
+/// status and reason a subscription profile without a login has (`no_data`
+/// from the cache, `not_logged_in` live), so another machine's older mcc
+/// reads it as before; and its estimated spend this month and budget.
+pub fn api_key_usage(paths: &Paths, t: &Target, live: bool) -> Usage {
+    let mut u = if live {
+        Usage::unavailable(Reason::NotLoggedIn).with_source(Source::Live)
+    } else {
+        Usage::unavailable(Reason::NoData).with_source(Source::Cache)
+    };
+    u.est_cost_usd = crate::cost::month_to_date(paths, &t.name, Utc::now());
+    u.budget_usd = t.budget_usd;
+    u
 }
 
 /// Every target's usage from the statusline cache
@@ -844,6 +885,9 @@ pub fn read_all(paths: &Paths, targets: &[Target]) -> Vec<Usage> {
     let all: Vec<Usage> = targets
         .iter()
         .map(|t| {
+            if t.api_key {
+                return api_key_usage(paths, t, false);
+            }
             let path = paths.profile_state_dir(&t.name).join(USAGE_FILE);
             read_cached(&path, now)
         })
@@ -1074,6 +1118,10 @@ fn fetch_parallel(targets: &[Target]) -> Vec<Usage> {
 }
 
 fn fetch_one(agent: &ureq::Agent, url: Option<&str>, t: &Target, now: DateTime<Utc>) -> Usage {
+    // An API-key profile has no OAuth token to read or send (#132).
+    if t.api_key {
+        return Usage::unavailable(Reason::NotLoggedIn);
+    }
     let token = match find_token(&t.config_dir, t.is_default, now, keychain_secret) {
         Credential::Valid(token) => token,
         Credential::Expired => return Usage::unavailable(Reason::TokenExpired),
@@ -1198,6 +1246,46 @@ pub fn no_data_hint(names: &[&str], usages: &[&Usage]) -> Option<String> {
         "no recent usage cached for {}: run /usage in Claude Code to see it; `mcc statusline install` caches it as you work (Team and Enterprise seats may report none)",
         missing.join(", ")
     ))
+}
+
+/// The hint under the API-key block where some API-key profiles have no
+/// spend recorded yet, naming them; `None` when every one has some.
+pub fn no_cost_hint(names: &[&str], usages: &[&Usage]) -> Option<String> {
+    let missing: Vec<String> = names
+        .iter()
+        .zip(usages)
+        .filter(|(_, u)| u.est_cost_usd.is_none())
+        .map(|(n, _)| format!("`{n}`"))
+        .collect();
+    if missing.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "no cost recorded yet for {} — start a Claude Code session in this profile (mcc estimates API spend from what Claude Code reports to its statusline, on this machine only)",
+        missing.join(", ")
+    ))
+}
+
+/// An API-key profile's spend, as `mcc list` and `mcc usage` show it:
+/// "est. $1.23 this month", "… of $50.00 budget (2%)" with a budget, or
+/// "—" and why when there is no estimate.
+pub fn spend_text(u: &Usage) -> String {
+    if u.reason == Some(Reason::Disabled) {
+        return format!("— ({})", Reason::Disabled.describe());
+    }
+    let budget = u.budget_usd.map(|b| format!("${b:.2} budget"));
+    match (u.est_cost_usd, budget) {
+        (None, None) => "— (no cost recorded yet)".into(),
+        (None, Some(b)) => format!("— (no cost recorded yet; {b})"),
+        (Some(c), None) => format!("est. ${c:.2} this month"),
+        (Some(c), Some(b)) => match u.budget_usd.filter(|b| *b > 0.0) {
+            Some(total) => format!(
+                "est. ${c:.2} this month of {b} ({})",
+                crate::ui::percent_text(c / total * 100.0)
+            ),
+            None => format!("est. ${c:.2} this month of {b}"),
+        },
+    }
 }
 
 /// How long ago `t` was: "just now", "12m ago", "3h ago", "2d ago".

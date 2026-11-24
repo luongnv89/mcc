@@ -3332,6 +3332,8 @@ mod tests {
                 settings: Some(toml::from_str("model = \"sonnet\"").unwrap()),
                 link: Vec::new(),
                 auto_sync: None,
+                auth: None,
+                api_budget_usd: None,
             },
         );
         let rw = Rewriter::for_profile(&paths, &cfg, &dst).unwrap();

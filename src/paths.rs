@@ -31,6 +31,11 @@ pub struct Paths {
     /// `state_dir`, whose entries are named after profiles, so no profile
     /// (not even one named like a provider) shares, renames or deletes it.
     pub providers_dir: PathBuf,
+    /// The API keys mcc stores for API-key profiles (`mcc add
+    /// --api-key-stdin` / `--api-key-prompt`, #132): one 0600 file per
+    /// profile directory, in a 0700 directory. mcc writes each once and
+    /// never reads it again; Claude Code reads it through `apiKeyHelper`.
+    pub keys_dir: PathBuf,
     pub local_bin: PathBuf,
     /// The Devin CLI's login: `$XDG_DATA_HOME/devin/credentials.toml`, else
     /// `~/.local/share/devin/credentials.toml` (see [`devin_credentials`]).
@@ -72,6 +77,7 @@ impl Paths {
             shared_dir: mcc_dir.join("shared"),
             state_dir: mcc_dir.join("state"),
             providers_dir: mcc_dir.join("providers"),
+            keys_dir: mcc_dir.join("keys"),
             local_bin: home.join(".local").join("bin"),
             devin_credentials: devin_credentials(&home, None),
             home,

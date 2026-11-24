@@ -24,7 +24,7 @@ use console::{measure_text_width, style};
 use serde::{Deserialize, Serialize};
 
 use crate::cli::UsageArgs;
-use crate::config::{Config, LOCAL_MACHINE};
+use crate::config::{AuthKind, Config, LOCAL_MACHINE};
 use crate::devin;
 use crate::error::{CliError, EXIT_INTERRUPTED};
 use crate::machines::{self, MachineError};
@@ -155,8 +155,16 @@ struct Entry {
         deserialize_with = "de_own_time"
     )]
     own_updated_at: Option<Option<DateTime<Utc>>>,
+    /// `api_key` for an API-key profile (#132), shown apart, without
+    /// windows; its `usage` has its estimated spend and budget. Left out
+    /// of the JSON for every other row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    auth: Option<AuthKind>,
     #[serde(skip)]
     config_dir: PathBuf,
+    /// An API-key profile's monthly budget, for its usage.
+    #[serde(skip)]
+    budget_usd: Option<f64>,
 }
 
 fn ser_time<S: serde::Serializer>(t: &Option<DateTime<Utc>>, s: S) -> Result<S::Ok, S::Error> {
@@ -201,8 +209,20 @@ impl Entry {
             login_warning: false,
             is_global_default: false,
             provider: Provider::Claude,
+            auth: None,
             config_dir: dir.to_path_buf(),
+            budget_usd: None,
         }
+    }
+
+    /// An mcc profile's row: an API-key profile's says so (#132).
+    fn profile(name: &str, p: &crate::config::Profile) -> Self {
+        let mut e = Self::new(name, name, false, &p.dir, &p.dir.join(".claude.json"));
+        if p.is_api_key() {
+            e.auth = Some(AuthKind::ApiKey);
+            e.budget_usd = p.api_budget_usd;
+        }
+        e
     }
 
     /// Devin's row (#124): its usage, and nothing of a Claude Code login.
@@ -222,7 +242,9 @@ impl Entry {
             account_id: None,
             also_on: None,
             own_updated_at: None,
+            auth: None,
             config_dir: PathBuf::new(),
+            budget_usd: None,
         }
     }
 
@@ -266,6 +288,8 @@ impl Entry {
             name: self.name.clone(),
             config_dir: self.config_dir.clone(),
             is_default: self.is_default,
+            api_key: self.auth.is_some(),
+            budget_usd: self.budget_usd,
         }
     }
 
@@ -288,8 +312,6 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
             &paths.default_json,
         )
     };
-    let profile =
-        |name: &str, dir: &Path| Entry::new(name, name, false, dir, &dir.join(".claude.json"));
     // `mcc usage devin`: Devin alone (a profile of that name, from before
     // the name was reserved, still comes first).
     let devin_only =
@@ -308,12 +330,12 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
         (args.profile.is_none() || devin_only) && args.only.is_none() && devin::detected(paths);
     let mut entries: Vec<Entry> = match args.profile.as_deref() {
         None => std::iter::once(default())
-            .chain(cfg.profiles.iter().map(|(n, p)| profile(n, &p.dir)))
+            .chain(cfg.profiles.iter().map(|(n, p)| Entry::profile(n, p)))
             .collect(),
         Some(_) if devin_only => Vec::new(),
         Some("default" | "claude") => vec![default()],
         Some(name) => match cfg.profiles.get(name) {
-            Some(p) => vec![profile(name, &p.dir)],
+            Some(p) => vec![Entry::profile(name, p)],
             None => return Err(super::unknown_profile(name)),
         },
     };
@@ -340,6 +362,11 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
             e.account = None;
         }
     }
+    // API-key profiles (#132) are a category of their own: no login to
+    // expire, no windows to look up or sort by, never matched across
+    // machines. They get their estimated spend instead.
+    let (mut api_entries, mut entries): (Vec<Entry>, Vec<Entry>) =
+        entries.into_iter().partition(|e| e.auth.is_some());
 
     // Login expiry: the credentials file's login deadline alone (no token,
     // no access-token expiry, no network); the Keychain only where the live lookup may read it anyway.
@@ -398,15 +425,21 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
             e.usage = u;
         }
     }
+    if !usage::disabled_by_env() {
+        for e in &mut api_entries {
+            e.usage = usage::api_key_usage(paths, &e.target(), live);
+        }
+    }
     // The row order (#126): --sort for this run, else [usage] sort, else
-    // weekly usage least to most. Devin's block below is appended after
-    // the table, never part of this sort.
+    // weekly usage least to most. The API-key and Devin blocks below are
+    // appended after the table, never part of this sort.
     let order = args.sort.unwrap_or_else(|| cfg.usage.sort());
     sort_entries(&mut entries, order);
     for v in machines.iter_mut().flatten() {
         sort_entries(&mut v.profiles, order);
-        // Another machine's Devin row follows its table, as this one's does.
-        v.profiles.sort_by_key(|e| e.provider == Provider::Devin);
+        // Another machine's API-key and Devin rows follow its table, as
+        // this one's do.
+        v.profiles.sort_by_key(category);
     }
     // Devin: looked up live only as the profiles are (`[usage] live`, or
     // --all), never with MCC_NO_USAGE; else its last lookup.
@@ -428,7 +461,11 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
 
     let mut out = std::io::stdout().lock();
     if args.json || args.json_v2 {
-        let rows: Vec<&Entry> = entries.iter().chain(devin.as_ref()).collect();
+        let rows: Vec<&Entry> = entries
+            .iter()
+            .chain(&api_entries)
+            .chain(devin.as_ref())
+            .collect();
         let mut extra = Vec::new();
         if protocol {
             extra.push(("protocol", serde_json::json!(machines::PROTOCOL)));
@@ -460,12 +497,22 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
                         .map(|t| (Line::Text(t), true)),
                 );
             }
-            if let Some(d) = &devin {
+            if !api_entries.is_empty() {
                 if !entries.is_empty() {
                     lines.push((Line::Text(String::new()), false));
                 }
                 lines.extend(
-                    render_devin(d, entries.len(), l, now)
+                    render_api_keys(&api_entries, entries.len(), now)
+                        .into_iter()
+                        .map(|t| (Line::Text(t), true)),
+                );
+            }
+            if let Some(d) = &devin {
+                if !entries.is_empty() || !api_entries.is_empty() {
+                    lines.push((Line::Text(String::new()), false));
+                }
+                lines.extend(
+                    render_devin(d, entries.len() + api_entries.len(), l, now)
                         .into_iter()
                         .map(|t| (Line::Text(t), true)),
                 );
@@ -485,9 +532,14 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
                 let n = v
                     .profiles
                     .iter()
-                    .take_while(|e| e.provider == Provider::Claude)
+                    .take_while(|e| category(e) == (false, false))
                     .count();
-                let (profiles, devins) = v.profiles.split_at(n);
+                let (profiles, rest) = v.profiles.split_at(n);
+                let k = rest
+                    .iter()
+                    .take_while(|e| category(e) == (false, true))
+                    .count();
+                let (apis, devins) = rest.split_at(k);
                 if !profiles.is_empty() {
                     lines.extend(
                         render(profiles, l, show_email, now)
@@ -495,12 +547,22 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
                             .map(|t| (Line::Text(t), true)),
                     );
                 }
-                for d in devins {
+                if !apis.is_empty() {
                     if !profiles.is_empty() {
                         lines.push((Line::Text(String::new()), false));
                     }
                     lines.extend(
-                        render_devin(d, n, l, now)
+                        render_api_keys(apis, n, now)
+                            .into_iter()
+                            .map(|t| (Line::Text(t), true)),
+                    );
+                }
+                for d in devins {
+                    if !profiles.is_empty() || !apis.is_empty() {
+                        lines.push((Line::Text(String::new()), false));
+                    }
+                    lines.extend(
+                        render_devin(d, n + k, l, now)
                             .into_iter()
                             .map(|t| (Line::Text(t), true)),
                     );
@@ -533,6 +595,13 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
         let usages: Vec<&Usage> = entries.iter().map(|e| &e.usage).collect();
         if let Some(hint) = usage::no_data_hint(&names, &usages) {
             ui::hint(&hint);
+        }
+        if !usage::disabled_by_env() {
+            let api_names: Vec<&str> = api_entries.iter().map(|e| e.name.as_str()).collect();
+            let api_usages: Vec<&Usage> = api_entries.iter().map(|e| &e.usage).collect();
+            if let Some(hint) = usage::no_cost_hint(&api_names, &api_usages) {
+                ui::hint(&hint);
+            }
         }
         for line in login_warnings(&entries, now, window_days) {
             ui::warn(&line);
@@ -685,7 +754,7 @@ fn lookup_with_machines(
                 view.profiles
                     .iter()
                     .enumerate()
-                    .filter(|(_, e)| e.provider == Provider::Claude)
+                    .filter(|(_, e)| e.provider == Provider::Claude && e.auth.is_none())
                     .map(move |(r, _)| (v, r))
             })
             .collect();
@@ -1146,6 +1215,42 @@ fn render_devin(e: &Entry, after: usize, layout: Layout, now: DateTime<Utc>) -> 
     lay_out(&headers, &[cells])
 }
 
+/// Which block a row goes in: Claude subscription profiles (the table),
+/// API-key profiles, then Devin, in that order.
+fn category(e: &Entry) -> (bool, bool) {
+    (e.provider == Provider::Devin, e.auth.is_some())
+}
+
+/// The API-key profiles' block under the profiles' table (#132): no 5-hour
+/// or weekly window, their estimated spend this month instead (and the
+/// budget, when set). The `#` carries on from the `after` rows above.
+///
+/// ```text
+/// # API KEY  LAST ACTIVE  EST. SPEND (THIS MONTH, THIS MACHINE)
+/// 3 api      2h ago       est. $1.23 this month of $50.00 budget (2%)
+/// ```
+fn render_api_keys(entries: &[Entry], after: usize, now: DateTime<Utc>) -> Vec<String> {
+    let total = after + entries.len();
+    let head = super::list::indexed("API KEY", None, total);
+    let headers = [
+        head.as_str(),
+        "LAST ACTIVE",
+        "EST. SPEND (THIS MONTH, THIS MACHINE)",
+    ];
+    let rows: Vec<Vec<String>> = entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            vec![
+                super::list::indexed(&e.name, Some(after + i), total),
+                activity_cell(e, now),
+                usage::spend_text(&e.usage),
+            ]
+        })
+        .collect();
+    lay_out(&headers, &rows)
+}
+
 /// The bold header and the rows, each column as wide as its widest cell.
 /// A row shorter than the header ends in a reason spanning the remaining
 /// columns, which doesn't widen the column it starts in.
@@ -1257,8 +1362,141 @@ mod tests {
             account_id: None,
             also_on: None,
             own_updated_at: None,
+            auth: None,
             config_dir: PathBuf::new(),
+            budget_usd: None,
         }
+    }
+
+    /// T5 of #132: an API-key row, as this machine sends it to another
+    /// (`--machine-protocol` is `mcc usage --json`), reads through the
+    /// `Entry` and `Usage` of an mcc from before API-key profiles, whose
+    /// enums are frozen here: it carries only status and reason codes those
+    /// know (an older mcc drops a row it can't read), and only additive
+    /// fields.
+    #[test]
+    fn api_key_rows_read_as_before_on_an_older_mcc() {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum OldStatus {
+            Ok,
+            Unavailable,
+        }
+        #[derive(Deserialize, Debug, PartialEq)]
+        #[serde(rename_all = "snake_case")]
+        enum OldReason {
+            NotLoggedIn,
+            TokenExpired,
+            Unauthorized,
+            RateLimited,
+            Network,
+            HttpError,
+            ParseError,
+            Disabled,
+            NoData,
+            NotLookedUp,
+            NoOrganizations,
+            MissingToken,
+            PermissionDenied,
+            DecodeFailed,
+            MissingQuota,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum OldSource {
+            Cache,
+            Live,
+        }
+        #[derive(Deserialize, Debug, PartialEq)]
+        #[serde(rename_all = "snake_case")]
+        enum OldProvider {
+            Claude,
+            Devin,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum OldDeadlineSource {
+            CredentialsFile,
+            Keychain,
+        }
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct OldWindow {
+            percent: f64,
+            resets_at: Option<String>,
+        }
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct OldUsage {
+            status: OldStatus,
+            reason: Option<OldReason>,
+            five_hour: Option<OldWindow>,
+            weekly: Option<OldWindow>,
+            source: Option<OldSource>,
+            #[serde(default)]
+            updated_at: Option<String>,
+            daily: Option<OldWindow>,
+            overage_usd: Option<f64>,
+        }
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct OldEntry {
+            name: String,
+            command: String,
+            is_default: bool,
+            account: Option<String>,
+            usage: OldUsage,
+            #[serde(default)]
+            last_activity: Option<String>,
+            #[serde(default)]
+            login_expires_at: Option<String>,
+            login_expires_source: Option<OldDeadlineSource>,
+            login_warning: bool,
+            is_global_default: bool,
+            provider: OldProvider,
+            #[serde(default)]
+            account_id: Option<String>,
+            #[serde(default)]
+            also_on: Option<Vec<String>>,
+            #[serde(default)]
+            own_updated_at: Option<Option<String>>,
+        }
+
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths::new(d.path().to_path_buf());
+        let now = Utc::now();
+        crate::cost::record(
+            &paths,
+            "api",
+            &serde_json::json!({"session_id": "s", "cost": {"total_cost_usd": 0.0}}),
+            now,
+        );
+        crate::cost::record(
+            &paths,
+            "api",
+            &serde_json::json!({"session_id": "s", "cost": {"total_cost_usd": 2.0}}),
+            now,
+        );
+        for (live, reason) in [(false, OldReason::NoData), (true, OldReason::NotLoggedIn)] {
+            let mut e = entry("api", None, Usage::default());
+            e.auth = Some(AuthKind::ApiKey);
+            e.budget_usd = Some(10.0);
+            e.usage = usage::api_key_usage(&paths, &e.target(), live);
+            let v = serde_json::to_value(&e).unwrap();
+            assert_eq!(v["auth"], "api_key");
+            assert_eq!(v["usage"]["est_cost_usd"], 2.0);
+            assert_eq!(v["usage"]["budget_usd"], 10.0);
+            let old: OldEntry = serde_json::from_value(v.clone())
+                .unwrap_or_else(|err| panic!("an older mcc can't read {v}: {err}"));
+            assert!(matches!(old.usage.status, OldStatus::Unavailable));
+            assert_eq!(old.usage.reason, Some(reason));
+            assert_eq!(old.provider, OldProvider::Claude);
+        }
+        // Every other row keeps its exact key set.
+        let v = serde_json::to_value(entry("work", None, Usage::default())).unwrap();
+        assert!(v.get("auth").is_none(), "{v}");
+        assert!(v["usage"].get("est_cost_usd").is_none(), "{v}");
+        assert!(v["usage"].get("budget_usd").is_none(), "{v}");
     }
 
     #[test]
@@ -1280,6 +1518,8 @@ mod tests {
             updated_at: Some(at("2026-10-10T11:48:00Z")),
             daily: None,
             overage_usd: None,
+            est_cost_usd: None,
+            budget_usd: None,
             own_updated_at: None,
         };
         let mut entries = [

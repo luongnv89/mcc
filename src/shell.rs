@@ -63,6 +63,9 @@ pub struct Blocks {
     pub banner: bool,
     /// `[sync] auto` for this profile: `mcc launch-sync`.
     pub sync: bool,
+    /// An API-key profile (#132): unset `ANTHROPIC_API_KEY` and
+    /// `ANTHROPIC_AUTH_TOKEN`, which would replace its `apiKeyHelper`.
+    pub api_key: bool,
 }
 
 impl Blocks {
@@ -75,9 +78,15 @@ impl Blocks {
         Self {
             banner: cfg.launch.banner,
             sync: cfg.auto_sync_of(profile).is_on(),
+            api_key: profile.is_some_and(crate::config::Profile::is_api_key),
         }
     }
 }
+
+/// The line an API-key profile's launcher runs before anything else: a key
+/// or token exported in the shell would win over the profile's
+/// `apiKeyHelper` in Claude Code.
+pub const UNSET_API_ENV: &str = "unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN";
 
 /// The launch flag that turns on session sharing. Only the wrapper knows it:
 /// it is stripped before claude starts.
@@ -108,6 +117,10 @@ pub const SHARE_FLAG: &str = "--mcc-share";
 /// also exports `CLAUDE_CODE_PLUGIN_CACHE_DIR`; without it the script unsets
 /// that variable only when it holds the default's plugins root (mcc's own
 /// value, as `mcc run` and `mcc exec` do), keeping a value of the user's.
+///
+/// With `blocks.api_key` (an API-key profile, #132) it unsets
+/// `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` right after setting
+/// `CLAUDE_CONFIG_DIR`; other profiles' launchers don't have the line.
 pub fn wrapper_script(
     paths: &Paths,
     alias: &str,
@@ -159,6 +172,7 @@ pub fn wrapper_script(
          # Claude Code profile \"{alias}\". Remove with: mcc delete {alias}\n\
          # Start it with {SHARE_FLAG} to share its sessions (see: mcc help share).\n\
          export CLAUDE_CONFIG_DIR=\"{dir}\"\n\
+         {api_env}\
          {plugins}\
          case \"$1\" in\n  {SHARE_FLAG})\n    shift\n    \
          if command -v mcc >/dev/null 2>&1; then mcc {share}\n    \
@@ -168,6 +182,11 @@ pub fn wrapper_script(
          if command -v claude >/dev/null 2>&1; then exec claude \"$@\"; fi\n\
          {fallback}\n",
         dir = paths.shell_expr(profile_dir),
+        api_env = if blocks.api_key {
+            format!("{UNSET_API_ENV}\n")
+        } else {
+            String::new()
+        },
         plugins = match plugin_root {
             Some(r) => format!(
                 "export {}=\"{}\"\n",
@@ -283,6 +302,13 @@ pub fn launcher_needs_refresh(path: &Path, blocks: Blocks) -> bool {
     !launcher_is_current(path)
         || (blocks.banner && !launcher_shows_banner(path))
         || (blocks.sync && !launcher_runs_sync(path))
+        || (blocks.api_key && !launcher_unsets_api_env(path))
+}
+
+/// Whether the launcher at `path` unsets the API credential variables
+/// ([`UNSET_API_ENV`]).
+fn launcher_unsets_api_env(path: &Path) -> bool {
+    std::fs::read_to_string(path).is_ok_and(|s| s.lines().any(|l| l == UNSET_API_ENV))
 }
 
 /// The rc block body defining the alias for one profile. With a launcher the
@@ -483,14 +509,17 @@ mod tests {
     const NONE: Blocks = Blocks {
         banner: false,
         sync: false,
+        api_key: false,
     };
     const BANNER: Blocks = Blocks {
         banner: true,
         sync: false,
+        api_key: false,
     };
     const SYNC: Blocks = Blocks {
         banner: false,
         sync: true,
+        api_key: false,
     };
 
     #[test]
@@ -756,6 +785,7 @@ mod tests {
         let both = script(Blocks {
             banner: true,
             sync: true,
+            api_key: false,
         });
         let banner = script(BANNER);
         assert_eq!(
@@ -771,6 +801,43 @@ mod tests {
             ),
             "{no_mcc}"
         );
+    }
+
+    /// B14 of #132: an API-key profile's launcher unsets the shell's key
+    /// and token right after pointing at the profile; one without the line
+    /// needs a refresh; other launchers never have it.
+    #[test]
+    fn an_api_key_launcher_unsets_the_shells_key() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths::new(d.path().to_path_buf());
+        let dir = paths.profile_dir("api");
+        let api = Blocks {
+            api_key: true,
+            ..NONE
+        };
+        let script = wrapper_script(&paths, "api", &dir, None, None, None, api);
+        let lines: Vec<&str> = script.lines().collect();
+        let at = lines
+            .iter()
+            .position(|l| l.starts_with("export CLAUDE_CONFIG_DIR="))
+            .unwrap();
+        assert_eq!(lines[at + 1], UNSET_API_ENV, "{script}");
+        assert_eq!(script.matches("ANTHROPIC_API_KEY").count(), 1, "{script}");
+        let w = d.path().join("api");
+        std::fs::write(
+            &w,
+            wrapper_script(&paths, "api", &dir, None, None, None, NONE),
+        )
+        .unwrap();
+        assert!(!script_has(&w, "ANTHROPIC"));
+        assert!(launcher_needs_refresh(&w, api));
+        assert!(!launcher_needs_refresh(&w, NONE));
+        std::fs::write(&w, &script).unwrap();
+        assert!(!launcher_needs_refresh(&w, api));
+    }
+
+    fn script_has(path: &Path, text: &str) -> bool {
+        std::fs::read_to_string(path).unwrap().contains(text)
     }
 
     #[test]
