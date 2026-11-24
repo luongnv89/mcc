@@ -165,7 +165,9 @@ the row. Other profiles' objects are unchanged.
 ## Commands that don't apply
 
 - `mcc login` (and `mcc renew`) refuse an API-key profile in both modes,
-  before running `claude`: there is no Claude login to renew.
+  before running `claude`: there is no Claude login to renew. They refuse
+  `mcc login default` too when `~/.claude`'s settings give Claude Code a key
+  (`apiKeyHelper` or `env.ANTHROPIC_API_KEY`).
 - `mcc usage --all` never refreshes an API-key profile's token: the
   one-turn `claude -p` it would start would be billed to the key.
 - `mcc default PROFILE` refuses to trade with an API-key profile, or when

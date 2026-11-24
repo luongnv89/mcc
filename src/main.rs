@@ -112,7 +112,9 @@ fn redact_keys(text: &str, keys: &[String]) -> String {
     let mut out = text.to_string();
     for k in keys {
         out = out.replace(k.as_str(), "[redacted]");
-        if let Some((_, value)) = k.split_once('=') {
+        if let Some((_, value)) = k.split_once('=')
+            && api_key::looks_like_key(value)
+        {
             out = out.replace(value, "[redacted]");
         }
     }
@@ -577,6 +579,12 @@ mod tests {
         let out = super::redact_keys(text, &keys);
         assert!(!out.contains("sk-ant-"), "{out}");
         assert!(out.contains("unexpected value '[redacted]'"), "{out}");
+        // A key with `=` in it: the empty value after it is left alone.
+        let keys = ["sk-ant-x=".to_string()];
+        assert_eq!(
+            super::redact_keys("unexpected argument 'sk-ant-x=' found", &keys),
+            "unexpected argument '[redacted]' found"
+        );
     }
 
     #[test]

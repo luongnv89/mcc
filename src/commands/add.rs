@@ -47,6 +47,13 @@ fn rollback(paths: &Paths, cfg: &mut Config, undo: &mut Transaction<Undo>) {
 }
 
 pub fn run(paths: &Paths, cfg: &mut Config, args: &AddArgs) -> Result<()> {
+    // B18 of #132: before anything checks, prints or logs the name, on the
+    // way to the default profile too.
+    if args.alias.as_deref().is_some_and(api_key::looks_like_key) {
+        return Err(CliError::usage(api_key::KEY_ON_COMMAND_LINE)
+            .hint("example: mcc add api --api-key-stdin < key.txt")
+            .into());
+    }
     let env = cfg.env.clone().expect("init runs before commands");
     if let Some(label) = &args.label {
         check_label(label).map_err(|m| {
@@ -993,12 +1000,6 @@ fn resolve_alias(
     shell_path: Option<&str>,
 ) -> Result<String> {
     if let Some(a) = &args.alias {
-        // B18 of #132: before anything checks or logs the name.
-        if api_key::looks_like_key(a) {
-            return Err(CliError::usage(api_key::KEY_ON_COMMAND_LINE)
-                .hint("example: mcc add api --api-key-stdin < key.txt")
-                .into());
-        }
         validate::check_syntax(a).map_err(|m| CliError::usage(m).hint("example: mcc add work"))?;
         return Ok(a.clone());
     }

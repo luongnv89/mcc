@@ -172,6 +172,15 @@ fn a_key_on_the_command_line_is_refused_without_an_echo() {
     ));
     assert!(!sb.exists(".mcc/profiles"));
     assert!(!sb.exists(".mcc/keys"));
+
+    // Without ~/.claude, `mcc add` would create the default profile: the
+    // key-shaped name is refused before that, never printed as an alias.
+    let fresh = Sandbox::new();
+    let out = fresh.mcc().args(["add", KEY, "--yes"]).assert().code(2);
+    let stderr = String::from_utf8_lossy(&out.get_output().stderr).into_owned();
+    assert!(stderr.contains("that looks like an API key"), "{stderr}");
+    assert!(!stderr.contains(KEY), "{stderr}");
+    assert!(!fresh.exists(".claude"));
 }
 
 /// The hidden prompt needs a terminal; stdin needs a key; neither is a
@@ -212,6 +221,24 @@ fn api_key_flags_are_checked_before_anything_is_created() {
     }
     assert!(!sb.exists(".mcc/profiles/api"));
     assert!(!sb.exists(".mcc/keys"));
+
+    // One way to give the key, and none of the sign-in flags with it.
+    for args in [
+        &["--api-key-stdin", "--api-key-prompt"][..],
+        &["--api-key-stdin", "--api-key-helper", "op read x"][..],
+        &["--api-key-prompt", "--email", "me@example.com"][..],
+        &["--api-key-helper", "op read x", "--sso"][..],
+        &["--api-key-stdin", "--no-login"][..],
+    ] {
+        sb.mcc()
+            .args(["add", "api", "--fresh"])
+            .args(args)
+            .write_stdin(format!("{KEY}\n"))
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("cannot be used with"));
+    }
+    assert!(!sb.exists(".mcc/profiles/api"));
 
     let fresh = Sandbox::new();
     fresh
@@ -324,6 +351,28 @@ fn login_and_default_refuse_api_key_profiles_without_running_claude() {
         .code(2)
         .stderr(predicate::str::contains(
             "`api` is an API-key profile: it has no Claude account to trade",
+        ));
+    assert_eq!(claude_calls(&sb), before);
+
+    // The same when ~/.claude's own settings give Claude Code a key.
+    with_profile(&sb, "work", "--clone");
+    let mut d = settings(&sb, ".claude");
+    d["apiKeyHelper"] = "op read x".into();
+    sb.write(".claude/settings.json", &d.to_string());
+    let before = claude_calls(&sb);
+    sb.mcc()
+        .args(["login", "default"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "`default` uses an API key: it has no Claude login to renew",
+        ));
+    sb.mcc()
+        .args(["default", "work", "-y"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "~/.claude uses an API key (apiKeyHelper or env.ANTHROPIC_API_KEY",
         ));
     assert_eq!(claude_calls(&sb), before);
 }
@@ -564,8 +613,13 @@ fn delete_and_rename_keep_track_of_the_managed_key() {
     add_managed(&sb, "api", "--fresh", KEY, &[]).success();
     let key = key_file(&sb);
 
-    // A rename moves the command, never the directory or the key.
+    // A rename moves the command, never the directory or the key, and
+    // the new launcher still keeps the shell's key out.
     sb.mcc().args(["rename", "api", "job"]).assert().success();
+    assert!(
+        sb.read(".local/bin/job")
+            .contains("\nunset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN\n")
+    );
     assert_eq!(
         settings(&sb, ".mcc/profiles/api")["apiKeyHelper"],
         format!("cat '{}'", key.display())
