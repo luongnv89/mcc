@@ -2700,6 +2700,98 @@ fn a_forced_copy_over_a_non_object_settings_file_keeps_shared_secrets_out() {
     assert!(s.get("model").is_some(), "{s}");
 }
 
+/// AC3 of #129: a Slack webhook in a hook command is a shared secret,
+/// however short its token: neither `mcc sync --all --yes` nor a clone
+/// without a terminal copies it, both report it skipped, and its URL never
+/// shows in the output or the log.
+#[test]
+fn a_webhook_in_a_hook_command_is_never_copied_unasked() {
+    let sb = Sandbox::new();
+    sb.seed_default();
+    with_profile(&sb, "lab", "--clone");
+    // Built at run time: no webhook-shaped literal in the source.
+    let token = "AbCdEfGh".repeat(3);
+    let url = format!(
+        "https://hooks.{}.com/services/T0PROBE01/B0PROBE01/{token}",
+        "slack"
+    );
+    let mut d = settings_of(&sb, ".claude");
+    d["hooks"] = serde_json::json!({"Stop": [{"hooks": [
+        {"type": "command", "command": format!("curl -s -X POST -d hi {url}")}
+    ]}]});
+    sb.write(".claude/settings.json", &d.to_string());
+    let line = "hooks: shared secret · from the default · skipped";
+    let o = sb.mcc().args(["sync", "--all", "--yes"]).output().unwrap();
+    assert!(o.status.success(), "{o:?}");
+    let (out, err) = (
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr),
+    );
+    assert!(err.contains(line), "{err}");
+    assert!(!out.contains(&token) && !err.contains(&token), "{out}{err}");
+    let o = sb.mcc().args(["add", "work", "--clone"]).output().unwrap();
+    assert!(o.status.success(), "{o:?}");
+    let (out, err) = (
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr),
+    );
+    assert!(err.contains(line), "{err}");
+    assert!(err.contains("run `mcc sync work` at a terminal"), "{err}");
+    assert!(!out.contains(&token) && !err.contains(&token), "{out}{err}");
+    for p in ["lab", "work"] {
+        let text = sb.read(&format!(".mcc/profiles/{p}/settings.json"));
+        assert!(!text.contains(&token), "{p}: {text}");
+    }
+    assert!(!sb.read(".mcc/logs/mcc.log").contains(&token));
+}
+
+/// The invariant of #129 for a cloud provider: its credentials (a Bedrock
+/// API key, here) set in one profile are account-bound, reported so, and
+/// never reach the default or another profile.
+#[test]
+fn a_bedrock_credential_set_in_a_profile_never_leaves_it() {
+    let sb = three_profiles();
+    let bedrock = ["bdrk", "LEAKCHECK", "0123456789"].join("-");
+    set_env(
+        &sb,
+        ".mcc/profiles/csdaisy",
+        "AWS_BEARER_TOKEN_BEDROCK",
+        &bedrock,
+    );
+    set_env(
+        &sb,
+        ".mcc/profiles/csdaisy",
+        "ANTHROPIC_BEDROCK_BASE_URL",
+        "https://br.example.invalid",
+    );
+    set_env(&sb, ".mcc/profiles/csdaisy", "AWS_REGION", "eu-west-1");
+    let err = sync_stderr(&sb, &["--all"]);
+    for name in ["AWS_BEARER_TOKEN_BEDROCK", "ANTHROPIC_BEDROCK_BASE_URL"] {
+        assert!(
+            err.contains(&format!(
+                "env.{name}: account-bound · from \"csdaisy\" · skipped (account-bound: never copied to another profile)"
+            )),
+            "{name}: {err}"
+        );
+    }
+    assert!(!err.contains(&bedrock), "{err}");
+    for dir in [".claude", ".mcc/profiles/work", ".mcc/profiles/lab"] {
+        let text = sb.read(&format!("{dir}/settings.json"));
+        assert!(!text.contains(&bedrock), "{dir}: {text}");
+        assert!(!text.contains("br.example.invalid"), "{dir}: {text}");
+        // A plain region is basic, and travels.
+        assert_eq!(
+            settings_of(&sb, dir)["env"]["AWS_REGION"],
+            "eu-west-1",
+            "{dir}"
+        );
+    }
+    assert_eq!(
+        settings_of(&sb, ".mcc/profiles/csdaisy")["env"]["AWS_BEARER_TOKEN_BEDROCK"],
+        bedrock.as_str()
+    );
+}
+
 /// A shared secret a profile already has as the default does is never
 /// asked about, held or reported again.
 #[test]

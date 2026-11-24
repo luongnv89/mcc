@@ -27,13 +27,29 @@ use crate::manifest;
 pub const ENV_PREFIX: &str = "env.";
 
 /// `settings.json` keys tied to one account, besides the variables in
-/// [`crate::refresh::STRIPPED_ENV`] (as `env.NAME`).
+/// [`crate::refresh::STRIPPED_ENV`] (as `env.NAME`): the login helpers,
+/// and the credentials and endpoints of the Bedrock, Vertex and Foundry
+/// providers (a plain `AWS_REGION` is not one).
 const ACCOUNT_KEYS: &[&str] = &[
     "apiKeyHelper",
     "awsAuthRefresh",
     "awsCredentialExport",
     "forceLoginMethod",
     "forceLoginOrgUUID",
+    "env.AWS_BEARER_TOKEN_BEDROCK",
+    "env.AWS_ACCESS_KEY_ID",
+    "env.AWS_SECRET_ACCESS_KEY",
+    "env.AWS_SESSION_TOKEN",
+    "env.AWS_PROFILE",
+    "env.ANTHROPIC_BEDROCK_BASE_URL",
+    "env.ANTHROPIC_VERTEX_BASE_URL",
+    "env.ANTHROPIC_VERTEX_PROJECT_ID",
+    "env.CLOUD_ML_REGION",
+    "env.GOOGLE_APPLICATION_CREDENTIALS",
+    "env.ANTHROPIC_FOUNDRY_API_KEY",
+    "env.ANTHROPIC_FOUNDRY_BASE_URL",
+    "env.ANTHROPIC_FOUNDRY_RESOURCE",
+    "env.CLAUDE_CODE_USE_FOUNDRY",
 ];
 
 /// An `env` variable named like a secret: `PASSWORD`, `PASSWD`, `SECRET`,
@@ -46,6 +62,37 @@ static SECRET_NAME: LazyLock<Regex> = LazyLock::new(|| {
         r"(?i)PASSWORD|PASSWD|SECRET|CREDENTIAL|PRIVATE_?KEY|WEBHOOK|(?:^|_)(?:API_?KEY|TOKEN|ACCESS_KEY|AUTH|PASS|PWD|DSN)(?:_|$)|(?:^|_)KEY$",
     )
     .expect("static regex")
+});
+
+/// A URL, as it stands in a command line or a value.
+static URL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?i)\b[a-z][a-z0-9+.-]*://[^\s'"`<>]+"#).expect("static regex"));
+
+/// A URL that carries a secret whatever its length ([`URL`] matches are
+/// checked from their start): a webhook (Slack, Discord, Teams, Telegram,
+/// Zapier, IFTTT, or `webhook`, `/hooks/`, `/hook/` in it), a Sentry DSN
+/// (its key as the user), or a query parameter named like a key or token.
+static SECRET_URL: LazyLock<Regex> = LazyLock::new(|| {
+    let auth = r"(?:[^/?#@]*@)?";
+    let hosts = [
+        r"hooks\.slack\.com/(?:services|workflows)/",
+        r"(?:[a-z0-9-]+\.)?discord(?:app)?\.com/api/webhooks/",
+        r"outlook\.office\.com/webhook",
+        r"[a-z0-9.-]*\.webhook\.office\.com",
+        r"api\.telegram\.org/bot",
+        r"hooks\.zapier\.com",
+        r"maker\.ifttt\.com/trigger/[^?#]*/with/key/",
+    ]
+    .join("|");
+    let rules = [
+        format!("{auth}(?:{hosts})"),
+        r"[^/?#]*@[a-z0-9.-]*\.ingest\.(?:[a-z]+\.)?sentry\.io".to_string(),
+        r"[^?#]*webhook".to_string(),
+        r"[^/?#]*(?:/[^?#]*)?/hooks?/".to_string(),
+        r"[^?#]*\?(?:[^#]*[&;])?(?:token|key|api_key|apikey|secret|sig|signature|access_token|auth)=".to_string(),
+    ]
+    .join("|");
+    Regex::new(&format!(r"(?i)^[a-z][a-z0-9+.-]*://(?:{rules})")).expect("static regex")
 });
 
 /// A URL with a password in it: `scheme://user:pass@host`.
@@ -162,13 +209,15 @@ impl Category {
 }
 
 /// Whether a string in `v` (at any depth) looks like a token: a known
-/// token prefix, a URL with a password, or a long run of mixed-case
-/// letters and digits that isn't a filesystem path's segment.
+/// token prefix, a URL with a password, a webhook's or another URL that
+/// carries a key ([`SECRET_URL`]), or a long run of mixed-case letters
+/// and digits that isn't a filesystem path's segment.
 fn holds_token(v: &Value) -> bool {
     match v {
         Value::String(s) => {
             TOKEN_SHAPE.is_match(s)
                 || CREDENTIAL_URL.is_match(s)
+                || URL.find_iter(s).any(|u| SECRET_URL.is_match(u.as_str()))
                 || LONG_RUN.find_iter(s).any(|m| {
                     let run = m.as_str();
                     !in_path(s, m.start(), m.end())
@@ -837,7 +886,7 @@ mod tests {
             "TAVILY_API_KEY",
             "OPENAI_APIKEY",
             "GITHUB_TOKEN",
-            "AWS_SECRET_ACCESS_KEY",
+            "R2_SECRET_ACCESS_KEY",
             "DB_PASSWORD",
             "my_credentials",
             "BASIC_AUTH",
@@ -855,7 +904,7 @@ mod tests {
             "SLACK_WEBHOOK_URL",
             "DISCORDWEBHOOK",
             "CLIENTSECRET",
-            "GOOGLE_APPLICATION_CREDENTIALS",
+            "GCS_CREDENTIALS_JSON",
             "SSH_PRIVATE_KEY",
             "PRIVATEKEY_PEM",
         ] {
@@ -874,6 +923,30 @@ mod tests {
         ] {
             assert_eq!(basic(key, json!("x")), Category::AccountBound, "{key}");
         }
+        // A cloud provider's credentials and endpoints belong to one
+        // account too (they were shared secrets or basic before): never
+        // copied, even when the user would agree. A plain region is basic.
+        for name in [
+            "AWS_BEARER_TOKEN_BEDROCK",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "AWS_PROFILE",
+            "ANTHROPIC_BEDROCK_BASE_URL",
+            "ANTHROPIC_VERTEX_BASE_URL",
+            "ANTHROPIC_VERTEX_PROJECT_ID",
+            "CLOUD_ML_REGION",
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "ANTHROPIC_FOUNDRY_API_KEY",
+            "ANTHROPIC_FOUNDRY_BASE_URL",
+            "ANTHROPIC_FOUNDRY_RESOURCE",
+            "CLAUDE_CODE_USE_FOUNDRY",
+        ] {
+            let key = format!("env.{name}");
+            assert_eq!(basic(&key, json!("x")), Category::AccountBound, "{key}");
+            assert!(c.shareable(&key, json!("x")).is_none(), "{key}");
+        }
+        assert_eq!(basic("env.AWS_REGION", json!("us-east-1")), Category::Basic);
         // A token-shaped value is a secret whatever its key's name.
         let token = format!(
             "bash run.sh {}",
@@ -985,6 +1058,73 @@ mod tests {
             assert_eq!(
                 basic("env.NOTIFY_URL", json!(v)),
                 Category::SharedSecret,
+                "{v}"
+            );
+        }
+        // A webhook's or another URL that carries a key is one, however
+        // short its token (built at run time: no webhook-shaped literal).
+        let tok = "AbCdEfGh".repeat(3);
+        assert_eq!(tok.len(), 24);
+        let slack = format!(
+            "https://hooks.{}.com/services/T0PROBE01/B0PROBE01/{tok}",
+            "slack"
+        );
+        for v in [
+            format!("curl -s -X POST -d hi {slack}"),
+            slack.clone(),
+            format!("https://hooks.{}.com/workflows/T0PROBE01/{tok}", "slack"),
+            format!("https://{}.com/api/webhooks/123/{tok}", "discord"),
+            format!("https://{}.com/api/webhooks/123/{tok}", "discordapp"),
+            format!(
+                "https://outlook.office.com/{}/abc@def/IncomingWebhook/x/y",
+                "webhook"
+            ),
+            format!("https://acme.{}.office.com/webhookb2/abc", "webhook"),
+            format!("https://api.{}.org/bot123:{tok}/sendMessage", "telegram"),
+            format!("https://hooks.{}.com/hooks/catch/1/abc/", "zapier"),
+            format!("https://maker.{}.com/trigger/ev/with/key/{tok}", "ifttt"),
+            format!("https://{tok}@o1.ingest.{}.io/42", "sentry"),
+            format!("https://ci.example.invalid/hook/{tok}"),
+            format!("https://ci.example.invalid/api/hooks/{tok}"),
+            "https://ci.example.invalid/notify-webhook/abc".to_string(),
+            format!("https://api.example.invalid/v1/send?chat=1&token={tok}"),
+            format!("https://api.example.invalid/v1/send?API_KEY={tok}"),
+            format!("https://api.example.invalid/x?sig={tok}"),
+        ] {
+            assert_eq!(
+                basic(
+                    "hooks",
+                    json!({"Stop": [{"hooks": [{"type": "command", "command": v}]}]})
+                ),
+                Category::SharedSecret,
+                "{v}"
+            );
+            assert_eq!(
+                basic("env.NOTIFY_URL", json!(v)),
+                Category::SharedSecret,
+                "{v}"
+            );
+            assert_eq!(
+                basic("statusLine", json!({"url": v})),
+                Category::SharedSecret,
+                "{v}"
+            );
+        }
+        for v in [
+            "https://example.com/docs",
+            "https://api.anthropic.com",
+            "https://docs.example.invalid/hooks",
+            "https://api.example.invalid/v1/items?page=2&monkey=1",
+            "git@github.com:me/repo.git",
+            "bash /Users/x/.claude/projects/-Users-montimage-buildspace-luongnv89-mcc/run.sh",
+        ] {
+            assert_eq!(basic("env.NOTIFY_URL", json!(v)), Category::Basic, "{v}");
+            assert_eq!(
+                basic(
+                    "hooks",
+                    json!({"Stop": [{"hooks": [{"type": "command", "command": v}]}]})
+                ),
+                Category::Basic,
                 "{v}"
             );
         }
