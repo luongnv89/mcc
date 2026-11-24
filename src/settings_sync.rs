@@ -71,7 +71,8 @@ static URL: LazyLock<Regex> =
 /// A URL that carries a secret whatever its length ([`URL`] matches are
 /// checked from their start): a webhook (Slack, Discord, Teams, Telegram,
 /// Zapier, IFTTT, or `webhook`, `/hooks/`, `/hook/` in it), a Sentry DSN
-/// (its key as the user), or a query parameter named like a key or token.
+/// (its key as the user), or a query parameter named like a key, token or
+/// password.
 static SECRET_URL: LazyLock<Regex> = LazyLock::new(|| {
     let auth = r"(?:[^/?#@]*@)?";
     let hosts = [
@@ -89,15 +90,31 @@ static SECRET_URL: LazyLock<Regex> = LazyLock::new(|| {
         r"[^/?#]*@[a-z0-9.-]*\.ingest\.(?:[a-z]+\.)?sentry\.io".to_string(),
         r"[^?#]*webhook".to_string(),
         r"[^/?#]*(?:/[^?#]*)?/hooks?/".to_string(),
-        r"[^?#]*\?(?:[^#]*[&;])?(?:token|key|api_key|apikey|secret|sig|signature|access_token|auth)=".to_string(),
+        // A parameter whose last `_`/`-` part names a credential
+        // (`token`, `api-key`, `client_secret`), not `keyword` or `passage`.
+        r"[^?#]*\?(?:[^#]*[&;])?(?:[a-z0-9]+[_-])*(?:token|key|apikey|secret|sig|signature|auth|password|passwd|pass|pwd|credentials?)=".to_string(),
     ]
     .join("|");
     Regex::new(&format!(r"(?i)^[a-z][a-z0-9+.-]*://(?:{rules})")).expect("static regex")
 });
 
-/// A URL with a password in it: `scheme://user:pass@host`.
+/// A URL with a password in it, before its path: `scheme://user:pass@host`,
+/// or with no user name (`redis://:pass@host`).
 static CREDENTIAL_URL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@").expect("static regex")
+    Regex::new(r"[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]*:[^/\s@]+@").expect("static regex")
+});
+
+/// An HTTP credential in a command line: an `Authorization:` header with
+/// its scheme and credential, a header named like a key or token
+/// (`X-API-Key:`, `DD-API-KEY:`, `X-Auth-Token:`, `PRIVATE-TOKEN:`) with a
+/// value, or `Bearer` and 16+ characters anywhere. Each group is the
+/// credential: one that only names a shell variable (`$TOKEN`) is not in
+/// the file ([`holds_auth_header`]).
+static AUTH_HEADER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?i)\bauthorization\s*:\s*(?:bearer|basic|token|bot)\s+([^\s'"]+)|(?:^|[\s'"])(?:[a-z0-9]+-)+(?:api-?key|key|token|secret|auth)\s*:\s*([^\s'"]+)|\bbearer\s+([$A-Za-z0-9._~+/=-]{16,})"#,
+    )
+    .expect("static regex")
 });
 
 /// A run of 32 or more hex digits standing alone: in an `env` value, an
@@ -209,7 +226,7 @@ impl Category {
 }
 
 /// Whether a string in `v` (at any depth) looks like a token: a known
-/// token prefix, a URL with a password, a webhook's or another URL that
+/// token prefix, a URL with a password, an HTTP credential, a webhook's or another URL that
 /// carries a key ([`SECRET_URL`]), or a long run of mixed-case letters
 /// and digits that isn't a filesystem path's segment.
 fn holds_token(v: &Value) -> bool {
@@ -217,6 +234,7 @@ fn holds_token(v: &Value) -> bool {
         Value::String(s) => {
             TOKEN_SHAPE.is_match(s)
                 || CREDENTIAL_URL.is_match(s)
+                || holds_auth_header(s)
                 || URL.find_iter(s).any(|u| SECRET_URL.is_match(u.as_str()))
                 || LONG_RUN.find_iter(s).any(|m| {
                     let run = m.as_str();
@@ -232,14 +250,28 @@ fn holds_token(v: &Value) -> bool {
     }
 }
 
+/// Whether `s` holds an HTTP credential ([`AUTH_HEADER`]) other than a
+/// shell variable's name (`Bearer $TOKEN`, `X-API-Key: ${API_KEY}`).
+fn holds_auth_header(s: &str) -> bool {
+    AUTH_HEADER.captures_iter(s).any(|c| {
+        c.iter()
+            .skip(1)
+            .flatten()
+            .any(|m| !m.as_str().starts_with('$'))
+    })
+}
+
 /// Whether `s[start..end]` is a segment of a filesystem path: next to a
 /// `/` or `\`, in a word (as a shell splits a command line) that is not
 /// a URL (no `://` before it).
 fn in_path(s: &str, start: usize, end: usize) -> bool {
     let sep = s[..start].ends_with(['/', '\\']) || s[end..].starts_with(['/', '\\']);
+    // Past the boundary char, by its UTF-8 length (NBSP is 2 bytes).
     let word = s[..start]
-        .rfind(|c: char| c.is_whitespace() || matches!(c, '\'' | '"' | '`'))
-        .map_or(0, |i| i + 1);
+        .char_indices()
+        .rev()
+        .find(|(_, c)| c.is_whitespace() || matches!(c, '\'' | '"' | '`'))
+        .map_or(0, |(i, c)| i + c.len_utf8());
     sep && !s[word..start].contains("://")
 }
 
@@ -1126,6 +1158,126 @@ mod tests {
                 ),
                 Category::Basic,
                 "{v}"
+            );
+        }
+        // Credentials in a query parameter, however short: any parameter
+        // whose last `_`/`-` part names one.
+        let short = "Ab3".repeat(7);
+        let hex = "0123456789abcdef".repeat(4);
+        for q in [
+            format!("api-key={short}"),
+            format!("access_key={hex}"),
+            format!("private_token={short}"),
+            format!("auth_token={short}"),
+            format!("client_secret={short}"),
+            "password=hunter2hunter2".to_string(),
+            format!("page=2&x-api-key={short}"),
+        ] {
+            let url = format!("https://api.example.invalid/v1/send?{q}");
+            assert_eq!(
+                basic("env.NOTIFY_URL", json!(url)),
+                Category::SharedSecret,
+                "{url}"
+            );
+            let cmd = json!({"Stop": [{"hooks": [{"type": "command", "command": format!("curl '{url}'")}]}]});
+            assert_eq!(basic("hooks", cmd), Category::SharedSecret, "{url}");
+        }
+        for q in [
+            "page=2&monkey=1",
+            "keyword=rust",
+            "passage=3",
+            "q=key",
+            "sort=asc",
+        ] {
+            let url = format!("https://api.example.invalid/v1/items?{q}");
+            assert_eq!(
+                basic("env.NOTIFY_URL", json!(url)),
+                Category::Basic,
+                "{url}"
+            );
+        }
+        // A password with no user name; a port is not one.
+        for v in [
+            "redis://:hunter2pass@cache.example.invalid:6379/0",
+            "rediss://:pw@cache.example.invalid:6380/0",
+        ] {
+            assert_eq!(
+                basic("env.REDIS_URL", json!(v)),
+                Category::SharedSecret,
+                "{v}"
+            );
+            assert_eq!(
+                basic("statusLine", json!({"command": format!("x {v}")})),
+                Category::SharedSecret,
+                "{v}"
+            );
+        }
+        for v in [
+            "https://host.example.invalid:8080/path",
+            "redis://cache.example.invalid:6379/0",
+        ] {
+            assert_eq!(basic("env.REDIS_URL", json!(v)), Category::Basic, "{v}");
+        }
+        // An HTTP credential in a hook command, hex or not; a shell
+        // variable's name is not one (the secret isn't in the file).
+        let hex32 = "0123456789abcdef".repeat(2);
+        for cmd in [
+            format!("curl -H 'DD-API-KEY: {hex32}' https://api.example.invalid"),
+            format!("curl -H 'Authorization: Bearer {hex32}' https://api.example.invalid"),
+            format!("curl -H \"Authorization: Basic {short}\" https://x.example.invalid"),
+            format!("curl -H 'X-API-Key: {short}' https://x.example.invalid"),
+            format!("curl --header 'X-Auth-Token: {short}' https://x.example.invalid"),
+            format!("curl -H 'PRIVATE-TOKEN: {short}' https://x.example.invalid"),
+            format!("notify --auth Bearer {hex32}"),
+        ] {
+            let v = json!({"Stop": [{"hooks": [{"type": "command", "command": cmd}]}]});
+            assert_eq!(basic("hooks", v), Category::SharedSecret, "{cmd}");
+            assert_eq!(
+                basic("statusLine", json!({"command": cmd})),
+                Category::SharedSecret,
+                "{cmd}"
+            );
+            assert_eq!(
+                basic("env.NOTIFY_CMD", json!(cmd)),
+                Category::SharedSecret,
+                "{cmd}"
+            );
+        }
+        for cmd in [
+            "curl -H 'Authorization: Bearer $TOKEN' https://api.example.invalid",
+            "curl -H \"Authorization: Bearer ${API_TOKEN}\" https://api.example.invalid",
+            "curl -H 'X-API-Key: ${API_KEY}' https://api.example.invalid",
+            "curl -H \"DD-API-KEY: $DD_API_KEY\" https://api.example.invalid",
+            "curl -H 'Content-Type: application/json' https://api.example.invalid",
+            "echo monkey: 1",
+        ] {
+            let v = json!({"Stop": [{"hooks": [{"type": "command", "command": cmd}]}]});
+            assert_eq!(basic("hooks", v), Category::Basic, "{cmd}");
+        }
+        // Multi-byte whitespace or quotes before a run never break the
+        // reading (NBSP is 2 bytes, U+3000 3, an emoji 4).
+        let segment = "-Users-me-src-some-really-long-project-name1";
+        for sep in ['\u{a0}', '\u{3000}', '😀'] {
+            let path = format!("bash{sep}/home/{segment}/run.sh");
+            assert_eq!(
+                basic("statusLine", json!({"command": path})),
+                Category::Basic,
+                "{path:?}"
+            );
+            let quoted = format!("bash {sep}'/home/{segment}/run.sh'");
+            assert_eq!(
+                basic("statusLine", json!({"command": quoted})),
+                Category::Basic,
+                "{quoted:?}"
+            );
+            let hook = format!(
+                "curl{sep}https://example.invalid/x/{}",
+                "AbCdEfGh12345678".repeat(3)
+            );
+            assert_eq!(
+                basic("hooks", json!([hook.clone()])),
+                Category::SharedSecret,
+                "{hook:?}"
             );
         }
         // A path segment with a long mixed-case run (Claude Code names
