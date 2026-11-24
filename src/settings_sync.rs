@@ -139,12 +139,6 @@ static ASSIGNMENT: LazyLock<Regex> = LazyLock::new(|| {
     .expect("static regex")
 });
 
-/// A value that only names a shell variable: `$X` or `${X}`: the secret
-/// is not in the file.
-static SHELL_VAR: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}]*\})$").expect("static regex")
-});
-
 /// A run of 32 or more hex digits standing alone: in an `env` value, an
 /// API key more likely than a hash (SerpAPI keys are 64 lowercase hex).
 static HEX_RUN: LazyLock<Regex> = LazyLock::new(|| {
@@ -290,12 +284,15 @@ fn holds_auth_header(s: &str) -> bool {
     })
 }
 
-/// Whether `s` gives curl a password ([`CURL_USER`]) other than a shell
-/// variable's, with a user that isn't a numeric id (`docker -u 1000:1000`).
+/// Whether `s` gives curl a password ([`CURL_USER`], after `curl` in
+/// it: `date -u +%H:%M` or `docker --user node:node` is not one) other
+/// than a shell variable's, with a user that isn't a numeric id.
 fn holds_curl_password(s: &str) -> bool {
     CURL_USER.captures_iter(s).any(|c| {
         let (user, pass) = (&c[1], &c[2]);
-        !pass.starts_with('$') && !user.bytes().all(|b| b.is_ascii_digit())
+        s[..c.get(0).map_or(0, |m| m.start())].contains("curl")
+            && !pass.starts_with(['$', '`'])
+            && !user.bytes().all(|b| b.is_ascii_digit())
     })
 }
 
@@ -364,7 +361,8 @@ impl Classifier {
     /// Whether a string in `v` (at any depth) assigns a value to a shell
     /// variable named like a secret, or like an account-bound `env`
     /// variable (`PGPASSWORD=… psql`, `export GITHUB_TOKEN=…`): a value
-    /// that only names another variable (`API_TOKEN=$API_TOKEN`) isn't one.
+    /// taken from a variable or a command (`API_TOKEN=$API_TOKEN`,
+    /// `TOKEN=$(cat ~/.token)`) isn't one.
     fn holds_secret_assignment(&self, v: &Value) -> bool {
         match v {
             Value::String(s) => ASSIGNMENT.captures_iter(s).any(|c| {
@@ -373,7 +371,9 @@ impl Classifier {
                 (SECRET_NAME.is_match(name)
                     || self.is_account_bound(&format!("{ENV_PREFIX}{name}")))
                     && !value.is_empty()
-                    && !SHELL_VAR.is_match(value)
+                    // `$X`, `${X}`, `$(cmd)`, `$1` or a backtick
+                    // substitution: the secret is not in the file.
+                    && !value.starts_with(['$', '`'])
             }),
             Value::Array(a) => a.iter().any(|v| self.holds_secret_assignment(v)),
             Value::Object(m) => m.values().any(|v| self.holds_secret_assignment(v)),
@@ -1373,6 +1373,10 @@ mod tests {
             "API_TOKEN=${API_TOKEN} ./x",
             "PATH=/usr/bin:$PATH make",
             "API_TOKEN= ./x",
+            "TOKEN=$(cat ~/.token) ./notify.sh",
+            "API_KEY=\"$(pass show x)\" ./run",
+            "token=$1 ./run",
+            "SECRET=`cat ~/.s` ./run",
         ] {
             assert_eq!(
                 basic("statusLine", json!({"command": cmd})),
@@ -1402,6 +1406,10 @@ mod tests {
             "sort -u file",
             "ps -u root",
             "docker run -u 1000:1000 img",
+            "date -u +%H:%M:%S",
+            "echo \"$(date -u +%Y-%m-%dT%H:%M:%SZ) done\" >> log",
+            "docker run --user node:node img",
+            "rsync -u host:/dir .",
         ] {
             let v = json!({"Stop": [{"hooks": [{"type": "command", "command": cmd}]}]});
             assert_eq!(basic("hooks", v), Category::Basic, "{cmd}");
