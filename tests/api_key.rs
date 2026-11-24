@@ -488,6 +488,53 @@ fn api_key_profiles_show_their_estimated_spend_apart() {
     assert!(!sb.read(".mcc/config.toml").contains("api_budget_usd"));
 }
 
+/// AC5: the API KEY block never changes the layout of the subscription
+/// table above it. An API-key row wider than the terminal (it has no layout
+/// to shrink into) leaves the 5-hour and weekly bars as wide as they are
+/// without it.
+#[test]
+fn a_wide_api_key_row_leaves_the_subscription_table_layout_alone() {
+    const ALIAS: &str = "api-key-shared-research-platform";
+    let sb = common::usage_sandbox();
+    let stub = common::usage_stub();
+    add_managed(&sb, ALIAS, "--fresh", KEY, &["--budget", "50"]).success();
+    // A new session (cost 0), then its growth, as the status line reports.
+    for total in ["0", "74.96"] {
+        sb.mcc()
+            .env(
+                "CLAUDE_CONFIG_DIR",
+                sb.path(&format!(".mcc/profiles/{ALIAS}")),
+            )
+            .arg("statusline")
+            .write_stdin(format!(
+                r#"{{"session_id":"s-1","cost":{{"total_cost_usd":{total}}}}}"#
+            ))
+            .assert()
+            .success();
+    }
+    let out = stdout_of(
+        sb.mcc()
+            .env("MCC_USAGE_URL", &stub.url)
+            .env("COLUMNS", "90")
+            .arg("usage"),
+    );
+    let (table, apis) = out.split_once("API KEY").unwrap_or_else(|| panic!("{out}"));
+    let api_line = apis.lines().find(|l| l.contains(ALIAS)).unwrap();
+    assert!(api_line.contains("est. $74.96 this month"), "{out}");
+    // The precondition: the API-key row itself overflows the terminal.
+    assert!(console::measure_text_width(api_line) > 90, "{api_line}");
+    // The table keeps the 10-cell bars it has at 90 columns on its own
+    // (see usage_keeps_bars_at_80_columns), and fits.
+    let default = table.lines().find(|l| l.contains(" default ")).unwrap();
+    assert!(
+        default.contains("████░░░░░░ 42%  2h 14m") && default.contains("██░░░░░░░░ 18%  3d 4h"),
+        "{out}"
+    );
+    for line in table.lines() {
+        assert!(console::measure_text_width(line) <= 90, "{line}\n{out}");
+    }
+}
+
 /// A hand-edited budget must be a number of dollars: an integer is read,
 /// `nan` or a negative one makes the file invalid.
 #[test]

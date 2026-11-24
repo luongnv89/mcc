@@ -481,7 +481,10 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
     } else {
         // Each line, and whether it counts for the layout's width: a
         // machine's heading doesn't (its error may be long), and is drawn
-        // as a rule as wide as the tables once the layout is known.
+        // as a rule as wide as the tables once the layout is known. Nor
+        // does an API KEY block: no layout narrows it, so a row wider than
+        // the terminal would only push the table above it into a narrower
+        // layout than it needs (#132).
         let lines = |l: Layout| {
             let mut lines: Vec<(Line, bool)> = Vec::new();
             if machines.is_some() {
@@ -504,7 +507,7 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
                 lines.extend(
                     render_api_keys(&api_entries, entries.len(), now)
                         .into_iter()
-                        .map(|t| (Line::Text(t), true)),
+                        .map(|t| (Line::Text(t), false)),
                 );
             }
             if let Some(d) = &devin {
@@ -554,7 +557,7 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
                     lines.extend(
                         render_api_keys(apis, n, now)
                             .into_iter()
-                            .map(|t| (Line::Text(t), true)),
+                            .map(|t| (Line::Text(t), false)),
                     );
                 }
                 for d in devins {
@@ -570,20 +573,23 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
             }
             lines
         };
-        let width = |lines: &[(Line, bool)]| {
+        // The widest text line: of those that count for the layout, or of all.
+        let width = |lines: &[(Line, bool)], all: bool| {
             lines
                 .iter()
                 .filter_map(|(line, counts)| match line {
-                    Line::Text(t) if *counts => Some(measure_text_width(t)),
+                    Line::Text(t) if all || *counts => Some(measure_text_width(t)),
                     _ => None,
                 })
                 .max()
                 .unwrap_or(0)
         };
-        let layout = ui::fit_layout(&LAYOUTS, |l| l.bar, |l| width(&lines(l)));
+        let layout = ui::fit_layout(&LAYOUTS, |l| l.bar, |l| width(&lines(l), false));
         let lines = lines(layout);
-        // A heading's rule spans the tables, never past the terminal.
-        let rule_width = ui::terminal_width().map_or(width(&lines), |w| width(&lines).min(w));
+        // A heading's rule spans the tables (API KEY blocks too), never
+        // past the terminal.
+        let tables = width(&lines, true);
+        let rule_width = ui::terminal_width().map_or(tables, |w| tables.min(w));
         for (line, _) in lines {
             match line {
                 Line::Text(t) => writeln!(out, "{t}")?,
