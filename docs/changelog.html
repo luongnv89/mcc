@@ -52,7 +52,34 @@
           <h2>Unreleased</h2>
           <span class="pill pill-muted">main</span>
         </div>
-        <p style="margin:0">Nothing yet beyond 0.11.0. Follow <a href="https://github.com/luongnv89/mcc/commits/main">commits on <code>main</code></a> for work in progress.</p>
+        <p style="margin:0">Nothing yet beyond 0.12.0. Follow <a href="https://github.com/luongnv89/mcc/commits/main">commits on <code>main</code></a> for work in progress.</p>
+      </article>
+
+      <article class="release" id="v0.12.0">
+        <div class="release-head">
+          <h2>0.12.0</h2>
+          <span class="pill pill-muted">2026-11-24</span>
+        </div>
+        <p>mcc can now run a Claude Code profile on an Anthropic API key instead of a Claude login, and shows what it spent this month beside your other accounts. <code>mcc usage</code> can also show the accounts on your other computers, read over SSH. And a setting you change in any profile now reaches all your profiles when you sync, with a question first before a password or token is copied. <a href="https://github.com/luongnv89/mcc/releases/tag/v0.12.0">Release v0.12.0</a>.</p>
+
+        <h3>Added</h3>
+        <ul>
+          <li>API-key profiles. <code>mcc add api --api-key-prompt</code> (or <code>--api-key-stdin</code>, to read the key from a pipe) adds a profile that uses an Anthropic API key instead of a Claude login, with no sign-in. mcc keeps the key in a file only you can read, under <code>~/.mcc/keys</code>; with <code>--api-key-helper CMD</code>, your own command, such as a password manager's, supplies the key and mcc stores nothing. A key is never taken as a command-line argument. <code>mcc list</code>, <code>mcc usage</code> and <code>mcc</code> show these profiles in their own block, with an estimate of what each spent this month on this machine and, if you set one with <code>--budget</code>, how much of your monthly budget that is. <code>mcc delete</code> removes the key file mcc wrote. See <a href="docs.html#cmd-add"><code>mcc add</code></a>.</li>
+          <li>The accounts on your other computers in <code>mcc usage</code>. List each machine once under <code>[machines.NAME]</code> with <code>mcc config edit</code>, and <code>mcc usage</code> reads it over SSH, with your own SSH keys, and prints one table per machine. An account you use on several machines shows its newest numbers everywhere, and no email or login leaves its machine. A machine that can't be reached never stops the command. Each machine needs this version of mcc or newer. See <a href="docs.html#machines">Other machines</a>.</li>
+          <li>mcc warns you when <code>~/.mcc/config.toml</code> contains a setting it doesn't recognize, such as a misspelling, and suggests the name you probably meant.</li>
+        </ul>
+
+        <h3>Changed</h3>
+        <ul>
+          <li>A Claude Code setting you change in any profile now reaches all your other profiles when you run <code>mcc sync</code>, instead of only settings changed in the default profile. The default's settings are backed up first.</li>
+          <li>Syncing asks before copying a password, token or other secret between profiles, never shows the secret itself, and never copies the settings that tie a profile to its own account, such as its API key or endpoint.</li>
+          <li>A profile with settings of its own, such as its own API endpoint, keeps them and still receives new shared settings.</li>
+        </ul>
+
+        <h3>Fixed</h3>
+        <ul>
+          <li>Hooks and status lines that call <code>curl</code> and then <code>date -u</code> are no longer mistaken for secrets when you sync.</li>
+        </ul>
       </article>
 
       <article class="release" id="v0.11.0">

@@ -4,6 +4,10 @@ All notable changes to mcc are recorded here. The format follows [Keep a Changel
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-24
+
+mcc can now add Claude Code profiles that use an Anthropic API key instead of a Claude login: `mcc add ALIAS --api-key-stdin`, `--api-key-prompt` or `--api-key-helper CMD`. mcc never takes the key as an argument, and `mcc list`, `mcc` and `mcc usage` show these profiles in their own `API KEY` block with the estimated spend this month and an optional budget. `mcc usage` can also show the accounts on your other machines: name them under `[machines.NAME]` with `mcc config edit`, and mcc reads each one over SSH and prints a table per machine, where an account found on several machines shows its newest numbers. `mcc sync` now syncs `settings.json` key by key, so a setting changed in any profile reaches the default and every other profile; it asks before copying a shared secret, without ever showing the value, and never copies account-bound keys such as `ANTHROPIC_API_KEY`. mcc also warns about a setting it doesn't know in `~/.mcc/config.toml`, and `mcc sync` no longer mistakes a hook that runs `date -u` after `curl` for a secret.
+
 ### Added
 
 - API-key profiles: `mcc add ALIAS --api-key-stdin`, `--api-key-prompt` or `--api-key-helper CMD` adds a Claude Code profile that uses an Anthropic API key (API usage billing) instead of a Claude login, through Claude Code's `apiKeyHelper` in the profile's `settings.json`. With `--api-key-helper` Claude Code runs your command and mcc stores nothing; with the other two, mcc writes the key once to a `0600` file in `~/.mcc/keys` and never reads it again. A key is never taken as an argument: anything containing `sk-ant-` is refused as an alias and redacted from the command line mcc logs and from argument-parsing errors (other commands' errors may still repeat a mistyped value, so never paste a key as an argument). The profile skips the sign-in, starts without your shell's `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`, and gets the mcc statusline in its settings overlay, which records each session's cost. `mcc list`, `mcc usage` and bare `mcc` show API-key profiles in their own `API KEY` block, without 5-hour or weekly windows, with the estimated spend this month on this machine and the budget set with `--budget` (or `mcc config set profiles.ALIAS.api_budget_usd`). `--json` and `--json-v2` add `auth: "api_key"`, `usage.est_cost_usd` and `usage.budget_usd`, and keep the old status and reason codes. `mcc login`, `mcc default` and the token refresh of `mcc usage --all` leave them alone, and `mcc delete` also removes the key file mcc wrote. What can and can't be tracked is in [docs/api-key-profiles.md](docs/api-key-profiles.md). ([#132](https://github.com/luongnv89/mcc/issues/132))
@@ -230,7 +234,8 @@ The first version of mcc.
 - Access tokens are kept in memory only, sent only to the usage endpoint for their own profile, and never printed, logged or written to disk. Expired tokens are never sent. ([#15](https://github.com/luongnv89/mcc/pull/15))
 - GitHub private vulnerability reporting is enabled, and `contact@luongnv.com` is listed as the security contact. ([#21](https://github.com/luongnv89/mcc/pull/21))
 
-[Unreleased]: https://github.com/luongnv89/mcc/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/luongnv89/mcc/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/luongnv89/mcc/releases/tag/v0.12.0
 [0.11.0]: https://github.com/luongnv89/mcc/releases/tag/v0.11.0
 [0.10.0]: https://github.com/luongnv89/mcc/releases/tag/v0.10.0
 [0.9.0]: https://github.com/luongnv89/mcc/releases/tag/v0.9.0
