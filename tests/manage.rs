@@ -2742,6 +2742,11 @@ fn a_webhook_in_a_hook_command_is_never_copied_unasked() {
         let text = sb.read(&format!(".mcc/profiles/{p}/settings.json"));
         assert!(!text.contains(&token), "{p}: {text}");
     }
+    // `mcc diff` names the key, its value hidden.
+    let o = sb.mcc().args(["diff", "lab"]).output().unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("hooks") && out.contains("<hidden"), "{out}");
+    assert!(!out.contains(&token), "{out}");
     assert!(!sb.read(".mcc/logs/mcc.log").contains(&token));
 }
 
