@@ -1,0 +1,90 @@
+# Quality gates for mcc, run by pre-commit (https://pre-commit.com).
+#
+#   on commit   format, lint and scans, on the changed files (a few seconds)
+#   on push     the whole test suite and the CLI end-to-end run (under a minute)
+#
+# CI runs both stages again over a pull request's diff (ci.yml, job `hooks`),
+# so a commit or push made with --no-verify is still checked.
+#
+# Set up once per clone:
+#   pre-commit install && pre-commit install --hook-type pre-push
+# Needs on PATH: cargo with rustfmt and clippy, cargo-audit
+# (cargo install cargo-audit --locked) and python3.
+
+# A hook with no `stages:` runs on commit only.
+default_stages: [pre-commit]
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      # The first three set commit and push stages in their own manifest, which
+      # default_stages does not override.
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+        stages: [pre-commit]
+      - id: end-of-file-fixer
+        stages: [pre-commit]
+      - id: check-added-large-files
+        stages: [pre-commit]
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+
+  # shellcheck 0.11.0 from a wheel: install.sh, scripts/ and the skill's sandbox.sh.
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
+      - id: shellcheck
+
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --
+        language: system
+        types: [rust]
+
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy --locked --all-targets -- -D warnings
+        language: system
+        files: \.rs$|^Cargo\.(toml|lock)$
+        pass_filenames: false
+
+      # Only when the dependencies change: it fetches the advisory database.
+      # git gives a commit hook GIT_INDEX_FILE, and cargo audit's checkout of
+      # that database writes the file it names: this repository's index. So it
+      # runs without git's repository variables.
+      - id: cargo-audit
+        name: cargo audit
+        entry: bash -c 'unset $(git rev-parse --local-env-vars); exec cargo audit'
+        language: system
+        files: ^Cargo\.(toml|lock)$
+        pass_filenames: false
+
+      - id: skill-tests
+        name: mcc-accounts skill tests
+        entry: python3 -m unittest skills/mcc-accounts/evals/test_mcc_whoami.py skills/mcc-accounts/evals/test_check_sandbox.py
+        language: system
+        files: ^skills/mcc-accounts/
+        pass_filenames: false
+
+      # Unit and integration tests: 40 s warm on an Apple-silicon Mac
+      # (2026-11-25), so the whole suite runs rather than a selection. The 309
+      # unit tests alone (cargo test --bins) take 7 s after an edit, which
+      # with clippy is past the 10 s commit budget, so they run here as well.
+      # always_run: a push that only deletes files still runs the suite.
+      - id: cargo-test-full
+        name: cargo test (unit + integration)
+        entry: cargo test --locked
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+
+      - id: e2e-cli
+        name: CLI end-to-end (every mcc command, sandboxed)
+        entry: bash scripts/e2e_test.sh
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
