@@ -8,6 +8,7 @@ mod common;
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Stdio};
 use std::sync::mpsc;
@@ -24,7 +25,7 @@ const DISCLOSURE: &str = "ⓘ mcc remote sends no login or token to the machine.
 const RUN_NOTE: &str = "⚠ You chose to start an account other than this project's. Use only accounts you own, and don't use several accounts to get around usage limits — doing so can violate Anthropic's Consumer Terms (https://www.anthropic.com/legal/consumer-terms) and Usage Policy (https://www.anthropic.com/legal/aup), including the updated Usage Policy that takes effect November 12, 2026.";
 
 /// The ssh options every command on the machine runs with, in order.
-const HARDENED: [&str; 24] = [
+const HARDENED: [&str; 26] = [
     "-n",
     "-o",
     "BatchMode=yes",
@@ -38,6 +39,8 @@ const HARDENED: [&str; 24] = [
     "ForwardX11Trusted=no",
     "-o",
     "ClearAllForwardings=yes",
+    "-o",
+    "GSSAPIDelegateCredentials=no",
     "-o",
     "PermitLocalCommand=no",
     "-o",
@@ -293,8 +296,8 @@ fn remote_tool_runs_one_word_on_the_machine() {
     assert!(!sb.exists("c"));
     let runs = ssh_runs(&sb);
     assert_eq!(runs.len(), 1);
-    assert_eq!(runs[0][..24], HARDENED);
-    assert_eq!(runs[0][24..], ["me@box", command]);
+    assert_eq!(runs[0][..HARDENED.len()], HARDENED);
+    assert_eq!(runs[0][HARDENED.len()..], ["me@box", command]);
     assert_eq!(sb.read("ssh-env.log"), "", "variables reached ssh");
     let log = sb.read("tool.log");
     assert!(
@@ -627,8 +630,8 @@ fn remote_starts_the_profile_headless_with_only_the_tool() {
     // Only the preflight ran on the machine.
     let runs = ssh_runs(&sb);
     assert_eq!(runs.len(), 1);
-    assert_eq!(runs[0][..24], HARDENED);
-    assert_eq!(runs[0][24..], ["me@box", "true"]);
+    assert_eq!(runs[0][..HARDENED.len()], HARDENED);
+    assert_eq!(runs[0][HARDENED.len()..], ["me@box", "true"]);
     assert_eq!(sb.read("ssh-env.log"), "");
 }
 
@@ -651,7 +654,10 @@ fn remote_runs_commands_on_a_machine_without_claude_code() {
     assert!(answers.contains("exit status 4"), "{answers}");
     let runs = ssh_runs(&sb);
     assert_eq!(runs.len(), 2);
-    assert_eq!(runs[1][24..], ["me@box", "echo hello > greeting; exit 4"]);
+    assert_eq!(
+        runs[1][HARDENED.len()..],
+        ["me@box", "echo hello > greeting; exit 4"]
+    );
     assert_eq!(sb.read("ssh-env.log"), "", "variables reached ssh");
     assert!(scratch_left(&sb).is_empty());
 }
@@ -721,7 +727,7 @@ fn remote_without_claude_code_here_exits_127() {
     assert!(scratch_left(&sb).is_empty());
 }
 
-/// AC4: how the task ended decides the exit status; refused tool calls
+/// AC4: how Claude Code's run ended decides the exit status; refused tool calls
 /// are listed, and none of it reaches mcc.log.
 #[test]
 fn remote_reports_how_the_task_ended() {
@@ -902,8 +908,8 @@ fn remote_timeout_kills_a_run_that_ignores_sigterm() {
     assert!(scratch_left(&sb).is_empty());
 }
 
-/// T5: SIGTERM and Ctrl+C (SIGINT) stop the whole run too, and remove the
-/// private folder.
+/// T5: SIGTERM, SIGHUP, SIGQUIT (Ctrl+\\) and Ctrl+C (SIGINT) stop the
+/// whole run too, and remove the private folder.
 #[test]
 fn remote_signals_stop_the_whole_run() {
     let (sb, _host) = setup();
@@ -914,6 +920,7 @@ fn remote_signals_stop_the_whole_run() {
             "stopped: mcc received SIGTERM; a command may still be running on box (me@box)",
         ),
         (libc::SIGHUP, 129, "stopped: mcc received SIGHUP"),
+        (libc::SIGQUIT, 131, "stopped: mcc received SIGQUIT"),
         (libc::SIGINT, 130, "stopped: interrupted (Ctrl+C)"),
     ] {
         let _ = std::fs::remove_file(sb.path("remote-pid"));
@@ -926,6 +933,71 @@ fn remote_signals_stop_the_whole_run() {
         assert!(stderr.contains(why), "{stderr}");
         assert!(scratch_left(&sb).is_empty());
     }
+}
+
+/// The `ps` state of process `pid` (`T…` when stopped), `""` once gone.
+fn ps_state(pid: i32) -> String {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .unwrap();
+    text(&out.stdout).trim().to_string()
+}
+
+/// Ctrl+Z (SIGTSTP) stops Claude Code's whole group and then mcc; SIGCONT
+/// (`fg`) continues both, and the time spent stopped doesn't count
+/// against --timeout.
+#[test]
+fn remote_suspends_and_resumes_the_whole_run() {
+    let (sb, _host) = setup();
+    let mut cmd = sb.command(mcc_bin());
+    cmd.args(["remote", "work", "box", TASK, "--timeout", "4"])
+        .envs(SECRETS)
+        .env("FAKE_REMOTE_SLEEP", "30")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        // A group of its own with its parent (this test) in the session, so
+        // not orphaned: there the kernel discards a SIGTSTP that would stop.
+        .process_group(0);
+    let mut child = cmd.spawn().unwrap();
+    let pid = child.id() as i32;
+    let pgid = claude_group(&sb);
+
+    // SAFETY: a plain signal to the child started above.
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGTSTP) }, 0);
+    let mut status = 0;
+    // SAFETY: WUNTRACED reports mcc stopped without reaping it.
+    let waited = unsafe { libc::waitpid(pid, &mut status, libc::WUNTRACED) };
+    assert_eq!(waited, pid);
+    assert!(libc::WIFSTOPPED(status), "mcc did not stop: {status:#x}");
+    assert!(
+        wait_for(5, || ps_state(pgid).starts_with('T')),
+        "Claude Code kept running: {}",
+        ps_state(pgid)
+    );
+    // Stopped for longer than --timeout: neither mcc nor its run moves.
+    std::thread::sleep(Duration::from_secs(5));
+    assert!(ps_state(pgid).starts_with('T'), "{}", ps_state(pgid));
+
+    // SAFETY: as above.
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGCONT) }, 0);
+    assert!(
+        wait_for(5, || !ps_state(pgid).starts_with('T')),
+        "Claude Code was not continued"
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "the time spent stopped counted against --timeout"
+    );
+    assert!(group_alive(pgid));
+
+    // The timeout still ends the run, later.
+    let (code, stderr) = stopped(child, pgid);
+    assert_eq!(code, 124, "{stderr}");
+    assert!(stderr.contains("--timeout 4s"), "{stderr}");
+    assert!(scratch_left(&sb).is_empty());
 }
 
 /// The task from a file or from stdin; an empty one is refused before
@@ -1001,6 +1073,15 @@ fn remote_help_shows_the_note() {
     }
     let flat: String = help.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(flat.contains(DISCLOSURE), "{help}");
+    // Exit 0 is how Claude Code's run ended, not a verdict on the task.
+    for said in [
+        "0 when Claude Code's run finished without an error (whether the task itself succeeded is for Claude's report to say)",
+        "131 on SIGQUIT (Ctrl+\\)",
+        "the time suspended doesn't count against --timeout",
+    ] {
+        assert!(flat.contains(said), "{said:?} not in {help}");
+    }
+    assert!(!flat.contains("0 when the task succeeded"), "{help}");
     // The tool is not a command people run.
     let top = sb.mcc().arg("--help").assert().success();
     assert!(!text(&top.get_output().stdout).contains("remote-tool"));

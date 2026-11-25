@@ -11,8 +11,11 @@
 //! Claude Code runs in its own process group, from a private folder under
 //! `~/.mcc/state/remote/` that holds its MCP config and the tool's record
 //! of the commands it ran, removed on every way out. Ctrl+C, SIGTERM,
-//! SIGHUP and `--timeout` stop the whole group: Claude Code, the tool and
-//! any ssh it started.
+//! SIGHUP, SIGQUIT (`Ctrl+\`) and `--timeout` stop the whole group:
+//! Claude Code, the tool and any ssh it started. Ctrl+Z (SIGTSTP) stops
+//! the group too, then mcc itself; when mcc is continued (`fg`, `bg`), so
+//! is the group, and the time spent stopped doesn't count against
+//! `--timeout`.
 
 use std::ffi::OsString;
 use std::fs::OpenOptions;
@@ -21,7 +24,7 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -291,6 +294,8 @@ impl Stop {
         match self {
             Stop::Interrupted => "interrupted",
             Stop::Signal(libc::SIGHUP) => "SIGHUP",
+            Stop::Signal(libc::SIGQUIT) => "SIGQUIT",
+            // The only other signal recorded.
             Stop::Signal(_) => "SIGTERM",
             Stop::TimedOut => "timeout",
         }
@@ -380,7 +385,7 @@ fn start_and_wait(
         })
     });
 
-    let deadline = args
+    let mut deadline = args
         .timeout
         .map(|s| Instant::now() + Duration::from_secs(s));
     let end = loop {
@@ -391,6 +396,12 @@ fn start_and_wait(
                 stop_group(&mut child);
                 return Err(anyhow::Error::new(e).context("waiting for Claude Code"));
             }
+        }
+        if SUSPENDED.swap(false, Ordering::SeqCst) {
+            let stopped_for = suspend(&child);
+            // Time spent stopped is not the run's.
+            deadline = deadline.map(|d| d + stopped_for);
+            continue;
         }
         let why = if claude::INTERRUPTED.swap(false, Ordering::SeqCst) {
             Some(Stop::Interrupted)
@@ -434,8 +445,12 @@ fn stop_group(child: &mut Child) {
         let _ = child.wait();
         return;
     };
-    // SAFETY: plain syscalls on the group of a child not yet reaped.
-    unsafe { libc::killpg(pgid, libc::SIGTERM) };
+    // SAFETY: plain syscalls on the group of a child not yet reaped. A
+    // group stopped meanwhile is continued, so it can act on SIGTERM.
+    unsafe {
+        libc::killpg(pgid, libc::SIGTERM);
+        libc::killpg(pgid, libc::SIGCONT);
+    }
     let until = Instant::now() + STOP_GRACE;
     while Instant::now() < until && !exited(pgid) {
         std::thread::sleep(POLL);
@@ -462,16 +477,55 @@ fn exited(pid: libc::pid_t) -> bool {
     rc != 0 || info.si_signo != 0
 }
 
-/// The signal (SIGTERM or SIGHUP) mcc received during the run; 0: none.
+/// Stop Claude Code's whole process group, then mcc itself, as Ctrl+Z
+/// (SIGTSTP) asked; once mcc is continued, continue the group. How long
+/// mcc was stopped. The group gets SIGSTOP, which nothing in it can catch
+/// or ignore; mcc stops with SIGTSTP, so its shell reports a suspended job
+/// as usual (and in an orphaned process group, where that is discarded,
+/// the group is continued at once).
+fn suspend(child: &Child) -> Duration {
+    let Ok(pgid) = libc::pid_t::try_from(child.id()) else {
+        return Duration::ZERO;
+    };
+    let start = Instant::now();
+    // SAFETY: plain syscalls: signals to the group of a child not yet
+    // reaped, and mcc's own SIGTSTP action set to the default for the
+    // `raise` and put back after.
+    unsafe {
+        libc::killpg(pgid, libc::SIGSTOP);
+        let mut default: libc::sigaction = std::mem::zeroed();
+        default.sa_sigaction = libc::SIG_DFL;
+        libc::sigemptyset(&mut default.sa_mask);
+        let mut ours: libc::sigaction = std::mem::zeroed();
+        if libc::sigaction(libc::SIGTSTP, &default, &mut ours) == 0 {
+            // Returns once mcc is continued.
+            libc::raise(libc::SIGTSTP);
+            libc::sigaction(libc::SIGTSTP, &ours, std::ptr::null_mut());
+        }
+        libc::killpg(pgid, libc::SIGCONT);
+    }
+    start.elapsed()
+}
+
+/// The signal (SIGTERM, SIGHUP or SIGQUIT) mcc received during the run;
+/// 0: none.
 static SIGNALLED: AtomicI32 = AtomicI32::new(0);
+
+/// Whether mcc received SIGTSTP (Ctrl+Z) during the run.
+static SUSPENDED: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn on_signal(sig: libc::c_int) {
     SIGNALLED.store(sig, Ordering::SeqCst);
 }
 
-/// SIGTERM and SIGHUP recorded in [`SIGNALLED`] instead of ending mcc,
-/// for as long as this lives; the previous handlers come back after. A
-/// signal ignored before (`nohup`) stays ignored.
+extern "C" fn on_suspend(_: libc::c_int) {
+    SUSPENDED.store(true, Ordering::SeqCst);
+}
+
+/// SIGTERM, SIGHUP and SIGQUIT recorded in [`SIGNALLED`], and SIGTSTP in
+/// [`SUSPENDED`], instead of ending or stopping mcc, for as long as this
+/// lives; the previous handlers come back after. A signal ignored before
+/// (`nohup`) stays ignored.
 struct Signals {
     previous: Vec<(libc::c_int, libc::sigaction)>,
 }
@@ -479,10 +533,18 @@ struct Signals {
 impl Signals {
     fn install() -> Self {
         SIGNALLED.store(0, Ordering::SeqCst);
+        SUSPENDED.store(false, Ordering::SeqCst);
+        let stop = on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
+        let suspend = on_suspend as extern "C" fn(libc::c_int) as libc::sighandler_t;
         let mut previous = Vec::new();
-        for sig in [libc::SIGTERM, libc::SIGHUP] {
-            // SAFETY: sigaction structs are plain C data; the handler only
-            // stores to an atomic, which is async-signal-safe.
+        for (sig, handler) in [
+            (libc::SIGTERM, stop),
+            (libc::SIGHUP, stop),
+            (libc::SIGQUIT, stop),
+            (libc::SIGTSTP, suspend),
+        ] {
+            // SAFETY: sigaction structs are plain C data; the handlers only
+            // store to an atomic, which is async-signal-safe.
             unsafe {
                 let mut old: libc::sigaction = std::mem::zeroed();
                 if libc::sigaction(sig, std::ptr::null(), &mut old) != 0
@@ -491,7 +553,7 @@ impl Signals {
                     continue;
                 }
                 let mut new: libc::sigaction = std::mem::zeroed();
-                new.sa_sigaction = on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
+                new.sa_sigaction = handler;
                 libc::sigemptyset(&mut new.sa_mask);
                 if libc::sigaction(sig, &new, &mut old) == 0 {
                     previous.push((sig, old));
@@ -592,6 +654,8 @@ impl Outcome {
         })
     }
 
+    /// Whether Claude Code's run finished without an error. It says
+    /// nothing of whether the task was done: Claude's report does.
     fn succeeded(&self) -> bool {
         !self.is_error && self.subtype == "success"
     }
@@ -652,9 +716,11 @@ fn printable(text: &str) -> String {
 }
 
 /// Print how the run went, and return mcc's exit status: Claude Code's
-/// when it failed, else 0 when the task succeeded and 1 when it didn't
-/// (or its result can't be read). Nothing of the task, the result or a
-/// refused call reaches mcc's log.
+/// when it failed, else 0 when its result says the run finished without
+/// an error and 1 when it doesn't (or it can't be read). Whether the task
+/// itself was done is for Claude's closing report to say, which the
+/// system prompt asks for. Nothing of the task, the result or a refused
+/// call reaches mcc's log.
 fn report(
     profile: &str,
     machine: &str,
@@ -853,6 +919,14 @@ mod tests {
         assert_eq!(Stop::Interrupted.code(), 130);
         assert_eq!(Stop::Signal(libc::SIGTERM).code(), 143);
         assert_eq!(Stop::Signal(libc::SIGHUP).code(), 129);
+        assert_eq!(Stop::Signal(libc::SIGQUIT).code(), 131);
+        assert_eq!(Stop::Signal(libc::SIGQUIT).log_name(), "SIGQUIT");
+        assert_eq!(
+            Stop::Signal(libc::SIGQUIT).describe(None),
+            "mcc received SIGQUIT"
+        );
+        assert_eq!(Stop::Signal(libc::SIGTERM).log_name(), "SIGTERM");
+        assert_eq!(Stop::Signal(libc::SIGHUP).log_name(), "SIGHUP");
         assert_eq!(Stop::TimedOut.code(), 124);
         assert_eq!(
             Stop::TimedOut.describe(Some(5)),

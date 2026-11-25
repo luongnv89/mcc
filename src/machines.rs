@@ -437,13 +437,16 @@ pub(crate) fn check_agent_host(host: &str) -> std::result::Result<(), String> {
 
 /// The ssh options of an agent's command after `BatchMode` and
 /// `ConnectTimeout`: no agent or X11 forwarding, no port forwarding, no
-/// local command, no TTY, no shared connection, and no `RemoteCommand`
-/// from the user's config replacing the command.
+/// Kerberos credential delegation (an ssh built without GSSAPI only logs
+/// that option as unsupported), no local command, no TTY, no shared
+/// connection, and no `RemoteCommand` from the user's config replacing
+/// the command.
 const AGENT_SSH_HARDENING: &[&str] = &[
     "ForwardAgent=no",
     "ForwardX11=no",
     "ForwardX11Trusted=no",
     "ClearAllForwardings=yes",
+    "GSSAPIDelegateCredentials=no",
     "PermitLocalCommand=no",
     "RequestTTY=no",
     "ControlMaster=no",
@@ -825,6 +828,8 @@ mod tests {
             "ForwardX11Trusted=no",
             "-o",
             "ClearAllForwardings=yes",
+            "-o",
+            "GSSAPIDelegateCredentials=no",
             "-o",
             "PermitLocalCommand=no",
             "-o",

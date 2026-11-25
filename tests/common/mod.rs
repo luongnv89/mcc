@@ -245,7 +245,7 @@ exit 44
 /// which can't connect (exit 255).
 ///
 /// `mcc remote`'s commands (#142) come in the hardened form instead: `-n`,
-/// the eleven `-o` options of `machines::agent_ssh_args` in their order,
+/// the twelve `-o` options of `machines::agent_ssh_args` in their order,
 /// `--`, the host, then the command as one word (else exit 98). For those
 /// it appends the names of the credential, Claude Code and mcc variables
 /// it was given to $HOME/ssh-env.log, then runs the command with `sh -c` in
@@ -256,13 +256,13 @@ tab=$(printf '\t'); line=ssh
 for a in "$@"; do line="$line$tab$a"; done
 printf '%s\n' "$line" >> "$HOME/ssh.log"
 if [ "$1" = "-n" ]; then
-  want="-n -o BatchMode=yes -o ConnectTimeout=10 -o ForwardAgent=no -o ForwardX11=no -o ForwardX11Trusted=no -o ClearAllForwardings=yes -o PermitLocalCommand=no -o RequestTTY=no -o ControlMaster=no -o ControlPath=none -o RemoteCommand=none --"
+  want="-n -o BatchMode=yes -o ConnectTimeout=10 -o ForwardAgent=no -o ForwardX11=no -o ForwardX11Trusted=no -o ClearAllForwardings=yes -o GSSAPIDelegateCredentials=no -o PermitLocalCommand=no -o RequestTTY=no -o ControlMaster=no -o ControlPath=none -o RemoteCommand=none --"
   got=""; n=0
-  for a in "$@"; do n=$((n+1)); [ $n -le 24 ] && got="$got${got:+ }$a"; done
-  if [ $# -ne 26 ] || [ "$got" != "$want" ]; then
+  for a in "$@"; do n=$((n+1)); [ $n -le 26 ] && got="$got${got:+ }$a"; done
+  if [ $# -ne 28 ] || [ "$got" != "$want" ]; then
     echo "fake ssh: unexpected arguments: $*" >&2; exit 98
   fi
-  shift 24; host="$1"; cmd="$2"
+  shift 26; host="$1"; cmd="$2"
   touch "$HOME/ssh-env.log"
   for v in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CONFIG_DIR CLAUDE_CODE_ENABLE_CFC MCC_HOME MCC_SSH_BIN; do
     eval "[ -n \"\${$v+x}\" ]" && echo "$v" >> "$HOME/ssh-env.log"
