@@ -5,9 +5,10 @@ Usage: python scripts/base-hook-gate.py --base <sha> <stage> [<stage> ...]
 Does nothing unless the diff from <base> to HEAD touches .pre-commit-config.yaml,
 a workflow, or a hook script (anything under scripts/, or a file a local hook's
 entry or args names). Then it fails on every hook id the base config runs in a
-given stage that the PR's config no longer runs there, restores the base's config
-and the scripts its local hooks name, re-runs each stage over the PR diff, then
-puts the PR's files back for the guard's own run.
+given stage that the PR's config no longer runs there, restores the base's config,
+re-runs each stage over the PR diff, then puts the PR's config back for the
+guard's own run. Every other file, the scripts local hooks name included, keeps
+the PR's content: those scripts are test suites a PR must be able to extend.
 The CI guard reads this file from the base branch, so a PR cannot edit it either.
 """
 
@@ -88,17 +89,14 @@ for stage in stages:
         print(f"::error::The base branch runs hook '{hook_id}' on {stage}; this PR removes it.")
         failed = True
 
-# The base's config and the scripts its local hooks name; every other file keeps
-# the PR's content, so the base hooks still check it. Files only: a directory
-# such as `src` in `mypy src` keeps the PR's content too. A file the base lacks
-# has no base version to restore.
-restore = [p for p in [CONFIG, *sorted(named_files(base_cfg))]
-           if git("cat-file", "-t", f"{base}:{p}").stdout.strip() == "blob"]
+# Only the base's config. The scripts its local hooks name keep the PR's
+# content: today they are test suites (the e2e run must gain a check for each
+# new command), and the base copies would fail a PR that extends them.
 
 
 def checkout(source):
-    if restore and subprocess.call(["git", "restore", f"--source={source}", "--staged", "--worktree", "--", *restore]):
-        sys.exit(f"base-hook-gate: could not restore the hook files from {source}.")
+    if subprocess.call(["git", "restore", f"--source={source}", "--staged", "--worktree", "--", CONFIG]):
+        sys.exit(f"base-hook-gate: could not restore {CONFIG} from {source}.")
 
 
 checkout(base)
