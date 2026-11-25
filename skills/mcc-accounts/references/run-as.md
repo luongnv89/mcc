@@ -47,6 +47,17 @@ SKILL.md (Run as, step 4) decides whether to run at once or to wait for a yes. T
 
 A nested `claude -p` started this way works from inside a Claude Code session. It was verified with Claude Code 2.1.x and mcc 0.8.0.
 
+## Tasks on another machine (`mcc remote`, mcc after 0.12.0)
+
+`mcc remote <profile> <machine> '<task>'` has the profile do a task on a machine set up under `[machines.<machine>]` in `~/.mcc/config.toml`. The machine needs only sshd and a shell; Claude Code runs here, as the profile, and its one tool runs one command at a time there over SSH. SKILL.md (Run as, step 5) needs a yes for every run, because those commands run with the user's SSH key as the remote user.
+
+- Give the task on stdin when it comes from the user's words, so the shell does not expand it: `printf '%s' "$task" | mcc remote lab box -`. `--task-file PATH` reads a file.
+- Bound the run: `--max-turns <n>` (30 by default) and `--timeout <seconds>` (the whole run; exit 124). Your shell tool's own time limit still applies: run a long task in the background.
+- mcc strips the credential variables above for this run itself, and sends no login or token to the machine.
+- stdout is Claude's closing report (`--json`: Claude Code's whole result; `jq -r .result`). stderr has mcc's ⓘ note (what can reach the machine), the ⚠ terms note when the profile isn't the project's, `refused:` lines for tool calls Claude Code refused, and a `✓`/`✗` summary: how it ended, turns, cost, commands run and failed.
+- Exit 0 means the task succeeded. 1: Claude Code reported an error (`error_max_turns`: ask before raising `--max-turns`), its result was unreadable, or the machine was unreachable (the message says why, and nothing ran). 2: unknown profile or machine. 3: a host mcc refuses. 124, 130, 143, 129: stopped; a command may still be running on the machine, so say so and don't re-run without the user.
+- The machine must accept `ssh HOST true` without a prompt. If it doesn't, give the user that command to check; never change `~/.ssh` or `[machines]` yourself.
+
 ## Never from an agent shell
 
 These need a terminal or a browser. A non-interactive shell hangs, exits 2, or starts nothing useful. Give the user the command instead:

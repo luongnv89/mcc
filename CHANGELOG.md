@@ -4,6 +4,11 @@ All notable changes to mcc are recorded here. The format follows [Keep a Changel
 
 ## [Unreleased]
 
+### Added
+
+- `mcc remote PROFILE MACHINE TASK` has a profile do a task on one of your `[machines]` over SSH, on a machine that needs only sshd and a shell (no Claude Code, no mcc). Claude Code runs on this machine as the profile, in headless mode (`claude -p`), with no tools of its own and one MCP tool served by mcc (`mcc remote-tool`, hidden), which runs one command on the machine through a fixed, hardened `ssh` argument list. mcc checks the machine first (`ssh HOST true`), sends no login or token anywhere, gives the task on stdin and keeps it out of mcc.log, prints Claude's report on stdout (`--json`: the whole result) and a summary on stderr (how it ended, turns, cost, commands run and failed, refused tool calls), and exits 0 only when the task succeeded. `--task-file PATH` or `-` (stdin) give the task, `--max-turns N` (30) and `--timeout SECS` bound the run; `--timeout`, Ctrl+C, SIGTERM and SIGHUP stop Claude Code and every ssh it started (exit 124, 130, 143, 129). Every run prints a note on stderr about what can reach the machine. ([#142](https://github.com/luongnv89/mcc/issues/142))
+- `remote` and `remote-tool` are reserved profile names.
+
 ## [0.12.0] - 2026-11-24
 
 mcc can now add Claude Code profiles that use an Anthropic API key instead of a Claude login: `mcc add ALIAS --api-key-stdin`, `--api-key-prompt` or `--api-key-helper CMD`. mcc never takes the key as an argument, and `mcc list`, `mcc` and `mcc usage` show these profiles in their own `API KEY` block with the estimated spend this month and an optional budget. `mcc usage` can also show the accounts on your other machines: name them under `[machines.NAME]` with `mcc config edit`, and mcc reads each one over SSH and prints a table per machine, where an account found on several machines shows its newest numbers. `mcc sync` now syncs `settings.json` key by key, so a setting changed in any profile reaches the default and every other profile; it asks before copying a shared secret, without ever showing the value, and never copies account-bound keys such as `ANTHROPIC_API_KEY`. mcc also warns about a setting it doesn't know in `~/.mcc/config.toml`, and `mcc sync` no longer mistakes a hook that runs `date -u` after `curl` for a secret.
