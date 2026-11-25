@@ -364,6 +364,15 @@ pub(crate) fn profile_env(cmd: &mut std::process::Command, paths: &Paths, p: &Pr
     }
 }
 
+/// The claude binary a profile starts with, in the launchers' order:
+/// `MCC_CLAUDE_BIN`, then PATH, then the binary found at init.
+pub(crate) fn claude_binary(cfg: &Config) -> Result<PathBuf> {
+    match claude::find_binary(None) {
+        Some(bin) => Ok(bin),
+        None => claude::require_binary(cfg.env.as_ref().and_then(|e| e.claude_bin.as_deref())),
+    }
+}
+
 /// Print the profile's name (`--dry-run`), or replace this process with
 /// claude running as that profile.
 fn launch(paths: &Paths, cfg: &Config, p: &Profile, args: &RunArgs) -> Result<()> {
@@ -371,11 +380,7 @@ fn launch(paths: &Paths, cfg: &Config, p: &Profile, args: &RunArgs) -> Result<()
         println!("{}", p.name);
         return Ok(());
     }
-    // Same order as the launchers: PATH first, then the binary found at init.
-    let bin = match claude::find_binary(None) {
-        Some(bin) => bin,
-        None => claude::require_binary(cfg.env.as_ref().and_then(|e| e.claude_bin.as_deref()))?,
-    };
+    let bin = claude_binary(cfg)?;
     let mut cmd = std::process::Command::new(&bin);
     cmd.args(&args.args);
     profile_env(&mut cmd, paths, p);

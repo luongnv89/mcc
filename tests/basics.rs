@@ -53,6 +53,7 @@ fn every_subcommand_has_help() {
         "project",
         "here",
         "run",
+        "remote",
         "doctor",
         "completions",
     ] {

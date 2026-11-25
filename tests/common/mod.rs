@@ -55,6 +55,19 @@ const FAKE_CLAUDE: &str = r#"#!/bin/sh
 # does (authMethod "api_key_helper", apiKeySource "apiKeyHelper"); the
 # helper is never run. Every run appends its first two arguments to
 # $HOME/claude-calls.log, so a test can tell claude never ran.
+# `mcc remote` (#142): `-p --output-format json …` records its arguments
+# (one per line) in $HOME/remote-args, its stdin in $HOME/remote-stdin, its
+# directory in $HOME/remote-cwd (and that directory's `ls -ld` in
+# $HOME/remote-cwd-mode), its pid (its process group) in $HOME/remote-pid,
+# the names of credential variables it sees in $HOME/remote-env with
+# CLAUDE_CONFIG_DIR's value, and copies its --mcp-config file (mode kept) to
+# $HOME/remote-mcp.json. With $FAKE_REMOTE_CALL it then acts as Claude Code's
+# MCP client: starts the server that file names, initializes it and calls
+# `run` with that command (JSON-safe text), its answers in
+# $HOME/remote-mcp-out. With $FAKE_REMOTE_SLEEP it then sleeps that long (in
+# a child), ignoring SIGTERM (as does that child) with
+# $FAKE_REMOTE_IGNORE_TERM. It prints $FAKE_REMOTE_RESULT, else a successful result, and
+# exits $FAKE_REMOTE_EXIT (0 by default).
 # A login held in the Keychain (macOS), with no ~/.claude directory: when
 # $HOME/.fake-keychain-login exists and CLAUDE_CONFIG_DIR is unset, `auth
 # status` reports loggedIn true as the email in that file (profiles never
@@ -156,6 +169,45 @@ case "$1 $2" in
     [ -z "$CLAUDE_CONFIG_DIR" ] && rm -f "$HOME/.fake-keychain-login"
     [ -n "$FAKE_PER_DIR" ] && echo "$dir logout" >> "$HOME/auth.log"
     echo "Successfully logged out." ;;
+  "-p --output-format")
+    printf '%s\n' "$@" > "$HOME/remote-args"
+    cat > "$HOME/remote-stdin"
+    pwd -P > "$HOME/remote-cwd"
+    ls -ld . > "$HOME/remote-cwd-mode"
+    echo "$$" > "$HOME/remote-pid.tmp" && mv "$HOME/remote-pid.tmp" "$HOME/remote-pid"
+    : > "$HOME/remote-env"
+    for v in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX ANTHROPIC_BASE_URL CLAUDE_CODE_ENABLE_CFC; do
+      eval "[ -n \"\${$v+x}\" ]" && echo "$v" >> "$HOME/remote-env"
+    done
+    echo "CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR-unset}" >> "$HOME/remote-env"
+    mcp=""; prev=""
+    for a in "$@"; do [ "$prev" = "--mcp-config" ] && mcp="$a"; prev="$a"; done
+    cp -p "$mcp" "$HOME/remote-mcp.json"
+    if [ -n "$FAKE_REMOTE_CALL" ]; then
+      server=$(sed 's/.*"command":"\([^"]*\)".*/\1/' "$mcp")
+      args=$(sed 's/.*"args":\[\([^]]*\)\].*/\1/' "$mcp" | tr ',' '\n' | sed 's/^"//; s/"$//')
+      set -f; old_ifs=$IFS; IFS='
+'
+      set -- $args
+      IFS=$old_ifs; set +f
+      fifo="$HOME/remote-mcp-in"; rm -f "$fifo"; mkfifo "$fifo"
+      "$server" "$@" < "$fifo" > "$HOME/remote-mcp-out" &
+      srv=$!
+      exec 3> "$fifo"
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}' \
+        '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"run\",\"arguments\":{\"command\":\"$FAKE_REMOTE_CALL\"}}}" >&3
+      i=0
+      while ! grep -q '"id":2' "$HOME/remote-mcp-out" && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done
+      exec 3>&-
+      wait "$srv"
+    fi
+    [ -n "$FAKE_REMOTE_IGNORE_TERM" ] && trap '' TERM
+    if [ -n "$FAKE_REMOTE_SLEEP" ]; then sleep "$FAKE_REMOTE_SLEEP" & wait; fi
+    if [ -n "$FAKE_REMOTE_RESULT" ]; then printf '%s\n' "$FAKE_REMOTE_RESULT"
+    else echo '{"type":"result","subtype":"success","is_error":false,"num_turns":2,"total_cost_usd":0.0123,"result":"fake report","permission_denials":[]}'
+    fi
+    exit "${FAKE_REMOTE_EXIT:-0}" ;;
   "plugin-root "*) echo "plugin root: ${CLAUDE_CODE_PLUGIN_CACHE_DIR:-unset}" ;;
   *) echo "fake claude $*" ;;
 esac
@@ -191,10 +243,36 @@ exit 44
 /// can't be resolved (exit 255). A host whose name ends in `-flaky` is
 /// served from its sandbox, except a refresh (a command with `--only`),
 /// which can't connect (exit 255).
+///
+/// `mcc remote`'s commands (#142) come in the hardened form instead: `-n`,
+/// the twelve `-o` options of `machines::agent_ssh_args` in their order,
+/// `--`, the host, then the command as one word (else exit 98). For those
+/// it appends the names of the credential, Claude Code and mcc variables
+/// it was given to $HOME/ssh-env.log, then runs the command with `sh -c` in
+/// the host's sandbox folder (HOME there, a bare PATH); host `down` can't
+/// be reached (exit 255).
 const FAKE_SSH: &str = r#"#!/bin/sh
 tab=$(printf '\t'); line=ssh
 for a in "$@"; do line="$line$tab$a"; done
 printf '%s\n' "$line" >> "$HOME/ssh.log"
+if [ "$1" = "-n" ]; then
+  want="-n -o BatchMode=yes -o ConnectTimeout=10 -o ForwardAgent=no -o ForwardX11=no -o ForwardX11Trusted=no -o ClearAllForwardings=yes -o GSSAPIDelegateCredentials=no -o PermitLocalCommand=no -o RequestTTY=no -o ControlMaster=no -o ControlPath=none -o RemoteCommand=none --"
+  got=""; n=0
+  for a in "$@"; do n=$((n+1)); [ $n -le 26 ] && got="$got${got:+ }$a"; done
+  if [ $# -ne 28 ] || [ "$got" != "$want" ]; then
+    echo "fake ssh: unexpected arguments: $*" >&2; exit 98
+  fi
+  shift 26; host="$1"; cmd="$2"
+  touch "$HOME/ssh-env.log"
+  for v in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CONFIG_DIR CLAUDE_CODE_ENABLE_CFC MCC_HOME MCC_SSH_BIN; do
+    eval "[ -n \"\${$v+x}\" ]" && echo "$v" >> "$HOME/ssh-env.log"
+  done
+  case "$host" in down) echo "ssh: connect to host down port 22: Connection refused" >&2; exit 255 ;; esac
+  [ -f "$HOME/ssh-hosts/$host" ] || { echo "ssh: Could not resolve hostname $host" >&2; exit 255; }
+  root=$(cat "$HOME/ssh-hosts/$host")
+  cd "$root" || exit 255
+  exec env -i HOME="$root" PATH="/usr/bin:/bin" USER=remote-user sh -c "$cmd"
+fi
 if [ $# -ne 7 ] || [ "$1" != "-o" ] || [ "$2" != "BatchMode=yes" ] || [ "$3" != "-o" ] || [ "$5" != "--" ]; then
   echo "fake ssh: unexpected arguments: $*" >&2; exit 98
 fi

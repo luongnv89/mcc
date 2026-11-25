@@ -17,6 +17,7 @@ mod paths;
 mod pick;
 mod plugins;
 mod refresh;
+mod remote_tool;
 mod settings_sync;
 mod shell;
 mod txn;
@@ -197,6 +198,16 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         commands::launch_sync::run(&args.alias);
         return Ok(());
     }
+    if let Command::RemoteTool(args) = &command {
+        // Started by Claude Code for `mcc remote`: no config, no lock, no
+        // first-run setup, and logging (only its flags) only into an
+        // existing ~/.mcc/logs. Its stdout is the MCP channel.
+        if let Ok(paths) = paths::Paths::from_env() {
+            log::init_if_present(paths.log_file);
+            log_invocation();
+        }
+        return remote_tool::run(args);
+    }
     let paths = paths::Paths::from_env()?;
     if let Command::Doctor(args) = &command {
         // Read-only, even on first use: no lock, no first-run setup, and
@@ -225,12 +236,16 @@ fn run(cli: Cli) -> anyhow::Result<()> {
 
     let explicit_init = matches!(command, Command::Init(_));
     // `<alias> --mcc-share`, `mcc run` and `mcc env` (direnv) run on every
-    // launch, and `mcc exec` must not hold the lock its command may need:
-    // keep them free of setup.
+    // launch, and `mcc exec` and `mcc remote` must not hold the lock their
+    // commands may need: keep them free of setup.
     let launch = matches!(&command, Command::Share(a) if a.from_launch)
         || matches!(
             command,
-            Command::Run(_) | Command::Env(_) | Command::Exec(_) | Command::Devin(_)
+            Command::Run(_)
+                | Command::Env(_)
+                | Command::Exec(_)
+                | Command::Devin(_)
+                | Command::Remote(_)
         );
     // Held from before the config is loaded until mcc exits, so concurrent
     // runs never lose each other's changes.
@@ -334,6 +349,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Run(args) => commands::run::run(&paths, &cfg, &args),
         Command::Env(args) => commands::env::run(&paths, &cfg, &args),
         Command::Exec(args) => commands::exec::run(&paths, &cfg, &args),
+        Command::Remote(args) => commands::remote::run(&paths, &cfg, &args),
         Command::Devin(args) => commands::devin::run(&paths, &args),
         Command::RefreshLaunchers(args) => commands::refresh_launchers::run(&paths, &cfg, &args),
         Command::Statusline(args) => commands::statusline::run(&paths, &cfg, &args),
@@ -342,7 +358,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         | Command::Doctor(_)
         | Command::Here
         | Command::LaunchBanner(_)
-        | Command::LaunchSync(_) => {
+        | Command::LaunchSync(_)
+        | Command::RemoteTool(_) => {
             unreachable!("handled above")
         }
     }
@@ -450,6 +467,10 @@ fn writes_config(command: &Command) -> bool {
         Command::Env(_) | Command::Exec(_) => false,
         // Starts the Devin CLI; never writes the config.
         Command::Devin(_) => false,
+        // Never locked: Claude Code runs for as long as the task takes, and
+        // its tool is routed before the lock is taken. Neither writes the
+        // config.
+        Command::Remote(_) | Command::RemoteTool(_) => false,
     }
 }
 
@@ -471,13 +492,19 @@ fn log_invocation() {
 /// argument holding something shaped like an API key (`sk-ant-`, #132),
 /// whatever flag it follows. clap accepts only the exact long option (no
 /// prefixes, no short form). Arguments after `--` are redacted the same
-/// way, which only hides more.
+/// way, which only hides more. The task of `mcc remote` (#142), every
+/// word after its PROFILE and MACHINE, becomes `<task redacted>`.
 fn redact_args(args: impl IntoIterator<Item = String>) -> Vec<String> {
     const VALUE_FLAGS: [&str; 2] = ["--email", "--api-key-helper"];
+    let args: Vec<String> = args.into_iter().collect();
+    let task = remote_task_words(&args);
     let mut redact_next = false;
     args.into_iter()
-        .map(|arg| {
-            if std::mem::take(&mut redact_next) || api_key::looks_like_key(&arg) {
+        .zip(task)
+        .map(|(arg, task)| {
+            if task {
+                "<task redacted>".to_string()
+            } else if std::mem::take(&mut redact_next) || api_key::looks_like_key(&arg) {
                 if let Some(flag) = VALUE_FLAGS
                     .iter()
                     .find(|f| arg.starts_with(&format!("{f}=")))
@@ -498,6 +525,36 @@ fn redact_args(args: impl IntoIterator<Item = String>) -> Vec<String> {
             }
         })
         .collect()
+}
+
+/// Which of `args` are the task of `mcc remote`: every positional word
+/// after PROFILE and MACHINE (all words after `--` are positional), but
+/// not the values of its flags. None for any other command.
+fn remote_task_words(args: &[String]) -> Vec<bool> {
+    const VALUE_FLAGS: [&str; 3] = ["--task-file", "--max-turns", "--timeout"];
+    let mut task = vec![false; args.len()];
+    let Some(at) = args.iter().position(|a| !a.starts_with('-')) else {
+        return task;
+    };
+    if args[at] != "remote" {
+        return task;
+    }
+    let (mut positionals, mut skip_value, mut only_positionals) = (0, false, false);
+    for (i, arg) in args.iter().enumerate().skip(at + 1) {
+        if std::mem::take(&mut skip_value) {
+            continue;
+        }
+        let positional = only_positionals || arg == "-" || !arg.starts_with('-');
+        if positional {
+            positionals += 1;
+            task[i] = positionals > 2;
+        } else if arg == "--" {
+            only_positionals = true;
+        } else {
+            skip_value = VALUE_FLAGS.contains(&arg.as_str());
+        }
+    }
+    task
 }
 
 /// Ctrl+C exits with 130, except while `claude auth login` owns the terminal
@@ -585,6 +642,65 @@ mod tests {
             super::redact_keys("unexpected argument 'sk-ant-x=' found", &keys),
             "unexpected argument '[redacted]' found"
         );
+    }
+
+    /// #142: the task never reaches mcc.log, whatever its form; the
+    /// profile, the machine and the flags' values stay.
+    #[test]
+    fn redacts_the_task_of_mcc_remote() {
+        assert_eq!(
+            redact(&["remote", "work", "box", "rm -rf /tmp/x"]),
+            ["remote", "work", "box", "<task redacted>"]
+        );
+        assert_eq!(
+            redact(&[
+                "-v",
+                "remote",
+                "--max-turns",
+                "5",
+                "work",
+                "--timeout=60",
+                "box",
+                "do it",
+                "--json"
+            ]),
+            [
+                "-v",
+                "remote",
+                "--max-turns",
+                "5",
+                "work",
+                "--timeout=60",
+                "box",
+                "<task redacted>",
+                "--json"
+            ]
+        );
+        assert_eq!(
+            redact(&["remote", "work", "box", "--task-file", "secret plan.md"]),
+            ["remote", "work", "box", "--task-file", "secret plan.md"]
+        );
+        assert_eq!(
+            redact(&["remote", "work", "box", "--", "--max-turns", "two words"]),
+            [
+                "remote",
+                "work",
+                "box",
+                "--",
+                "<task redacted>",
+                "<task redacted>"
+            ]
+        );
+        assert_eq!(
+            redact(&["remote", "work", "box", "-"]),
+            ["remote", "work", "box", "<task redacted>"]
+        );
+        // Another command's third word is not a task.
+        assert_eq!(
+            redact(&["exec", "work", "--", "echo", "hi"]),
+            ["exec", "work", "--", "echo", "hi"]
+        );
+        assert_eq!(redact(&["remote", "work"]), ["remote", "work"]);
     }
 
     #[test]

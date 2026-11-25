@@ -75,6 +75,15 @@ macro_rules! machines_disclosure {
 }
 pub(crate) use machines_disclosure;
 
+/// Printed on stderr by every `mcc remote` run (#142). A macro so the
+/// help text below can include it verbatim.
+macro_rules! remote_disclosure {
+    () => {
+        "ⓘ mcc remote sends no login or token to the machine. Claude Code runs here, as the profile, with no tools of its own: it can only run commands on the machine through mcc, over SSH with your own key and config, as the remote user. What Claude knows (the task, the profile's CLAUDE.md, earlier output) can reach the machine in those commands, and output from the machine can steer Claude. A command may keep running there after mcc stops."
+    };
+}
+pub(crate) use remote_disclosure;
+
 const ABOUT: &str = "mcc — run several Claude Code accounts side by side.
 
 Each profile is a separate Claude Code config directory (CLAUDE_CONFIG_DIR)
@@ -104,6 +113,8 @@ Examples:
   mcc here                       Which profile (account) `mcc run` starts in this directory, and why
   mcc run                        Start Claude Code with this project's profile
   eval \"$(mcc env)\"              Point CLAUDE_CONFIG_DIR at this project's profile
+  mcc remote work box \"free disk space\"
+                                 Have `work` do a task on machine `box` over SSH (no Claude Code there)
   mcc exec --all -- claude plugin marketplace update
   mcc statusline install         Show the profile in Claude Code's status line, cache rate limits
   mcc refresh-launchers          Update older launchers so `<alias> --mcc-share` works
@@ -560,6 +571,47 @@ pub enum Command {
         "Ctrl+C stops at the current profile. mcc holds no lock while the command runs, so it may run mcc itself."
     ))]
     Exec(ExecArgs),
+
+    /// Have a profile do a task on another machine over SSH (Claude Code runs here)
+    #[command(after_help = concat!(
+        "Examples:\n",
+        "  mcc remote work box \"free disk space under /var/log, then report what you removed\"\n",
+        "  mcc remote work box --task-file deploy.md --max-turns 50 --timeout 1800\n",
+        "  echo \"check that nginx answers on port 80\" | mcc remote work web -\n",
+        "  mcc remote work box \"list failed systemd units\" --json | jq -r .result\n",
+        "\n",
+        "MACHINE is a [machines.NAME] in ~/.mcc/config.toml (`mcc config edit`), whose host is\n",
+        "what ssh connects to. It needs only sshd and a shell: no Claude Code, no mcc.\n",
+        "Claude Code runs here as PROFILE in headless mode (`claude -p`) with no tools of\n",
+        "its own and one MCP tool, served by mcc: `run`, which runs one command on the\n",
+        "machine through ssh (-o BatchMode=yes; no agent, X11 or port forwarding, no\n",
+        "Kerberos credential delegation, no TTY) and returns its exit status and output.\n",
+        "Claude Code's permission mode (dontAsk) refuses every other tool. mcc first\n",
+        "checks that `ssh HOST true` works without a prompt; if it doesn't, it says why\n",
+        "and Claude Code is not started.\n",
+        "\n",
+        "Claude's closing report goes to stdout (with --json, Claude Code's whole result),\n",
+        "then a summary on stderr: how the run ended, its turns and cost, how many commands\n",
+        "ran on the machine and how many failed, and each tool call that was refused.\n",
+        "Exit status: 0 when Claude Code's run finished without an error (whether the\n",
+        "task itself succeeded is for Claude's report to say); 1 when Claude Code reports\n",
+        "an error (such as error_max_turns) or its result can't be read, or the machine\n",
+        "can't be reached; Claude Code's own status when it fails; 124 after --timeout;\n",
+        "130 on Ctrl+C, 143 on SIGTERM, 129 on SIGHUP and 131 on SIGQUIT (Ctrl+\\)\n",
+        "(Claude Code and its commands are stopped first). Ctrl+Z suspends Claude Code\n",
+        "and its ssh with mcc, and `fg` resumes them; a command already running on the\n",
+        "machine goes on there, and the time suspended doesn't count against --timeout.\n",
+        "The task is never written to mcc's log.\n",
+        "\n",
+        "Every run prints this note on stderr:\n",
+        "\n",
+        remote_disclosure!()
+    ))]
+    Remote(RemoteArgs),
+
+    /// The `run` tool `mcc remote` gives Claude Code (an MCP server on stdio)
+    #[command(name = "remote-tool", hide = true)]
+    RemoteTool(RemoteToolArgs),
 
     /// Show the active profile in Claude Code's status line and cache its rate limits (opt-in)
     #[command(
@@ -1075,6 +1127,54 @@ pub struct ExecArgs {
     /// The command and its arguments, after `--`
     #[arg(last = true, required = true, value_name = "COMMAND")]
     pub command: Vec<OsString>,
+}
+
+#[derive(Debug, Args)]
+pub struct RemoteArgs {
+    /// Profile Claude Code runs as (`default` or `claude` for ~/.claude)
+    pub profile: String,
+
+    /// Machine to work on: a [machines.NAME] in ~/.mcc/config.toml
+    pub machine: String,
+
+    /// The task, in plain words; `-` reads it from stdin
+    #[arg(required_unless_present = "task_file", conflicts_with = "task_file")]
+    pub task: Option<String>,
+
+    /// Read the task from this file instead
+    #[arg(long, value_name = "PATH")]
+    pub task_file: Option<PathBuf>,
+
+    /// The most turns Claude Code may take
+    #[arg(long, value_name = "N", default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..))]
+    pub max_turns: u32,
+
+    /// Stop the whole run after this many seconds (exit 124)
+    #[arg(long, value_name = "SECS", value_parser = clap::value_parser!(u64).range(1..))]
+    pub timeout: Option<u64>,
+
+    /// Print Claude Code's whole result as JSON on stdout, instead of its report
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct RemoteToolArgs {
+    /// The ssh program, as an absolute path
+    #[arg(long, value_name = "ABS_PATH")]
+    pub ssh: PathBuf,
+
+    /// What ssh connects to
+    #[arg(long)]
+    pub host: String,
+
+    /// Where each command's exit status is recorded (never the command)
+    #[arg(long, value_name = "FILE")]
+    pub log: PathBuf,
+
+    /// How long one command may run before ssh is stopped
+    #[arg(long, value_name = "SECS", default_value_t = crate::remote_tool::COMMAND_TIMEOUT_SECS, value_parser = clap::value_parser!(u64).range(1..))]
+    pub command_timeout: u64,
 }
 
 #[derive(Debug, Args)]

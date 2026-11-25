@@ -157,7 +157,7 @@ No. `mcc run` asks you to wait (the default), start it anyway, or pick a profile
 Not their tokens, by default: usage comes from the opt-in `mcc statusline` cache, and `mcc usage` reads only each login's deadline (one timestamp) to warn before it runs out; see [Login expiry](#login-expiry-and-mcc-login). Live lookup (`[usage] live = true` or `mcc usage --all`) reads tokens and says so; see [Live usage lookup](#live-usage-lookup-opt-in).
 
 **Does mcc store any credential?**
-One: the key of an [API-key profile](#api-key-profiles) you add with `--api-key-stdin` or `--api-key-prompt`. mcc writes it once to a `0600` file under `~/.mcc/keys` and never reads it again; Claude Code reads it through the profile's `apiKeyHelper`. With `--api-key-helper` mcc stores nothing. mcc never reads or moves a Claude subscription login.
+One: the key of an [API-key profile](#api-key-profiles) you add with `--api-key-stdin` or `--api-key-prompt`. mcc writes it once to a `0600` file under `~/.mcc/keys` and never reads it again; Claude Code reads it through the profile's `apiKeyHelper`. With `--api-key-helper` mcc stores nothing. mcc never reads or moves a Claude subscription login. [`mcc remote`](#run-a-task-on-another-machine-mcc-remote) sends no login or token to the other machine either: Claude Code runs on this one.
 
 **Does mcc change my default `~/.claude`?**
 `mcc default PROFILE` and `mcc default --new` change the account it is signed in to, after asking (they run `claude auth logout` and `claude auth login`; mcc never copies a credential). Otherwise only `mcc statusline install` and `uninstall` write to it, with a backup, `mcc sync` takes [a setting changed in a profile](#settings-synced-key-by-key) into its `settings.json` (backed up first to `~/.claude/.mcc-backup/<timestamp>/`), and `mcc add` creates it if missing. Linked items and shared plugins write through to it by design.
@@ -306,6 +306,7 @@ mcc delete job              # remove it completely
 | `mcc run [-- CLAUDE_ARGS]` | Start Claude Code with the current project's profile; at its limit, ask whether to wait (the default) or start it anyway | `--profile NAME`, `--dry-run` |
 | `mcc env [PROFILE]` | Print the shell line that sets `CLAUDE_CONFIG_DIR` for the project's profile (or PROFILE), for `eval` or direnv (see [Using a project's profile everywhere](#using-a-projects-profile-everywhere-mcc-env-and-mcc-exec)) | `--shell zsh\|bash\|fish` |
 | `mcc exec PROFILE -- CMD...` | Run a command with a profile's `CLAUDE_CONFIG_DIR` and return its exit status; `--all` runs it once per profile and reports each result | `--all` |
+| `mcc remote PROFILE MACHINE [TASK]` | Have PROFILE do a task on a machine under `[machines]` over SSH: Claude Code runs here, headless, and its one tool runs commands there; the machine needs only sshd and a shell (see [Run a task on another machine](#run-a-task-on-another-machine-mcc-remote)) | `--task-file PATH`, `--max-turns N`, `--timeout SECS`, `--json` |
 | `mcc config get\|set\|edit\|path` | Read or change `~/.mcc/config.toml` without hand-editing TOML; `set` and `edit` check values and leave the file unchanged when one is invalid (see [Changing settings](#changing-settings-mcc-config)) | `get KEY`, `set KEY VALUE`, `edit`, `path` |
 | `mcc statusline install` | Opt-in: show the active profile in Claude Code's status line and cache each profile's rate limits (see [Status line](#status-line-mcc-statusline)); it edits the default profile's `settings.json`; also `uninstall` | `--prefix`, `-y/--yes` |
 | `mcc refresh-launchers [ALIAS...]` | Rewrite launchers and shell aliases from the current templates (all profiles when none are given); needed once so `<alias> --mcc-share` and [auto sync](#auto-sync) work for profiles made by an older mcc, and after turning the [launch banner](#launch-banner-opt-in) or auto sync on or off (launchers call them only while they are on) | |
@@ -786,6 +787,33 @@ mcc = "/home/me/.cargo/bin/mcc"     # optional: mcc's full path there
 - **What reads only this machine:** `mcc usage PROFILE`, `--json` (schema 1), `--only`, and `MCC_NO_USAGE=1`. `--json-v2` adds `updated_at` (this machine's own last update, from its own numbers; `null` when it has none) and a `machines` key after `profiles`: `[{"name", "host", "updated_at", "error", "profiles": [...]}]`, and each profile row gains `account_id` and `also_on`. Rows keep `account` null for other machines whatever `show_email` says.
 
 The first `mcc usage` that reads other machines explains this on stderr once, and records when as `machines_disclosed_at` under `[usage]`.
+
+</details>
+
+##### Run a task on another machine: `mcc remote`
+
+<details>
+<summary>A profile works on a server, a deployment target or a lab box that has no Claude Code</summary>
+
+```sh
+mcc remote work lab "free disk space under /var/log, then report what you removed"
+mcc remote work lab --task-file deploy.md --max-turns 50 --timeout 1800
+echo "check that nginx answers on port 80" | mcc remote work web -
+mcc remote work lab "list failed systemd units" --json | jq -r .result
+```
+
+`lab` is a machine under [`[machines]`](#multiple-machines), set up as for `mcc usage`; `mcc` there is not used. The machine needs only sshd and a shell for your SSH user: no Claude Code, no mcc, no login.
+
+- **How it works.** Claude Code runs on this machine, as the profile, in its documented [headless mode](https://code.claude.com/docs/en/headless) (`claude -p`), with the task on stdin. It has no tools of its own and one [MCP](https://code.claude.com/docs/en/mcp) tool, `run`, which mcc serves itself (`--mcp-config` with `--strict-mcp-config`, so no other MCP server loads). `run` runs one command on the machine through `ssh -n -o BatchMode=yes -o ConnectTimeout=10` with agent, X11 and port forwarding and Kerberos credential delegation off, no TTY, no shared connection and no `RemoteCommand`, the command as one word after `--` and the host, and returns its exit status, stdout and stderr (256 KiB of each at most); a command still running after 10 minutes is stopped here. `--allowedTools mcp__mcc-remote__run` with [`--permission-mode dontAsk`](https://code.claude.com/docs/en/permissions) and `--permission-prompts none` means Claude Code refuses any other tool without asking. Claude Code also loads only your user settings, no hooks and no saved session, and runs from a private folder under `~/.mcc/state/remote/` that mcc removes afterwards. `--permission-prompts` needs Claude Code v2.1.259 or later.
+- **Before it starts**, mcc checks the machine with `ssh HOST true` the same way. If that fails it says why (no key login without a prompt, no answer in time, a shell that can't run `true`) and Claude Code doesn't start.
+- **How it ended.** Claude's closing report goes to stdout (`--json`: Claude Code's whole result as JSON), then a summary on stderr: `✓ lab: success, 4 turns, $0.0420, 3 remote commands (0 failed)`, and a `refused:` line for each tool call Claude Code refused. There, `success` is how Claude Code's run ended: without an error. Whether the task itself succeeded is for Claude's report to say. Exit status: `0` when Claude Code's run finished without an error; `1` when Claude Code reports an error (such as `error_max_turns`: raise `--max-turns`, 30 by default) or its result can't be read, or the machine can't be reached; Claude Code's own status when it fails; `124` after `--timeout SECS`; `130` on Ctrl+C, `143` on SIGTERM, `129` on SIGHUP, `131` on SIGQUIT (`Ctrl+\`). An unknown profile or machine exits `2`, a host that isn't plain letters, digits and `._@:-` exits `3`, and no `claude` here exits `127`.
+- **Stopping.** `--timeout`, Ctrl+C, SIGTERM, SIGHUP and SIGQUIT (`Ctrl+\`) stop Claude Code, its tool and every `ssh` they started. A command already running on the machine may keep running there: check before running the task again. Ctrl+Z suspends Claude Code, its tool and their `ssh` with mcc, and `fg` (or `bg`) resumes them; a command already running on the machine goes on there meanwhile, and the time suspended doesn't count against `--timeout`.
+- **What it sends where.** mcc sends no login or token to the machine. The task goes to Claude Code on stdin, so to Anthropic as any Claude Code prompt; it never reaches mcc's log, which records only the profile, the machine and how the run ended. The commands Claude writes go to the machine over SSH, with your own key and config, as the remote user, and ssh gets only the variables it needs (`PATH`, `HOME`, `USER`, `LOGNAME`, `LANG`, `LC_*`, `TMPDIR`, `XDG_RUNTIME_DIR`, `KRB5CCNAME`, `SSH_*` but `SSH_ASKPASS*`).
+- **Limits.** Whatever Claude knows (the task, the profile's `CLAUDE.md`, earlier output) can reach the machine in a command, and output from the machine can steer Claude (prompt injection): use it on machines and tasks you trust, with an SSH user that has only the rights the task needs. Claude Code can't read or change files on this machine during the run. Each command is a new SSH session, so the working directory and variables don't carry over.
+
+This is not Claude Code Desktop's [SSH sessions](https://code.claude.com/docs/en/desktop), which install Claude Code on the remote machine, nor `claude setup-token`, which moves a credential, nor Remote Control, which runs a session here and shows it elsewhere. Every run prints this note on stderr (also in `mcc help remote`):
+
+> ⓘ mcc remote sends no login or token to the machine. Claude Code runs here, as the profile, with no tools of its own: it can only run commands on the machine through mcc, over SSH with your own key and config, as the remote user. What Claude knows (the task, the profile's CLAUDE.md, earlier output) can reach the machine in those commands, and output from the machine can steer Claude. A command may keep running there after mcc stops.
 
 </details>
 

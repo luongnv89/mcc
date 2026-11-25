@@ -26,6 +26,10 @@ const RESERVED_NAMES: &[&str] = &[
     "doctor",
     // `mcc devin`, and the Devin CLI's own command (#124).
     "devin",
+    // `mcc remote` (#142), whose runs keep their folders in
+    // ~/.mcc/state/remote, beside the profiles' own state.
+    "remote",
+    "remote-tool",
     crate::shell::PATH_BLOCK,
 ];
 
@@ -410,6 +414,15 @@ mod tests {
             devin.iter().any(|c| c.reason.contains("reserved by mcc")),
             "{devin:?}"
         );
+
+        // #142: `mcc remote` and its tool, and its folder in ~/.mcc/state.
+        for name in ["remote", "remote-tool"] {
+            let found = conflicts(name, &paths, &cfg, None);
+            assert!(
+                found.iter().any(|c| c.reason.contains("reserved by mcc")),
+                "{name}: {found:?}"
+            );
+        }
 
         // A renamed profile keeps its directory and may take its old name back.
         let own = paths.profile_dir("was");
