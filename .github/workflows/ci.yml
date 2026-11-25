@@ -1,58 +1,145 @@
 name: CI
 
+# Format, lint, the test suite and the CLI end-to-end run happen in git hooks
+# (.pre-commit-config.yaml), before a commit or push leaves a machine. CI
+# keeps what a laptop cannot do:
+#   hooks       pull requests: both hook stages again, over the PR's diff, so
+#               a commit or push made with --no-verify is still checked
+#   test        pushes to main: the whole suite on clean Linux and macOS VMs;
+#               its caches are the ones pull requests restore
+#   brew-audit  the Homebrew formula, on a clean macOS VM
+# Release builds are in release.yml.
+
 on:
   push:
+    branches: [main]
   pull_request:
+    branches: [main]
 
 permissions:
   contents: read
 
+# A new push to a PR cancels its superseded run. Other events have no PR number,
+# fall back to their unique run ID, and are never cancelled.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # PRs are where bypassed commits enter. Gating the job on `pull_request` also
+  # avoids `github.event.before`, which is all zeros on a branch's first push.
+  hooks:
+    name: Verify hooks were not bypassed
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # A public repo runs one parallel leg per hook stage. Anything not
+        # provably public gets one leg, commit stage first.
+        stages: ${{ fromJSON(github.event.repository.visibility == 'public' && '["pre-commit", "pre-push"]' || '["pre-commit pre-push"]') }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The diff-scoped run needs the base SHA: full history, with file
+          # contents fetched only for this commit.
+          fetch-depth: 0
+          filter: blob:none
+
+      # The hooks are `language: system`: they shell out to this toolchain.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      # The key of the `test` job, whose runs on main seed it.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      # pre-commit is a Python tool; the runner's system Python can refuse
+      # `pip install` under PEP 668.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Cache pre-commit environments
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('.pre-commit-config.yaml') }}
+
+      # A PR must not loosen the rules that judge it. When it changes hook
+      # config, a workflow or a hook script, run the stage(s) with the base
+      # branch's config first, before any hook the PR controls can run.
+      - name: Re-run the base branch's hooks if the PR changes them
+        run: |
+          export GIT_NO_REPLACE_OBJECTS=1
+          pip install pre-commit
+          base="${{ github.event.pull_request.base.sha }}"
+          gate="$RUNNER_TEMP/base-hook-gate.py"
+          git show "$base:scripts/base-hook-gate.py" > "$gate" 2>/dev/null || cp scripts/base-hook-gate.py "$gate"
+          python "$gate" --base "$base" ${{ matrix.stages || 'pre-commit pre-push' }}
+
+      # The only overlap with the local hooks, scoped to the diff. Every stage
+      # must run in some leg: `pre-commit run` alone runs the commit stage and
+      # silently skips the test suite and the end-to-end run.
+      - name: Run the hook stage(s) over the PR diff
+        run: |
+          pip install pre-commit
+          base="${{ github.event.pull_request.base.sha }}"
+          for stage in ${{ matrix.stages || 'pre-commit pre-push' }}; do
+            pre-commit run --hook-stage "$stage" --from-ref "$base" --to-ref HEAD
+          done
+
+  # The whole suite on the default branch, on both platforms mcc ships for.
+  # Pull requests restore the caches these runs save.
   test:
     name: test (${{ matrix.os }})
+    if: github.event_name == 'push'
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
       - name: cargo test
         run: cargo test --locked
 
-  lint:
-    name: clippy, fmt and shellcheck
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # The Linux leg also seeds the guard's pre-commit environments.
+      - if: runner.os == 'Linux'
+        uses: actions/setup-python@v7
         with:
-          components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
-      - name: cargo fmt --check
-        run: cargo fmt --check
-      - name: cargo clippy
-        run: cargo clippy --locked --all-targets -- -D warnings
-      - name: shellcheck install.sh
-        run: shellcheck install.sh
+          python-version: '3.12'
+      - if: runner.os == 'Linux'
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('.pre-commit-config.yaml') }}
+      - name: Install the pre-commit environments
+        if: runner.os == 'Linux'
+        run: pip install pre-commit && pre-commit install-hooks
 
   brew-audit:
     name: brew audit
     runs-on: macos-latest
+    timeout-minutes: 10
     env:
       HOMEBREW_NO_AUTO_UPDATE: 1
       HOMEBREW_NO_ANALYTICS: 1
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # `brew audit` only takes formulae by name, so serve the formula
       # from a throwaway local tap. No --online: a release commit points
       # `url` at a tag that is pushed after it (see the formula header).

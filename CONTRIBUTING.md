@@ -23,20 +23,29 @@ cargo build
 
 ## Running checks
 
-Run these before you open a pull request:
+The checks run from git hooks managed by [pre-commit](https://pre-commit.com). Install them once per clone:
 
 ```sh
-cargo test                                   # unit + integration tests
-cargo fmt --all -- --check                   # formatting
-cargo clippy --all-targets -- -D warnings    # lints
-shellcheck install.sh                        # installer script
+brew install pre-commit              # or: pip install pre-commit
+cargo install cargo-audit --locked
+pre-commit install && pre-commit install --hook-type pre-push
 ```
 
-CI (`.github/workflows/ci.yml`) runs the same checks on every push and pull request: `cargo test` on Linux and macOS, `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `shellcheck install.sh`, and `brew audit --strict` on `packaging/homebrew/mcc.rb`.
+- **On commit**, on the changed files: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `shellcheck`, `cargo audit` when `Cargo.toml` or `Cargo.lock` changes, and the skill's Python tests when `skills/mcc-accounts/` changes.
+- **On push**: `cargo test` (unit + integration tests) and `scripts/e2e_test.sh`, which runs every `mcc` command in a sandbox.
+
+To run them by hand:
+
+```sh
+pre-commit run --all-files                         # the commit checks
+pre-commit run --all-files --hook-stage pre-push   # the tests and the end-to-end run
+```
+
+Don't skip the hooks with `--no-verify`: CI (`.github/workflows/ci.yml`) runs both stages again over a pull request's diff. After a merge it runs `cargo test` on Linux and macOS, and `brew audit --strict` on `packaging/homebrew/mcc.rb` runs on pull requests and on `main`.
 
 The tests never touch your real `~/.claude`, rc files, or keychain, and never reach the network. The integration suite sets `MCC_HOME` to a temp dir, puts a fake `claude` script on `PATH`, points `MCC_SECURITY_BIN` at a fake `security` script, and points `MCC_USAGE_URL` at a refused loopback port or a local stub server. Keep new tests sandboxed the same way.
 
-The agent skill in `skills/mcc-accounts/` has its own Python tests, which CI does not run. If you change the skill, run them from the repo root (Python 3; some cases are skipped when `mcc` is not on `PATH`):
+The agent skill in `skills/mcc-accounts/` has its own Python tests. A hook runs them when you change the skill; to run them yourself, from the repo root (Python 3; some cases are skipped when `mcc` is not on `PATH`):
 
 ```sh
 python3 -m unittest skills/mcc-accounts/evals/test_mcc_whoami.py -v
@@ -49,9 +58,9 @@ The skill's sandboxed evals, which never touch a real account, are described in 
 
 1. Fork the repository and create a branch named `<type>/<issue>-<short-description>`, for example `fix/42-sync-dry-run-output`.
 2. Keep each pull request to one logical change.
-3. Add or update tests for any behavior change.
+3. Add or update tests for any behavior change. A new command also needs a check in `scripts/e2e_test.sh`, which fails without one.
 4. Update `README.md` when the change is visible to users (commands, options, output, environment variables).
-5. Make sure `cargo test`, `cargo fmt --all -- --check` and `cargo clippy --all-targets -- -D warnings` all pass.
+5. Make sure the commit and push hooks pass (see [Running checks](#running-checks)).
 
 ### Commit messages
 

@@ -4,10 +4,13 @@
 
 mod common;
 
-use common::{HOUR_MS, Sandbox, enable_live_usage, now_ms, seed_usage_cache, with_profile};
+#[cfg(target_os = "linux")]
+use common::{HOUR_MS, enable_live_usage, now_ms};
+use common::{Sandbox, seed_usage_cache, with_profile};
 use predicates::prelude::*;
 
 const CONFIG: &str = ".mcc/config.toml";
+#[cfg(target_os = "linux")]
 const BANNER: &str = "▶ work · Acme · 5h 42% · week 18%";
 
 fn sandbox() -> Sandbox {
