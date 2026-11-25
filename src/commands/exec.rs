@@ -24,8 +24,8 @@ use super::run::{self, Profile};
 
 /// Exit codes for a command that couldn't be started, as shells use them:
 /// not found, or found but not runnable (permissions, bad format).
-const EXIT_NOT_FOUND: i32 = 127;
-const EXIT_NOT_RUN: i32 = 126;
+pub(crate) const EXIT_NOT_FOUND: i32 = 127;
+pub(crate) const EXIT_NOT_RUN: i32 = 126;
 
 pub fn run(paths: &Paths, cfg: &Config, args: &ExecArgs) -> Result<()> {
     let all = run::profiles(cfg);
@@ -119,7 +119,7 @@ fn exit_code(status: ExitStatus) -> i32 {
         .unwrap_or(1)
 }
 
-fn not_started(shown: &str, err: std::io::Error) -> anyhow::Error {
+pub(crate) fn not_started(shown: &str, err: std::io::Error) -> anyhow::Error {
     let (code, hint) = match err.kind() {
         std::io::ErrorKind::NotFound => (
             EXIT_NOT_FOUND,

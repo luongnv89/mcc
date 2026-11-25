@@ -18,12 +18,20 @@
 //! account is matched across machines: [`select`] picks one row per
 //! account to look up live (`mcc usage --all`), and [`newest`] finds the
 //! latest numbers each account has on any machine.
+//!
+//! `mcc remote` (#142) runs other commands there: the ones Claude Code's
+//! single tool asks for ([`crate::remote_tool`]), each through
+//! [`agent_ssh_args`], a fixed, hardened ssh argument list, with only the
+//! environment ssh needs ([`EnvPolicy::Allowlist`]). [`preflight`] checks
+//! first that the machine takes them.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::io::Read;
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use serde::de::DeserializeOwned;
@@ -228,38 +236,306 @@ struct SshOutput {
 /// Run ssh for `args` on `m`, stopped after `timeout`. Both pipes are
 /// drained while it runs, so a long answer can't stall it.
 fn run_ssh(m: &Machine, args: &[String], timeout: Duration) -> Result<SshOutput, MachineError> {
-    let mut child = Command::new(ssh_bin())
-        .args(ssh_args(m, args))
+    let argv: Vec<OsString> = ssh_args(m, args).into_iter().map(OsString::from).collect();
+    let ran = run_raw(
+        &ssh_bin(),
+        &argv,
+        EnvPolicy::Inherit,
+        timeout,
+        MAX_REPLY,
+        None,
+    )
+    .map_err(|_| MachineError::NoSsh)?;
+    match ran.end {
+        End::Exited(code) => Ok(SshOutput {
+            code,
+            stdout: ran.stdout,
+            stderr: ran.stderr,
+        }),
+        End::TimedOut => Err(MachineError::TimedOut),
+        End::Stopped | End::Lost => Err(MachineError::Failed(1)),
+    }
+}
+
+/// Which environment a command started by [`run_raw`] gets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EnvPolicy {
+    /// mcc's own environment, unchanged (`mcc usage` on other machines).
+    Inherit,
+    /// Only what ssh needs to find the user's keys, agent and config
+    /// ([`allowed_env`]): no credential, no Claude Code or mcc variable.
+    Allowlist,
+}
+
+/// How a command started by [`run_raw`] ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum End {
+    /// It exited with this code (a signal counts as 128 + its number).
+    Exited(i32),
+    /// It ran past its timeout and was killed.
+    TimedOut,
+    /// The caller's stop flag was raised and it was killed.
+    Stopped,
+    /// Waiting for it failed.
+    Lost,
+}
+
+/// A command [`run_raw`] ran: how it ended, and the first `cap + 1` bytes
+/// of each of its outputs (so a caller can tell they were longer).
+pub(crate) struct Ran {
+    pub(crate) end: End,
+    pub(crate) stdout: Vec<u8>,
+    pub(crate) stderr: Vec<u8>,
+}
+
+/// How long a killed command's outputs are still read: a process it left
+/// behind may hold its pipes open for good.
+const DRAIN_GRACE: Duration = Duration::from_secs(2);
+
+/// Run `program` with `args` (an argument list, never a shell string),
+/// stdin closed and both outputs drained while it runs, so a long answer
+/// can't stall it. It is killed after `timeout`, or as soon as `stop`
+/// turns true. The error is the one that kept it from starting.
+pub(crate) fn run_raw(
+    program: &std::ffi::OsStr,
+    args: &[OsString],
+    env: EnvPolicy,
+    timeout: Duration,
+    cap: u64,
+    stop: Option<&AtomicBool>,
+) -> std::io::Result<Ran> {
+    let mut cmd = Command::new(program);
+    cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|_| MachineError::NoSsh)?;
+        .stderr(Stdio::piped());
+    if env == EnvPolicy::Allowlist {
+        cmd.env_clear().envs(allowed_env(std::env::vars_os()));
+    }
+    let mut child = cmd.spawn()?;
+    let (tx, rx) = mpsc::channel();
     let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let (shared, tx) = (Arc::clone(&buf), tx.clone());
         std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            if let Some(mut p) = pipe {
-                let _ = p.by_ref().take(MAX_REPLY + 1).read_to_end(&mut buf);
-                let _ = std::io::copy(&mut p, &mut std::io::sink());
+            if let Some(p) = pipe {
+                let mut p = p.take(cap + 1);
+                let mut chunk = [0u8; 8192];
+                while let Ok(n) = p.read(&mut chunk) {
+                    if n == 0 {
+                        break;
+                    }
+                    if let Ok(mut b) = shared.lock() {
+                        b.extend_from_slice(&chunk[..n]);
+                    }
+                }
+                let _ = std::io::copy(&mut p.into_inner(), &mut std::io::sink());
             }
-            buf
-        })
+            let _ = tx.send(());
+        });
+        buf
     };
     let out = drain(child.stdout.take().map(|p| Box::new(p) as _));
     let err = drain(child.stderr.take().map(|p| Box::new(p) as _));
-    let status = crate::refresh::wait_with_timeout(child, timeout);
-    let (stdout, stderr) = (
-        out.join().unwrap_or_default(),
-        err.join().unwrap_or_default(),
-    );
-    match status {
-        Ok(Some(s)) => Ok(SshOutput {
-            code: crate::refresh::exit_code(s),
-            stdout,
-            stderr,
-        }),
-        Ok(None) => Err(MachineError::TimedOut),
-        Err(_) => Err(MachineError::Failed(1)),
+    let start = Instant::now();
+    let end = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break End::Exited(crate::refresh::exit_code(status)),
+            Ok(None) => {}
+            Err(_) => break End::Lost,
+        }
+        let stopped = stop.is_some_and(|s| s.load(Ordering::SeqCst));
+        if stopped || start.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            break if stopped { End::Stopped } else { End::TimedOut };
+        }
+        std::thread::sleep(POLL);
+    };
+    // Wait for both outputs to close: at once for a command that exited;
+    // for a killed one, only a short grace, since a process it started may
+    // still hold them open.
+    let deadline = Instant::now() + DRAIN_GRACE;
+    for _ in 0..2 {
+        let closed = match end {
+            End::Exited(_) => rx.recv().is_ok(),
+            _ => rx
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .is_ok(),
+        };
+        if !closed {
+            break;
+        }
+    }
+    let take = |b: Arc<Mutex<Vec<u8>>>| {
+        b.lock()
+            .map(|mut v| std::mem::take(&mut *v))
+            .unwrap_or_default()
+    };
+    Ok(Ran {
+        end,
+        stdout: take(out),
+        stderr: take(err),
+    })
+}
+
+/// How often [`run_raw`] checks on its command.
+const POLL: Duration = Duration::from_millis(50);
+
+/// The variables of `vars` an agent's ssh keeps ([`EnvPolicy::Allowlist`]):
+/// what it needs to find the user, their keys and agent, their Kerberos
+/// ticket and a locale. Never a credential, nor anything Claude Code or mcc
+/// reads; `SSH_ASKPASS*` are left out too, so nothing can prompt.
+pub(crate) fn allowed_env(
+    vars: impl IntoIterator<Item = (OsString, OsString)>,
+) -> Vec<(OsString, OsString)> {
+    const KEPT: &[&str] = &[
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "LANG",
+        "TMPDIR",
+        "XDG_RUNTIME_DIR",
+        "KRB5CCNAME",
+    ];
+    vars.into_iter()
+        .filter(|(k, _)| {
+            let Some(k) = k.to_str() else { return false };
+            KEPT.contains(&k)
+                || k.starts_with("LC_")
+                || (k.starts_with("SSH_") && !k.starts_with("SSH_ASKPASS"))
+        })
+        .collect()
+}
+
+/// Why `host` can't be given to an agent's ssh ([`agent_ssh_args`]), if it
+/// can't: only letters, digits and `._@:-`, not starting with `-`. Stricter
+/// than [`Machine::check`]: no character a shell, ssh's `%` tokens or its
+/// pattern matching would read.
+pub(crate) fn check_agent_host(host: &str) -> std::result::Result<(), String> {
+    if host.is_empty() {
+        return Err(
+            "host is empty: set it to what `ssh` connects to, e.g. host = \"me@build-box\"".into(),
+        );
+    }
+    if host.starts_with('-') {
+        return Err(format!(
+            "host \"{host}\" starts with '-', which ssh would read as an option"
+        ));
+    }
+    if let Some(c) = host
+        .chars()
+        .find(|c| !(c.is_ascii_alphanumeric() || "._@:-".contains(*c)))
+    {
+        return Err(format!(
+            "host {host:?} contains {c:?}: `mcc remote` takes only letters, digits and . _ @ : - (a host name, user@host or a Host alias from your SSH config)"
+        ));
+    }
+    Ok(())
+}
+
+/// The ssh options of an agent's command after `BatchMode` and
+/// `ConnectTimeout`: no agent or X11 forwarding, no port forwarding, no
+/// local command, no TTY, no shared connection, and no `RemoteCommand`
+/// from the user's config replacing the command.
+const AGENT_SSH_HARDENING: &[&str] = &[
+    "ForwardAgent=no",
+    "ForwardX11=no",
+    "ForwardX11Trusted=no",
+    "ClearAllForwardings=yes",
+    "PermitLocalCommand=no",
+    "RequestTTY=no",
+    "ControlMaster=no",
+    "ControlPath=none",
+    "RemoteCommand=none",
+];
+
+/// The arguments ssh runs an agent's `command` on `host` with: `-n`, no
+/// prompt, [`CONNECT_TIMEOUT_SECS`] and [`AGENT_SSH_HARDENING`], `--`
+/// right before the host, then the command as one word, which the remote
+/// user's shell reads as a command line.
+pub(crate) fn agent_ssh_args(host: &str, command: &str) -> Vec<OsString> {
+    let mut args: Vec<OsString> = vec!["-n".into()];
+    let timeout = format!("ConnectTimeout={CONNECT_TIMEOUT_SECS}");
+    for opt in ["BatchMode=yes", &timeout]
+        .into_iter()
+        .chain(AGENT_SSH_HARDENING.iter().copied())
+    {
+        args.push("-o".into());
+        args.push(opt.into());
+    }
+    args.extend(["--".into(), host.into(), command.into()]);
+    args
+}
+
+/// The ssh program `mcc remote` runs, as an absolute path:
+/// `MCC_SSH_BIN` (absolute, or a name looked up on PATH), else `ssh` from
+/// PATH. It is handed to Claude Code's tool, which must not search PATH.
+pub(crate) fn resolve_ssh() -> anyhow::Result<std::path::PathBuf> {
+    let wanted = ssh_bin();
+    let wanted_path = std::path::Path::new(&wanted);
+    let found = if wanted_path.is_absolute() {
+        crate::fsutil::is_executable(wanted_path).then(|| wanted_path.to_path_buf())
+    } else if wanted_path.components().count() == 1 {
+        std::env::var_os("PATH").and_then(|path| {
+            std::env::split_paths(&path)
+                .map(|d| d.join(wanted_path))
+                .find(|p| p.is_absolute() && crate::fsutil::is_executable(p))
+        })
+    } else {
+        None
+    };
+    found.ok_or_else(|| {
+        crate::error::CliError {
+            code: crate::commands::exec::EXIT_NOT_FOUND,
+            message: format!(
+                "ssh ({}) was not found or is not executable",
+                wanted.to_string_lossy()
+            ),
+            hint: Some(
+                "install OpenSSH's ssh client, or set MCC_SSH_BIN to the full path of ssh".into(),
+            ),
+        }
+        .into()
+    })
+}
+
+/// How long the check that `host` takes an agent's commands may take.
+pub(crate) const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Check that `ssh` (absolute) reaches `host` and its shell runs `true`,
+/// the way an agent's commands will run there.
+pub(crate) fn preflight(ssh: &std::path::Path, host: &str) -> Result<(), MachineError> {
+    let ran = run_raw(
+        ssh.as_os_str(),
+        &agent_ssh_args(host, "true"),
+        EnvPolicy::Allowlist,
+        PREFLIGHT_TIMEOUT,
+        MAX_REPLY,
+        None,
+    )
+    .map_err(|_| MachineError::NoSsh)?;
+    match ran.end {
+        End::Exited(0) => Ok(()),
+        End::Exited(255) => Err(MachineError::Unreachable),
+        End::Exited(126 | 127) => Err(MachineError::NotFound),
+        End::Exited(code) => Err(MachineError::Failed(code)),
+        End::TimedOut => Err(MachineError::TimedOut),
+        End::Stopped | End::Lost => Err(MachineError::Failed(1)),
+    }
+}
+
+/// What a failed [`preflight`] of `host` means, and how to fix it.
+pub(crate) fn describe_preflight(err: &MachineError, name: &str, host: &str) -> String {
+    match err {
+        MachineError::NotFound => format!(
+            "the remote shell on {host} could not run `true` (exit 126 or 127): check the remote user's login shell"
+        ),
+        MachineError::Failed(code) => {
+            format!("`true` failed on {host} (exit {code}): check the remote user's login shell")
+        }
+        other => other.describe(name, host),
     }
 }
 
@@ -526,6 +802,148 @@ mod tests {
         assert_eq!(
             ssh_args(&plain, &usage_args(None))[6],
             "'mcc' 'usage' '--json-v2' '--machine-protocol'"
+        );
+    }
+
+    /// #142: the exact argv every agent command runs with, the command
+    /// one word after the host whatever it holds.
+    #[test]
+    fn agent_ssh_args_are_the_hardened_list_then_the_host_and_one_word() {
+        let cmd = r#"echo "$HOME" $(id) `x`; a | b > c 'q'"#;
+        let args = agent_ssh_args("me@lab-box", cmd);
+        let expected = [
+            "-n",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "ForwardAgent=no",
+            "-o",
+            "ForwardX11=no",
+            "-o",
+            "ForwardX11Trusted=no",
+            "-o",
+            "ClearAllForwardings=yes",
+            "-o",
+            "PermitLocalCommand=no",
+            "-o",
+            "RequestTTY=no",
+            "-o",
+            "ControlMaster=no",
+            "-o",
+            "ControlPath=none",
+            "-o",
+            "RemoteCommand=none",
+            "--",
+            "me@lab-box",
+            cmd,
+        ];
+        assert_eq!(args, expected.map(OsString::from));
+    }
+
+    #[test]
+    fn agent_hosts_are_plain_words() {
+        for ok in [
+            "lab",
+            "me@lab-box",
+            "10.0.0.7",
+            "lab_2.example.com",
+            "::1",
+            "a-b",
+        ] {
+            assert_eq!(check_agent_host(ok), Ok(()), "{ok}");
+        }
+        for (bad, why) in [
+            ("", "host is empty"),
+            ("-oProxyCommand=x", "starts with '-'"),
+            ("-", "starts with '-'"),
+            ("lab;id", "contains ';'"),
+            ("lab*", "contains '*'"),
+            ("lab box", "contains ' '"),
+            ("lab%h", "contains '%'"),
+            ("$(id)", "contains '$'"),
+            ("lab\n", "contains '\\n'"),
+            ("lab/x", "contains '/'"),
+            ("läb", "contains 'ä'"),
+        ] {
+            let err = check_agent_host(bad).unwrap_err();
+            assert!(err.contains(why), "{bad:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn the_agent_env_keeps_only_what_ssh_needs() {
+        let vars = [
+            "PATH",
+            "HOME",
+            "USER",
+            "LOGNAME",
+            "LANG",
+            "LC_ALL",
+            "LC_CTYPE",
+            "TMPDIR",
+            "XDG_RUNTIME_DIR",
+            "KRB5CCNAME",
+            "SSH_AUTH_SOCK",
+            "SSH_AGENT_PID",
+            "SSH_ASKPASS",
+            "SSH_ASKPASS_REQUIRE",
+            "DISPLAY",
+            "TERM",
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_BASE_URL",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "CLAUDE_CODE_ENABLE_CFC",
+            "CLAUDE_CONFIG_DIR",
+            "MCC_HOME",
+            "MCC_SSH_BIN",
+            "AWS_SECRET_ACCESS_KEY",
+        ]
+        .map(|k| (OsString::from(k), OsString::from("v")));
+        let kept: Vec<String> = allowed_env(vars)
+            .into_iter()
+            .map(|(k, _)| k.into_string().unwrap())
+            .collect();
+        assert_eq!(
+            kept,
+            [
+                "PATH",
+                "HOME",
+                "USER",
+                "LOGNAME",
+                "LANG",
+                "LC_ALL",
+                "LC_CTYPE",
+                "TMPDIR",
+                "XDG_RUNTIME_DIR",
+                "KRB5CCNAME",
+                "SSH_AUTH_SOCK",
+                "SSH_AGENT_PID",
+            ]
+        );
+    }
+
+    #[test]
+    fn preflight_failures_never_mention_mcc() {
+        for e in [
+            MachineError::NoSsh,
+            MachineError::Unreachable,
+            MachineError::TimedOut,
+            MachineError::NotFound,
+            MachineError::Failed(3),
+        ] {
+            let text = describe_preflight(&e, "lab", "me@lab");
+            assert!(!text.contains("mcc"), "{text}");
+            assert!(
+                text.contains("me@lab") || e == MachineError::NoSsh,
+                "{text}"
+            );
+        }
+        assert_eq!(
+            describe_preflight(&MachineError::Unreachable, "lab", "me@lab"),
+            "ssh could not connect to me@lab without a prompt: check that `ssh me@lab true` works with your key"
         );
     }
 

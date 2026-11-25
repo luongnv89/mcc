@@ -17,6 +17,7 @@ pub mod list;
 pub mod login;
 pub mod project;
 pub mod refresh_launchers;
+pub mod remote;
 pub mod rename;
 pub mod run;
 pub mod share;
