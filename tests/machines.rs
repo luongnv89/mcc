@@ -79,7 +79,14 @@ fn unruled(out: &str) -> String {
 }
 
 fn v2(sb: &Sandbox, stub: &UsageStub, args: &[&str]) -> serde_json::Value {
-    json(run(sb, stub, &[&["usage", "--json-v2"], args].concat()).as_bytes())
+    json(
+        run(
+            sb,
+            stub,
+            &[&["usage", "--json-v2", "--remote"], args].concat(),
+        )
+        .as_bytes(),
+    )
 }
 
 /// Machine `name` of a `--json-v2` answer.
@@ -128,7 +135,7 @@ fn every_machine_gets_its_own_table_next_to_this_ones() {
     local.add_machine("lab", "lab-host", Some(&lab), None);
     let stub = stub(&[]);
 
-    let out = table(&local, &stub, &["usage"]);
+    let out = table(&local, &stub, &["usage", "--remote"]);
     // T4: options first, then `--` right before the host.
     assert_eq!(
         local.ssh_log(),
@@ -237,10 +244,12 @@ fn all_refreshes_every_machine() {
     let o = local
         .mcc()
         .env("MCC_USAGE_URL", &stub.url)
-        .args(["usage", "--all", "--json-v2"])
+        .args(["usage", "--all", "--json-v2", "--remote"])
         .assert()
         .success()
-        .stderr(predicate::str::contains("--all also refreshes them"));
+        .stderr(predicate::str::contains(
+            "--all --remote also refreshes them",
+        ));
     let v = json(&o.get_output().stdout);
     assert_eq!(weekly(by_name(rows(&v), "default")), 11.0);
     assert_eq!(
@@ -325,7 +334,7 @@ fn an_account_signed_out_here_is_looked_up_where_its_login_still_works() {
     local.add_machine("box", "box-host", Some(&box_), None);
     local.add_machine("lab", "lab-host", Some(&lab), None);
     let stub = stub(&[]);
-    run(&local, &stub, &["usage", "--all", "--json-v2"]);
+    run(&local, &stub, &["usage", "--remote", "--all", "--json-v2"]);
     assert_eq!(stub.tokens(), ["tok-ann", "tok-dan-lab"]);
 }
 
@@ -388,7 +397,7 @@ fn a_machine_that_fails_shows_why_while_the_others_show() {
     local.add_machine("nowhere", "no-such-host", None, None);
     let stub = stub(&[]);
 
-    let out = table(&local, &stub, &["usage"]);
+    let out = table(&local, &stub, &["usage", "--remote"]);
     for line in [
         "down (down) · updated — · ssh could not connect to down without a prompt: check that `ssh down true` works with your key",
         "old (old) · updated — · the mcc on old is too old to share its usage: upgrade it there",
@@ -448,7 +457,7 @@ fn an_mcc_path_with_spaces_and_quotes_reaches_the_other_machine_whole() {
     // An mcc missing there says how to fix it.
     let other = machine(Some(("ann@example.com", "tok-1")), &[]);
     other.add_machine("lab", "lab-host", Some(&lab), Some("/nowhere/mcc"));
-    let out = run(&other, &stub, &["usage"]);
+    let out = run(&other, &stub, &["usage", "--remote"]);
     assert!(
         out.contains("no mcc on lab-host's PATH over SSH: set mcc = \"/full/path/to/mcc\" under [machines.lab]"),
         "{out}"
@@ -535,7 +544,7 @@ fn another_machine_reads_its_cache_and_never_its_own_machines() {
         assert_eq!(row["account"], serde_json::Value::Null, "{row}");
     }
     // --all asks lab for its accounts once, and lab still reads no machine.
-    run(&local, &stub, &["usage", "--all"]);
+    run(&local, &stub, &["usage", "--remote", "--all"]);
     assert_eq!(stub.tokens(), ["tok-1", "tok-2", "tok-3"]);
     assert!(lab.ssh_log().is_empty());
 }
@@ -546,11 +555,11 @@ fn reading_other_machines_is_explained_once() {
     let lab = machine(Some(("bob@example.com", "tok-2")), &[]);
     local.add_machine("lab", "lab-host", Some(&lab), None);
     let stub = stub(&[]);
-    let note = "mcc usage reads the other machines set up under [machines]";
+    let note = "mcc usage --remote reads the other machines set up under [machines]";
     let o = local
         .mcc()
         .env("MCC_USAGE_URL", &stub.url)
-        .args(["usage", "--json-v2"])
+        .args(["usage", "--json-v2", "--remote"])
         .assert()
         .success()
         .stderr(predicate::str::contains(note));
@@ -563,7 +572,7 @@ fn reading_other_machines_is_explained_once() {
     local
         .mcc()
         .env("MCC_USAGE_URL", &stub.url)
-        .arg("usage")
+        .args(["usage", "--remote"])
         .assert()
         .success()
         .stderr(predicate::str::contains(note).not());
@@ -681,6 +690,54 @@ fn without_machines_ssh_never_runs_and_nothing_changes() {
 }
 
 #[test]
+fn machines_are_read_only_with_remote() {
+    // SSH is slow: with machines set up, `mcc usage` (table, --json-v2 and
+    // --all) shows this machine alone, as before machines, unless --remote.
+    let local = machine(Some(("ann@example.com", "tok-1")), &[]);
+    let lab = machine(Some(("bob@example.com", "tok-2")), &[]);
+    local.add_machine("lab", "lab-host", Some(&lab), None);
+    let stub = stub(&[]);
+    let out = run(&local, &stub, &["usage"]);
+    assert!(out.starts_with("# PROFILE"), "{out}");
+    assert!(!out.contains("lab") && !out.contains("ALSO ON"), "{out}");
+    let v = json(run(&local, &stub, &["usage", "--json-v2"]).as_bytes());
+    assert!(v.get("machines").is_none(), "{v}");
+    run(&local, &stub, &["usage", "--all", "--json-v2"]);
+    assert!(local.ssh_log().is_empty());
+    assert!(
+        !local
+            .read(".mcc/config.toml")
+            .contains("machines_disclosed_at")
+    );
+
+    let v = json(run(&local, &stub, &["usage", "--json-v2", "--remote"]).as_bytes());
+    assert_eq!(
+        machine_of(&v, "lab")["error"],
+        serde_json::Value::Null,
+        "{v}"
+    );
+    assert!(!local.ssh_log().is_empty());
+}
+
+#[test]
+fn remote_needs_machines_and_reads_every_profile() {
+    let sb = usage_sandbox();
+    sb.mcc()
+        .args(["usage", "--remote"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("no other machines are set up"));
+    for args in [
+        &["usage", "work", "--remote"][..],
+        &["usage", "--json", "--remote"][..],
+        &["usage", "--all", "--only", "work", "--remote"][..],
+    ] {
+        sb.mcc().args(args).assert().code(2);
+    }
+    assert!(sb.ssh_log().is_empty());
+}
+
+#[test]
 fn another_machines_devin_row_is_shown_as_it_was_read() {
     // Devin isn't an account machines share: its row on lab is shown in a
     // Devin block under lab's table, and --all never asks lab for it.
@@ -697,7 +754,7 @@ fn another_machines_devin_row_is_shown_as_it_was_read() {
         commands_to(&local, "lab-host")[1],
         "'mcc' 'usage' '--all' '--json-v2' '--machine-protocol' '--only' 'default'"
     );
-    let out = run(&local, &stub, &["usage"]);
+    let out = run(&local, &stub, &["usage", "--remote"]);
     let lab_part = &out[out.find("lab (lab-host)").unwrap()..];
     assert!(lab_part.contains("\n# PROVIDER  "), "{out}");
     assert!(lab_part.contains("\n2 devin     — (not looked up"), "{out}");
@@ -731,7 +788,7 @@ fn the_same_email_in_another_organization_is_another_account() {
     assert_eq!(weekly(here), 20.0);
     assert_eq!(weekly(there), 70.0);
     assert_eq!(local.read(".mcc/state/default/usage.json"), before);
-    run(&local, &stub, &["usage", "--all"]);
+    run(&local, &stub, &["usage", "--remote", "--all"]);
     assert_eq!(stub.tokens(), ["tok-personal", "tok-work"]);
 }
 
@@ -763,7 +820,7 @@ fn what_another_machine_sends_is_never_shown_raw() {
     local.write("ssh-canned", &reply.to_string());
     local.add_machine("box", "canned", None, None);
     let stub = stub(&[]);
-    let out = table(&local, &stub, &["usage", "--show-email"]);
+    let out = table(&local, &stub, &["usage", "--remote", "--show-email"]);
     assert!(out.contains("box (canned) · updated —"), "{out}");
     assert!(!out.contains('\u{1b}') && !out.contains("evil"), "{out:?}");
     let v = v2(&local, &stub, &["--show-email"]);
@@ -789,7 +846,7 @@ fn this_machines_heading_shows_its_own_update_time() {
     let own = json(local.read(".mcc/state/default/usage.json").as_bytes())["updated_at"].clone();
 
     for _ in 0..2 {
-        let out = table(&local, &stub, &["usage"]);
+        let out = table(&local, &stub, &["usage", "--remote"]);
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines[0], "local · updated 30m ago", "{out}");
         assert!(
@@ -842,7 +899,7 @@ fn another_machine_tells_its_own_update_time_from_numbers_it_got() {
             .get("own_updated_at")
             .is_none()
     );
-    let out = table(&local, &stub, &["usage"]);
+    let out = table(&local, &stub, &["usage", "--remote"]);
     assert!(
         out.lines().any(|l| l == "lab (lab-host) · updated 2h ago"),
         "{out}"
@@ -906,7 +963,7 @@ fn a_time_ahead_of_this_clock_never_wins() {
     // Its own times weren't believed, so it has none.
     assert_eq!(box_v["updated_at"], serde_json::Value::Null, "{v}");
     assert_eq!(local.read(".mcc/state/default/usage.json"), before);
-    let out = table(&local, &stub, &["usage"]);
+    let out = table(&local, &stub, &["usage", "--remote"]);
     assert!(out.starts_with("local · updated 5m ago\n"), "{out}");
     assert!(out.contains("box (canned) · updated —"), "{out}");
     assert_eq!(local.read(".mcc/state/default/usage.json"), before);
@@ -960,7 +1017,7 @@ fn each_machines_heading_is_a_rule_as_wide_as_the_tables() {
     let stub = stub(&[]);
     let is_rule = |l: &&str| l.starts_with("── ");
 
-    let out = run(&local, &stub, &["usage"]);
+    let out = run(&local, &stub, &["usage", "--remote"]);
     let width = out
         .lines()
         .filter(|l| !is_rule(l))
@@ -979,7 +1036,7 @@ fn each_machines_heading_is_a_rule_as_wide_as_the_tables() {
             .mcc()
             .env("MCC_USAGE_URL", &stub.url)
             .env("COLUMNS", "40")
-            .args(["usage"]),
+            .args(["usage", "--remote"]),
     );
     let rules: Vec<&str> = narrow.lines().filter(is_rule).collect();
     assert_eq!(rules.len(), 2, "{narrow}");
