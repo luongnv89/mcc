@@ -4,6 +4,10 @@ All notable changes to mcc are recorded here. The format follows [Keep a Changel
 
 ## [Unreleased]
 
+### Changed
+
+- `mcc usage` no longer reads the machines under `[machines]` over SSH by default, which slowed every run down: it shows this machine's accounts alone unless you pass `--remote`. `mcc usage --remote` (table or `--json-v2`, with `--all` too) reads them as before; it can't be combined with `PROFILE`, `--json` or `--only`, and fails with a hint when no machine is set up.
+
 ## [0.13.0] - 2026-11-25
 
 mcc can now have a profile do a task on one of your other machines: `mcc remote PROFILE MACHINE TASK` runs Claude Code on this machine as that profile and lets it run commands on a machine named under `[machines.NAME]`, over SSH. The machine needs only sshd and a shell, not Claude Code or mcc, and mcc sends no login or token to it. Claude's report goes to stdout and a summary of the run (how it ended, turns, cost, commands run) to stderr; `--max-turns` and `--timeout` bound the run, and Ctrl+C or a timeout stops Claude Code and every ssh it started. `remote` and `remote-tool` are now reserved profile names.

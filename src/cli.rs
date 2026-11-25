@@ -56,21 +56,21 @@ macro_rules! usage_all_devin_note {
 }
 pub(crate) use usage_all_devin_note;
 
-/// The line `mcc usage --all` adds to its notice when other machines are
-/// set up (#130). A macro so the help text below can include it verbatim.
+/// The line `mcc usage --all --remote` adds to its notice when other
+/// machines are set up (#130). A macro so the help text below can include it verbatim.
 macro_rules! usage_all_machines_note {
     () => {
-        "⚠ Other machines are set up ([machines] in ~/.mcc/config.toml), so --all also refreshes them: over SSH, it runs `mcc usage --all` there for the accounts this machine doesn't have, each account looked up once, on one machine, with that machine's own login."
+        "⚠ Other machines are set up ([machines] in ~/.mcc/config.toml), so --all --remote also refreshes them: over SSH, it runs `mcc usage --all` there for the accounts this machine doesn't have, each account looked up once, on one machine, with that machine's own login."
     };
 }
 pub(crate) use usage_all_machines_note;
 
-/// Printed on stderr the first time `mcc usage` reads the machines set up
+/// Printed on stderr the first time `mcc usage --remote` reads the machines set up
 /// under `[machines]` (#130); `[usage] machines_disclosed_at` records that
 /// it was. A macro so the help text below can include it verbatim.
 macro_rules! machines_disclosure {
     () => {
-        "ⓘ mcc usage reads the other machines set up under [machines] in ~/.mcc/config.toml: it runs `mcc usage` on each over SSH (ssh -o BatchMode=yes, with your own SSH keys and config) and shows their tables after this machine's. No login or token leaves any machine; an account on several machines is matched by a SHA-256 of its email and organization, never the email itself. This note is shown once."
+        "ⓘ mcc usage --remote reads the other machines set up under [machines] in ~/.mcc/config.toml: it runs `mcc usage` on each over SSH (ssh -o BatchMode=yes, with your own SSH keys and config) and shows their tables after this machine's. No login or token leaves any machine; an account on several machines is matched by a SHA-256 of its email and organization, never the email itself. This note is shown once."
     };
 }
 pub(crate) use machines_disclosure;
@@ -260,8 +260,8 @@ pub enum Command {
         "  host = \"me@lab-box\"               # what `ssh` connects to\n",
         "  mcc = \"/home/me/.cargo/bin/mcc\"  # optional: mcc's full path there\n",
         "\n",
-        "`mcc usage` also runs `mcc usage` on each of them over SSH (BatchMode, so\n",
-        "key-based login must work without a prompt) and shows one table per\n",
+        "`mcc usage --remote` also runs `mcc usage` on each of them over SSH\n",
+        "(BatchMode, so key-based login must work without a prompt) and shows one table per\n",
         "machine after this one's (`local`), each headed by its name and when its\n",
         "numbers were last updated, or by why it couldn't be read; a machine that\n",
         "fails never fails the command. ALSO ON names the other machines an\n",
@@ -271,8 +271,9 @@ pub enum Command {
         "are saved to this machine's cache too. --sort orders each table. Each\n",
         "machine needs this version of mcc or newer; set `mcc` to its full path\n",
         "when a non-interactive SSH session doesn't find it. --json-v2 adds a\n",
-        "`machines` key: [{name, host, updated_at, error, profiles}]; --json, `mcc\n",
-        "usage PROFILE` and MCC_NO_USAGE=1 read this machine only. With --all,\n",
+        "`machines` key: [{name, host, updated_at, error, profiles}]. Without\n",
+        "--remote (the default, as SSH is slow), and with --json, `mcc usage\n",
+        "PROFILE` or MCC_NO_USAGE=1, only this machine is read. With --all,\n",
         "each account is looked up live once, on one machine (this one when it\n",
         "has it), and the note gains this line:\n",
         "\n",
@@ -883,6 +884,10 @@ pub struct UsageArgs {
     /// unless --all, and `[machines]` ignored.
     #[arg(long, hide = true, requires = "json_v2")]
     pub machine_protocol: bool,
+
+    /// Also read the other machines set up under [machines] in ~/.mcc/config.toml, over SSH (slower; without it, only this machine's accounts are shown)
+    #[arg(long, conflicts_with_all = ["profile", "json", "only", "machine_protocol"])]
+    pub remote: bool,
 }
 
 /// A profile name as `--only` takes it: the alias rules, so a name can be

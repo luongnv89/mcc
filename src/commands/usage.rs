@@ -6,12 +6,13 @@
 //! [`crate::refresh::refresh_expired`]). Its notices go to stderr, so
 //! `--json` stays as it was.
 //!
-//! With other machines set up (`[machines.NAME]`, #130), it also reads
-//! each of them over SSH ([`crate::machines`]) and shows one table per
-//! machine. Every row of an account then shows that account's newest
-//! numbers from any machine, saved to this machine's cache too, and
+//! With other machines set up (`[machines.NAME]`, #130) and `--remote`,
+//! it also reads each of them over SSH ([`crate::machines`]) and shows one
+//! table per machine. Every row of an account then shows that account's
+//! newest numbers from any machine, saved to this machine's cache too, and
 //! `--all` looks each account up live once, on one machine. Without
-//! machines, nothing of this runs and the output is as it was.
+//! `--remote`, nothing of this runs: SSH is slow, so only this machine's
+//! accounts are shown by default.
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -324,6 +325,11 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
         .hint("sign the Devin CLI in with `devin auth login` (or `mcc devin -- auth login`)")
         .into());
     }
+    if args.remote && cfg.machines.is_empty() {
+        return Err(CliError::usage("--remote: no other machines are set up")
+            .hint("add one as [machines.NAME] with host = \"…\" in ~/.mcc/config.toml (`mcc config edit`)")
+            .into());
+    }
     let protocol = args.machine_protocol;
     // `--only` names profiles of this machine alone: Devin is left out.
     let with_devin =
@@ -634,12 +640,14 @@ pub fn run(paths: &Paths, cfg: &Config, args: &UsageArgs) -> Result<()> {
     Ok(())
 }
 
-/// Whether this `mcc usage` reads the other machines set up (#130): every
+/// Whether this `mcc usage` reads the other machines set up (#130): only
+/// with `--remote` (SSH is slow, so it is never the default), for every
 /// profile of this machine as a table or `--json-v2`, usage not turned
 /// off. `mcc usage PROFILE`, `--only`, `--json` (schema 1) and another
 /// machine's own read (the machine protocol) read this machine alone.
 pub(crate) fn fans_out(cfg: &Config, args: &UsageArgs) -> bool {
-    !cfg.machines.is_empty()
+    args.remote
+        && !cfg.machines.is_empty()
         && args.profile.is_none()
         && args.only.is_none()
         && !args.json
