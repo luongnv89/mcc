@@ -38,7 +38,7 @@
 <main id="main">
   <div class="page-head">
     <div class="wrap">
-      <span class="eyebrow">Documentation · v0.12.0</span>
+      <span class="eyebrow">Documentation · v0.13.0</span>
       <h1>Using mcc</h1>
       <p class="lede">Install mcc, add profiles, keep them in sync and check their limits. Every command and option, with examples.</p>
     </div>
@@ -119,7 +119,7 @@
         <div class="code"><pre><span class="p">$ </span>git clone https://github.com/luongnv89/mcc &amp;&amp; cd mcc &amp;&amp; ./install.sh</pre></div>
         <p class="label">Directly with Cargo</p>
         <div class="code"><pre><span class="p">$ </span>cargo install --git https://github.com/luongnv89/mcc --locked</pre></div>
-        <p>The one-liner downloads the prebuilt binary for your platform (macOS or Linux, x86_64 or arm64) from the latest GitHub release, checks its SHA-256 checksum, and installs it into <code>~/.local/bin</code> (override with <code>MCC_INSTALL_DIR</code>); you don't need Rust. If <code>~/.local/bin</code> is not on your <code>PATH</code> (it isn't by default on macOS), the script tells you; add it with <code>export PATH="$HOME/.local/bin:$PATH"</code> in your shell profile. A checksum mismatch stops the install. <code>MCC_VERSION=v0.12.0</code> picks a release. When a release has no binary for your platform (releases up to v0.3.0 have none), or with <code>MCC_FROM_SOURCE=1</code>, or when run from a clone, the script builds with <code>cargo</code> and installs into <code>~/.cargo/bin</code> (override with <code>CARGO_INSTALL_ROOT</code>). Check it worked:</p>
+        <p>The one-liner downloads the prebuilt binary for your platform (macOS or Linux, x86_64 or arm64) from the latest GitHub release, checks its SHA-256 checksum, and installs it into <code>~/.local/bin</code> (override with <code>MCC_INSTALL_DIR</code>); you don't need Rust. If <code>~/.local/bin</code> is not on your <code>PATH</code> (it isn't by default on macOS), the script tells you; add it with <code>export PATH="$HOME/.local/bin:$PATH"</code> in your shell profile. A checksum mismatch stops the install. <code>MCC_VERSION=v0.13.0</code> picks a release. When a release has no binary for your platform (releases up to v0.3.0 have none), or with <code>MCC_FROM_SOURCE=1</code>, or when run from a clone, the script builds with <code>cargo</code> and installs into <code>~/.cargo/bin</code> (override with <code>CARGO_INSTALL_ROOT</code>). Check it worked:</p>
         <div class="code"><pre><span class="p">$ </span>mcc --version</pre></div>
       </section>
 
@@ -722,7 +722,7 @@ host = "me@lab-box"</pre></div>
         <h2>Alias rules <a class="anchor" href="#aliases" aria-label="Link to Alias rules">#</a></h2>
         <p>An alias must be 1–32 characters: lowercase letters, digits, <code>-</code> or <code>_</code>, starting with a letter. It is rejected if any of these already uses the name:</p>
         <ul>
-          <li>mcc's reserved names: <code>claude</code>, <code>mcc</code>, <code>default</code>, <code>help</code>, <code>all</code>, <code>path</code>, <code>share</code>, <code>link</code>, <code>refresh-launchers</code>, <code>project</code>, <code>run</code>, <code>env</code>, <code>exec</code>, <code>statusline</code>, <code>doctor</code>, <code>devin</code></li>
+          <li>mcc's reserved names: <code>claude</code>, <code>mcc</code>, <code>default</code>, <code>help</code>, <code>all</code>, <code>path</code>, <code>share</code>, <code>link</code>, <code>refresh-launchers</code>, <code>project</code>, <code>run</code>, <code>env</code>, <code>exec</code>, <code>statusline</code>, <code>doctor</code>, <code>devin</code>, <code>remote</code>, <code>remote-tool</code></li>
           <li>shell keywords and builtins</li>
           <li>existing mcc profiles</li>
           <li>executables on <code>$PATH</code></li>
@@ -750,6 +750,7 @@ host = "me@lab-box"</pre></div>
             <tr><td>Token refresh state</td><td><code>~/.mcc/state/&lt;profile&gt;/refresh.lock</code> (held while <code>mcc usage --all</code> or <code>mcc login --refresh-only</code> has Claude Code refresh the profile's token) and <code>refresh-failed-at</code> (when <code>mcc usage --all</code> last failed to, so it waits 30 minutes before trying again)</td></tr>
             <tr><td>API keys</td><td><code>~/.mcc/keys/&lt;profile dir&gt;-&lt;8 hex&gt;.key</code> (<code>0600</code>, in a <code>0700</code> folder): the key of an API-key profile added with <code>--api-key-stdin</code> or <code>--api-key-prompt</code>, written once and read by Claude Code through the profile's <code>apiKeyHelper</code>, never by mcc again; <code>mcc delete</code> removes it</td></tr>
             <tr><td>Spend ledgers</td><td><code>~/.mcc/state/&lt;profile&gt;/cost/&lt;session_id&gt;.json</code>, API-key profiles only: the last cost the status line saw for each session and what it added each month, for the estimated spend; ledgers left alone for 62 days are removed</td></tr>
+            <tr><td>Remote runs</td><td><code>~/.mcc/state/remote/&lt;pid&gt;-&lt;nanos&gt;/</code> (<code>0700</code>): one private folder per <a href="#cmd-remote"><code>mcc remote</code></a> run, holding its MCP config and a record of each command's exit status (never the command); removed when the run ends</td></tr>
             <tr><td>Sync backups</td><td><code>&lt;profile&gt;/.mcc-backup/&lt;timestamp&gt;/</code>, and <code>~/.claude/.mcc-backup/&lt;timestamp&gt;/</code> for the default's <code>settings.json</code> before <code>mcc sync</code> takes settings changed in a profile into it; the profile's folder also holds the profile's own copy of what <code>mcc link</code> replaces (plugins included); <code>&lt;timestamp&gt;-auto/</code> for <a href="#auto-sync">auto sync</a>, which keeps its 10 latest</td></tr>
             <tr><td>Sync record</td><td><code>&lt;profile&gt;/.mcc-sync.json</code>: a hash of each path, MCP server and <code>settings.json</code> key mcc last wrote, for <a href="#three-way">three-way sync</a>, and a hash of each setting you declined to take into the default (never a value)</td></tr>
             <tr><td>Settings overlay</td><td><code>[profiles.&lt;alias&gt;.settings]</code> in <code>~/.mcc/config.toml</code> and <code>&lt;profile&gt;/settings.mcc.json</code>; see <a href="#settings-overlays">Per-profile settings overlays</a></td></tr>
@@ -775,6 +776,7 @@ host = "me@lab-box"</pre></div>
             <tr><td><code>MCC_DEVIN_API_URL</code></td><td>Test/debug override for Devin's API base (<code>https://app.devin.ai/api</code>); only <code>https://</code> and loopback <code>http://</code> are accepted, else Devin's usage is not fetched</td></tr>
             <tr><td><code>MCC_USAGE_URL</code></td><td>Test/debug override for the usage endpoint. It receives bearer tokens, so only <code>https://</code> URLs and <code>http://</code> on loopback (<code>127.0.0.1</code>, <code>localhost</code>, <code>[::1]</code>) are accepted; any other value is refused and usage is not fetched at all</td></tr>
             <tr><td><code>MCC_SECURITY_BIN</code></td><td>Test/debug override for the macOS <code>security</code> binary used to read Keychain logins (default <code>/usr/bin/security</code>)</td></tr>
+            <tr><td><code>MCC_SSH_BIN</code></td><td>The <code>ssh</code> program used for <code>mcc usage</code> across <a href="#machines">other machines</a> and for <a href="#cmd-remote"><code>mcc remote</code></a> (default: <code>ssh</code> from <code>PATH</code>); for <code>mcc remote</code>, a full path or a name found on <code>PATH</code></td></tr>
             <tr><td><code>NO_COLOR</code></td><td>Disable colors</td></tr>
           </tbody>
         </table></div>
@@ -790,6 +792,7 @@ host = "me@lab-box"</pre></div>
             <tr><td><code>2</code></td><td>Usage error (bad arguments, invalid or taken alias, confirmation needed without a terminal)</td></tr>
             <tr><td><code>3</code></td><td>Invalid input (corrupt <code>config.toml</code> or JSON)</td></tr>
             <tr><td><code>130</code></td><td>Interrupted (Ctrl+C)</td></tr>
+            <tr><td><code>124</code>, <code>127</code>, <code>129</code>, <code>131</code>, <code>143</code></td><td><a href="#cmd-remote"><code>mcc remote</code></a>: <code>--timeout</code> ran out (124), no <code>claude</code> or <code>ssh</code> here (127), stopped by SIGHUP (129), SIGQUIT (131) or SIGTERM (143)</td></tr>
           </tbody>
         </table></div>
       </section>

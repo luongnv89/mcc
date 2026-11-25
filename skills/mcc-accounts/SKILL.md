@@ -74,7 +74,7 @@ Usage comes from a cache: report its age (`updated_at`). Read `references/inspec
    - If the user gave the exact task text and it needs no tool that writes, run it. In the same message, say that it spends that profile's quota.
    - Otherwise show the profile, prompt, directory, and allowed tools, and wait for a yes. If the task text is missing, ask for it; never write it yourself.
    - Read `references/run-as.md` for flags, timeouts, and output handling.
-5. For a task on another machine under `[machines]` (mcc after 0.12.0: `mcc remote <profile> <machine> <task>`), show the profile, machine, host and task and wait for a yes every time: Claude Code then runs commands on that machine as the remote SSH user. Read `references/run-as.md` → "Tasks on another machine".
+5. For a task on another machine under `[machines]` (mcc 0.13.0+: `mcc remote <profile> <machine> <task>`), show the profile, machine, host and task and wait for a yes every time: Claude Code then runs commands on that machine as the remote SSH user. Read `references/run-as.md` → "Tasks on another machine".
 6. Relay any ⚠ line mcc prints on stderr once: use only accounts you own, never to get around usage limits.
 7. Commands that need a terminal or a browser (listed in `references/run-as.md`) are handed off: give the user the command.
 

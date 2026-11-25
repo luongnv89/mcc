@@ -47,7 +47,7 @@ SKILL.md (Run as, step 4) decides whether to run at once or to wait for a yes. T
 
 A nested `claude -p` started this way works from inside a Claude Code session. It was verified with Claude Code 2.1.x and mcc 0.8.0.
 
-## Tasks on another machine (`mcc remote`, mcc after 0.12.0)
+## Tasks on another machine (`mcc remote`, mcc 0.13.0+)
 
 `mcc remote <profile> <machine> '<task>'` has the profile do a task on a machine set up under `[machines.<machine>]` in `~/.mcc/config.toml`. The machine needs only sshd and a shell; Claude Code runs here, as the profile, and its one tool runs one command at a time there over SSH. SKILL.md (Run as, step 5) needs a yes for every run, because those commands run with the user's SSH key as the remote user.
 

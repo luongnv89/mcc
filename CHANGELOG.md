@@ -4,10 +4,14 @@ All notable changes to mcc are recorded here. The format follows [Keep a Changel
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-25
+
+mcc can now have a profile do a task on one of your other machines: `mcc remote PROFILE MACHINE TASK` runs Claude Code on this machine as that profile and lets it run commands on a machine named under `[machines.NAME]`, over SSH. The machine needs only sshd and a shell, not Claude Code or mcc, and mcc sends no login or token to it. Claude's report goes to stdout and a summary of the run (how it ended, turns, cost, commands run) to stderr; `--max-turns` and `--timeout` bound the run, and Ctrl+C or a timeout stops Claude Code and every ssh it started. `remote` and `remote-tool` are now reserved profile names.
+
 ### Added
 
 - `mcc remote PROFILE MACHINE TASK` has a profile do a task on one of your `[machines]` over SSH, on a machine that needs only sshd and a shell (no Claude Code, no mcc). Claude Code runs on this machine as the profile, in headless mode (`claude -p`), with no tools of its own and one MCP tool served by mcc (`mcc remote-tool`, hidden), which runs one command on the machine through a fixed, hardened `ssh` argument list (no agent, X11 or port forwarding, no Kerberos credential delegation). mcc checks the machine first (`ssh HOST true`), sends no login or token anywhere, gives the task on stdin and keeps it out of mcc.log, prints Claude's report on stdout (`--json`: the whole result) and a summary on stderr (how it ended, turns, cost, commands run and failed, refused tool calls), and exits 0 when Claude Code's run finished without an error (whether the task itself succeeded is for Claude's report to say). `--task-file PATH` or `-` (stdin) give the task, `--max-turns N` (30) and `--timeout SECS` bound the run; `--timeout`, Ctrl+C, SIGTERM, SIGHUP and SIGQUIT stop Claude Code and every ssh it started (exit 124, 130, 143, 129, 131); Ctrl+Z suspends them with mcc, `fg` resumes them, and the time suspended doesn't count against `--timeout`. Every run prints a note on stderr about what can reach the machine. ([#142](https://github.com/luongnv89/mcc/issues/142))
-- `remote` and `remote-tool` are reserved profile names.
+- `remote` and `remote-tool` are reserved profile names (an existing profile of that name keeps working).
 
 ## [0.12.0] - 2026-11-24
 
@@ -239,7 +243,8 @@ The first version of mcc.
 - Access tokens are kept in memory only, sent only to the usage endpoint for their own profile, and never printed, logged or written to disk. Expired tokens are never sent. ([#15](https://github.com/luongnv89/mcc/pull/15))
 - GitHub private vulnerability reporting is enabled, and `contact@luongnv.com` is listed as the security contact. ([#21](https://github.com/luongnv89/mcc/pull/21))
 
-[Unreleased]: https://github.com/luongnv89/mcc/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/luongnv89/mcc/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/luongnv89/mcc/releases/tag/v0.13.0
 [0.12.0]: https://github.com/luongnv89/mcc/releases/tag/v0.12.0
 [0.11.0]: https://github.com/luongnv89/mcc/releases/tag/v0.11.0
 [0.10.0]: https://github.com/luongnv89/mcc/releases/tag/v0.10.0

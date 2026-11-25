@@ -99,6 +99,7 @@ Where each file lives, and what clone and sync copy: [How it works in detail](#h
 | Drift at a glance | `mcc list` and `mcc diff` show what is behind, edited or conflicting |
 | Usage in one table | 5-hour and weekly limits per account, read from the opt-in statusline cache |
 | Per-project profiles | `mcc run` starts the project's (or its workspace folder's) account; `mcc here` says which applies; `mcc env` covers IDEs and direnv |
+| Tasks on other machines | `mcc remote` has a profile do a task over SSH on a server with no Claude Code; no login or token goes there |
 | Shared plugins | Clones reuse the default's plugins (about 88 MB per profile, one real setup) |
 | Settings overlays | A profile keeps its own `model`, permissions or `env` through every sync |
 | Opt-in session sharing | `--resume` across your own profiles; mixing organizations refused by default |
@@ -199,7 +200,8 @@ The full documentation, one collapsed section per topic. `mcc help COMMAND` prin
 - **Usage without reading your tokens.** The opt-in `mcc statusline` caches each profile's 5-hour and weekly rate limits as you use Claude Code, for `list`, `usage` and `run`, and `--prefix` puts the active profile's name in the status line. Looking usage up live with each profile's login is opt-in too: always with `[usage] live = true`, or for one run with `mcc usage --all`, which prints a risk notice each time and, for an account whose access token has expired, lets Claude Code refresh it in one tiny session first.
 - **Devin beside your Claude Code accounts.** When the [Devin CLI](https://docs.devin.ai) is signed in, `mcc list`, `mcc usage` and bare `mcc` add a `devin` row with Devin's daily and weekly quota and its overage balance, read with the Devin CLI's own login (mcc never signs it in or stores its token). `mcc devin` starts the Devin CLI with its default configuration (see [Devin](#devin-mcc-devin)).
 - **Usage in Herdr.** [mcc-herdr-plugin](https://github.com/luongnv89/mcc-herdr-plugin) (`herdr plugin install luongnv89/mcc-herdr-plugin`) shows every account's 5-hour and weekly usage in a collapsible pane under Herdr's agent list, with a button that looks every account up live.
-- **Agent skill.** The [mcc-accounts skill](skills/mcc-accounts/SKILL.md) lets an AI agent use your profiles through mcc: tell which account a session or repository uses, report usage and login expiry, run a command or a headless `claude -p` task as a profile you name (`mcc exec`), and change mcc settings when you ask. It reads no tokens, hides emails, and never picks, ranks or runs an account because another one is at its limit. See its [installation and usage guide](skills/mcc-accounts/docs/README.md).
+- **Tasks on other machines.** `mcc remote PROFILE MACHINE TASK` has a profile do a task on one of your [`[machines]`](#multiple-machines) over SSH. Claude Code runs here, headless, as the profile, and its one tool runs commands on the machine, which needs only sshd and a shell: no Claude Code, no mcc, no login. Claude's report and a summary of the run come back when it ends, and `--max-turns` and `--timeout` bound it (see [Run a task on another machine](#run-a-task-on-another-machine-mcc-remote)).
+- **Agent skill.** The [mcc-accounts skill](skills/mcc-accounts/SKILL.md) lets an AI agent use your profiles through mcc: tell which account a session or repository uses, report usage and login expiry, run a command or a headless `claude -p` task as a profile you name (`mcc exec`) or, after you confirm, a task on another machine (`mcc remote`), and change mcc settings when you ask. It reads no tokens, hides emails, and never picks, ranks or runs an account because another one is at its limit. See its [installation and usage guide](skills/mcc-accounts/docs/README.md).
 - **`doctor` and `config`.** `mcc doctor` checks every profile's setup and prints a fix for each problem it finds; `mcc config` reads and changes mcc's settings without hand-editing TOML.
 - **Profiles you can tell apart.** A label and a color per profile, `mcc` on its own for a one-screen status of every profile, and an opt-in launch banner that names the profile and its usage as it starts.
 - **`delete`.** Logs the profile out (clearing its keychain entry), then removes its directory, launcher, shell alias, and registry entry. It refuses the old name of a renamed profile, so that profile's files are never removed by mistake.
@@ -231,7 +233,7 @@ Homebrew builds mcc from source with its own Rust, so you don't need Rust instal
 curl -fsSL https://raw.githubusercontent.com/luongnv89/mcc/main/install.sh | sh
 ```
 
-The script downloads the prebuilt `mcc` for your platform (macOS or Linux, x86_64 or arm64) from the latest [GitHub release](https://github.com/luongnv89/mcc/releases), checks it against the release's SHA-256 checksum, and installs it into `~/.local/bin` (override with `MCC_INSTALL_DIR`). If `~/.local/bin` is not on your `PATH` (it isn't by default on macOS), the script tells you; add it with `export PATH="$HOME/.local/bin:$PATH"` in your shell profile. You don't need Rust. A checksum mismatch stops the install with nothing installed. `MCC_VERSION=v0.12.0` installs a given release. When the release has no binary for your platform (releases up to v0.3.0 have none), the script builds from source with `cargo` instead (at the `MCC_VERSION` tag when one is set). Older versions of the script installed into `~/.cargo/bin`; if an old `mcc` there still comes first on your `PATH`, the script warns you, and `cargo uninstall mcc` removes it.
+The script downloads the prebuilt `mcc` for your platform (macOS or Linux, x86_64 or arm64) from the latest [GitHub release](https://github.com/luongnv89/mcc/releases), checks it against the release's SHA-256 checksum, and installs it into `~/.local/bin` (override with `MCC_INSTALL_DIR`). If `~/.local/bin` is not on your `PATH` (it isn't by default on macOS), the script tells you; add it with `export PATH="$HOME/.local/bin:$PATH"` in your shell profile. You don't need Rust. A checksum mismatch stops the install with nothing installed. `MCC_VERSION=v0.13.0` installs a given release. When the release has no binary for your platform (releases up to v0.3.0 have none), the script builds from source with `cargo` instead (at the `MCC_VERSION` tag when one is set). Older versions of the script installed into `~/.cargo/bin`; if an old `mcc` there still comes first on your `PATH`, the script warns you, and `cargo uninstall mcc` removes it.
 
 Each release lists `mcc-<target>.tar.gz` archives (`x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`; the Linux builds are static) with a `.sha256` file each and a `SHA256SUMS`, if you'd rather download one by hand:
 
@@ -276,6 +278,7 @@ mcc rename work job         # rename the profile: its command becomes `job`
 mcc default job             # ~/.claude and `job` trade accounts (asks first)
 mcc project set job         # in a repository: `mcc run` starts `job` there
 mcc run                     # start Claude Code with this project's profile
+mcc remote job lab "check disk space"   # have `job` do a task on the machine `lab`, over SSH
 mcc delete job              # remove it completely
 ```
 
@@ -788,6 +791,8 @@ mcc = "/home/me/.cargo/bin/mcc"     # optional: mcc's full path there
 
 The first `mcc usage` that reads other machines explains this on stderr once, and records when as `machines_disclosed_at` under `[usage]`.
 
+The same `[machines]` entries let a profile do a task on a machine: see [Run a task on another machine](#run-a-task-on-another-machine-mcc-remote).
+
 </details>
 
 ##### Run a task on another machine: `mcc remote`
@@ -1269,7 +1274,7 @@ Each finding is `ok`, `warn`, `problem` or `skipped` (with the reason). mcc exit
 
 An alias must be 1–32 characters: lowercase letters, digits, `-` or `_`, starting with a letter. It is rejected if any of these already uses the name:
 
-- mcc's reserved names: `claude`, `mcc`, `default`, `help`, `all`, `path`, `share`, `link`, `refresh-launchers`, `project`, `run`, `env`, `exec`, `statusline`, `doctor`, `devin`
+- mcc's reserved names: `claude`, `mcc`, `default`, `help`, `all`, `path`, `share`, `link`, `refresh-launchers`, `project`, `run`, `env`, `exec`, `statusline`, `doctor`, `devin`, `remote`, `remote-tool`
 - shell keywords and builtins
 - existing mcc profiles, and the old name of a renamed profile (its directory still uses that name; the error names the profile)
 - executables on `$PATH`
@@ -1296,6 +1301,7 @@ An alias must be 1–32 characters: lowercase letters, digits, `-` or `_`, start
 | `MCC_DEVIN_API_URL` | Test/debug override for Devin's API base (`https://app.devin.ai/api`). It receives Devin's session token, so only `https://` URLs and `http://` on loopback are accepted; any other value is refused and Devin's usage is not fetched |
 | `XDG_DATA_HOME` | Where the Devin CLI keeps its login: `$XDG_DATA_HOME/devin/credentials.toml` when set, else `~/.local/share/devin/credentials.toml` |
 | `MCC_SECURITY_BIN` | Test/debug override for the macOS `security` binary used to read Keychain logins with `[usage] live = true`, `mcc usage --all` or `mcc login` (default `/usr/bin/security`, macOS only) |
+| `MCC_SSH_BIN` | The `ssh` program used for `mcc usage` across [machines](#multiple-machines) and for `mcc remote` (default: `ssh` from `PATH`); for `mcc remote`, a full path or a name found on `PATH` |
 | `NO_COLOR` | Disable colors |
 
 </details>
@@ -1303,7 +1309,7 @@ An alias must be 1–32 characters: lowercase letters, digits, `-` or `_`, start
 ### Exit codes
 
 <details>
-<summary>0, 1, 2, 3, 130</summary>
+<summary>0, 1, 2, 3, 130, and those of mcc remote</summary>
 
 | Code | Meaning |
 |---|---|
@@ -1312,6 +1318,7 @@ An alias must be 1–32 characters: lowercase letters, digits, `-` or `_`, start
 | 2 | Usage error (bad arguments, invalid or taken alias, confirmation needed without a terminal) |
 | 3 | Invalid input (corrupt `config.toml` or JSON) |
 | 130 | Interrupted (Ctrl+C) |
+| 124, 127, 129, 131, 143 | `mcc remote`: `--timeout` ran out (124), no `claude` or `ssh` here (127), stopped by SIGHUP (129), SIGQUIT (131) or SIGTERM (143); see [Run a task on another machine](#run-a-task-on-another-machine-mcc-remote) |
 
 </details>
 

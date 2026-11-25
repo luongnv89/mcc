@@ -14,6 +14,7 @@
 - Tells apart the account a Claude Code session runs as and the account `mcc run` would start in a directory, even for renamed profiles whose folder keeps the old name
 - Reports every account's 5-hour and weekly usage and upcoming login expiry from mcc's cache, without reading tokens
 - Runs a command or a headless Claude task as an account you name (`mcc exec`), keeping stray `ANTHROPIC_API_KEY`-style variables away from it
+- Has an account do a task on one of your other machines over SSH (`mcc remote`, mcc 0.13.0+), after showing you the profile, machine, host and task and getting your yes every time
 - Changes mcc settings (project mappings, sync, share) only when you ask, confirming anything destructive, and hands you the commands that need a browser sign-in, such as switching the default profile's account (`mcc default`)
 - Never picks or runs an account because another is at its limit, even one you name, and never builds automatic account switching: at a limit it reports the reset time and hands the choice to `mcc run`, as mcc itself does
 - Acts only on accounts you name exactly (or the repo's mapping); "my work account" gets a question back
@@ -25,6 +26,7 @@
 | "Which Claude account is this session using?" | Resolve the session's `CLAUDE_CONFIG_DIR` to an mcc profile and compare it with the repo's mapping |
 | "How much usage is left on my accounts?" | Summarize `mcc usage` per account, with cache age and any login about to expire |
 | "Run this as my `work` profile" | Run it through `mcc exec work -- …`, after checking credential variables and quota |
+| "Have my `work` account check disk space on `lab`" | Show the profile, machine, host and task, wait for your yes, then run `mcc remote work lab -` with the task on stdin |
 | "Make this repo use my lab account" | Run `mcc project set lab` and verify it with `mcc run --dry-run` |
 | "My account hit its limit, switch me" | Report when the limit resets, recommend waiting, and hand the choice to `mcc run` in your terminal |
 
@@ -61,7 +63,7 @@ Install it from this repository with your skill manager, or copy `skills/mcc-acc
 | --- | --- |
 | `scripts/mcc_whoami.py` | Resolves the session account and the directory's account, and lists credential variables that would override a profile's login |
 | `references/inspect.md` | JSON fields, usage `reason` codes, exit codes, manual resolution |
-| `references/run-as.md` | `mcc exec`, headless `claude -p` runs, commands that need a terminal |
+| `references/run-as.md` | `mcc exec`, headless `claude -p` runs, `mcc remote` tasks on another machine, commands that need a terminal |
 | `references/manage.md` | What each mutating mcc command changes, and whether to run, confirm, or hand it off |
 | `evals/` | Six eval prompts and a sandbox builder that never touches real accounts |
 

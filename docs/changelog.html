@@ -52,7 +52,21 @@
           <h2>Unreleased</h2>
           <span class="pill pill-muted">main</span>
         </div>
-        <p style="margin:0">Nothing yet beyond 0.12.0. Follow <a href="https://github.com/luongnv89/mcc/commits/main">commits on <code>main</code></a> for work in progress.</p>
+        <p style="margin:0">Nothing yet beyond 0.13.0. Follow <a href="https://github.com/luongnv89/mcc/commits/main">commits on <code>main</code></a> for work in progress.</p>
+      </article>
+
+      <article class="release" id="v0.13.0">
+        <div class="release-head">
+          <h2>0.13.0</h2>
+          <span class="pill pill-muted">2026-11-25</span>
+        </div>
+        <p>mcc can now hand a task to one of your accounts on another machine. <code>mcc remote</code> runs Claude Code here, as the profile you pick, and lets it run commands on a machine you listed under <code>[machines]</code>, over SSH. The machine needs no Claude Code or mcc of its own, and no login or token is ever sent to it. <a href="https://github.com/luongnv89/mcc/releases/tag/v0.13.0">Release v0.13.0</a>.</p>
+
+        <h3>Added</h3>
+        <ul>
+          <li>Tasks on your other machines. <code>mcc remote work lab "list failed systemd units"</code> has the <code>work</code> profile do the task on <code>lab</code>, a machine you listed under <code>[machines.lab]</code>. Claude Code runs on this machine, and its only tool runs one command at a time on <code>lab</code> over SSH, with your own key; the machine needs only sshd and a shell. Give the task as an argument, from a file with <code>--task-file</code>, or on stdin with <code>-</code>. When it ends, Claude's report of what it did goes to stdout and a short summary of the run (how it ended, turns, cost, commands run) to stderr; <code>--json</code> prints the whole result. <code>--max-turns</code> (30 by default) and <code>--timeout</code> cap how long it works, and Ctrl+C or a timeout stops Claude Code and every SSH connection it opened (a command already running on the machine may keep running there). mcc never sends a login or token to the machine and keeps the task out of its log. Needs Claude Code v2.1.259 or later. See <a href="docs.html#cmd-remote"><code>mcc remote</code></a>.</li>
+          <li>You can no longer name a profile <code>remote</code> or <code>remote-tool</code>: mcc keeps those names for itself. An existing profile with one of those names keeps working.</li>
+        </ul>
       </article>
 
       <article class="release" id="v0.12.0">

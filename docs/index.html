@@ -23,7 +23,7 @@
     "description": "Manage multiple Claude Code profiles (accounts) from one CLI.",
     "applicationCategory": "DeveloperApplication",
     "operatingSystem": "macOS, Linux",
-    "softwareVersion": "0.12.0",
+    "softwareVersion": "0.13.0",
     "license": "https://www.apache.org/licenses/LICENSE-2.0",
     "codeRepository": "https://github.com/luongnv89/mcc",
     "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
@@ -56,7 +56,7 @@
   <section class="hero">
     <div class="wrap hero-grid">
       <div>
-        <p class="hero-release"><a class="pill pill-link" href="changelog.html#v0.12.0"><span class="pill-tag">v0.12.0</span> What's new: API-key profiles and usage across machines<span aria-hidden="true">→</span></a></p>
+        <p class="hero-release"><a class="pill pill-link" href="changelog.html#v0.13.0"><span class="pill-tag">v0.13.0</span> What's new: tasks on your other machines<span aria-hidden="true">→</span></a></p>
         <span class="eyebrow">Open-source CLI · macOS &amp; Linux</span>
         <h1>Run every Claude Code account <span class="hl">side by side.</span></h1>
         <p class="lede">Claude Code keeps one login in <code>~/.claude</code>. mcc gives each account its own command and a copy of your setup: <code>work</code> for one, <code>claude</code> for the other.</p>
@@ -374,13 +374,14 @@ Login successful.
           <div class="sim-cap">
             <div>
               <h3>Your other machines, over SSH</h3>
-              <p>List a machine once in <code>~/.mcc/config.toml</code>. <code>mcc usage</code> then reads its accounts over SSH with your own keys, one table per machine.</p>
+              <p>List a machine once in <code>~/.mcc/config.toml</code>. <code>mcc usage</code> then reads its accounts over SSH with your own keys, one table per machine. The same machine can take tasks: <code>mcc remote work lab "list failed systemd units"</code> has <code>work</code> run commands there over SSH, with no Claude Code or mcc on it.</p>
               <div class="code sim-snippet"><pre>[machines.lab]
 host = "me@lab-box"</pre></div>
             </div>
             <ul class="sim-facts">
               <li>No login or token leaves any machine</li>
               <li><a href="docs.html#machines">Multiple machines</a></li>
+              <li><a href="docs.html#cmd-remote">mcc remote</a></li>
             </ul>
           </div>
           <figure class="term" aria-label="Terminal: mcc usage with one table for this machine and one for a machine named lab">
@@ -639,7 +640,7 @@ Here: `work` — the default for ~/code/app
         </details>
         <details>
           <summary>What does mcc send over the network?</summary>
-          <div><p>By default, nothing: <code>mcc list</code>, <code>mcc usage</code> and <code>mcc run</code> read the usage <code>mcc statusline</code> cached on your machine. The live lookup is opt-in (<code>mcc usage --all</code>, with a risk notice each time), and machines you list are read over SSH with your own keys. A login token is never printed, logged or written to disk. Details are on the <a href="privacy.html">privacy page</a>.</p></div>
+          <div><p>By default, nothing: <code>mcc list</code>, <code>mcc usage</code> and <code>mcc run</code> read the usage <code>mcc statusline</code> cached on your machine. The live lookup is opt-in (<code>mcc usage --all</code>, with a risk notice each time), and machines you list are read over SSH with your own keys. <code>mcc remote</code> runs the commands Claude writes on a machine you name, over SSH, and sends no login or token to it. A login token is never printed, logged or written to disk. Details are on the <a href="privacy.html">privacy page</a>.</p></div>
         </details>
         <details>
           <summary>Is the usage data official?</summary>
