@@ -6,7 +6,9 @@
 //! the command as one word, and only the environment ssh needs. No local
 //! shell is ever started. Requests are read on their own thread, so a
 //! `ping` is answered while a command runs and the end of stdin (Claude
-//! Code is gone) stops that command at once.
+//! Code is gone) stops that command at once. SIGINT and SIGTERM, which
+//! Claude Code ends its MCP servers with, do the same: the running
+//! command's ssh is stopped and the tool exits 0, quietly.
 //!
 //! Each call adds one line to the `--log` file, which `mcc remote` reads
 //! for its summary: its exit status, how long it took and whether it timed
@@ -45,6 +47,13 @@ const MAX_COMMAND: usize = 128 * 1024;
 /// The longest request line read; a longer one is refused unread.
 const MAX_LINE: usize = 4 * 1024 * 1024;
 
+/// How often the server checks whether it was told to stop.
+const POLL: Duration = Duration::from_millis(50);
+
+/// Raised by the end of stdin, SIGINT or SIGTERM: the running command is
+/// stopped and the server exits.
+static STOP: AtomicBool = AtomicBool::new(false);
+
 /// JSON-RPC error codes.
 const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;
@@ -68,6 +77,7 @@ pub fn run(args: &RemoteToolArgs) -> Result<()> {
         .into());
     }
     machines::check_agent_host(&args.host).map_err(CliError::input)?;
+    stop_on_signals();
     let server = Arc::new(Server {
         ssh: args.ssh.clone(),
         host: args.host.clone(),
@@ -75,24 +85,52 @@ pub fn run(args: &RemoteToolArgs) -> Result<()> {
         timeout: Duration::from_secs(args.command_timeout),
         out: Mutex::new(std::io::stdout()),
     });
-    let stop = Arc::new(AtomicBool::new(false));
     let (calls, queue) = mpsc::channel::<(Value, Value)>();
     {
-        let (server, stop) = (Arc::clone(&server), Arc::clone(&stop));
+        let server = Arc::clone(&server);
         std::thread::spawn(move || {
             read_requests(&server, &calls);
-            stop.store(true, Ordering::SeqCst);
+            STOP.store(true, Ordering::SeqCst);
         });
     }
-    for (id, params) in queue {
-        if stop.load(Ordering::SeqCst) {
-            break;
-        }
-        if let Some(result) = server.call(&params, &stop) {
+    while !STOP.load(Ordering::SeqCst) {
+        let (id, params) = match queue.recv_timeout(POLL) {
+            Ok(call) => call,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+        if let Some(result) = server.call(&params, &STOP) {
             server.send(&json!({"jsonrpc": "2.0", "id": id, "result": result}));
         }
     }
     Ok(())
+}
+
+extern "C" fn on_signal(_: libc::c_int) {
+    STOP.store(true, Ordering::SeqCst);
+}
+
+/// SIGINT and SIGTERM raise [`STOP`] instead of going through mcc's
+/// Ctrl+C handler (which would log and report an interruption). A signal
+/// ignored before stays ignored.
+fn stop_on_signals() {
+    for sig in [libc::SIGINT, libc::SIGTERM] {
+        // SAFETY: sigaction structs are plain C data; the handler only
+        // stores to an atomic, which is async-signal-safe.
+        unsafe {
+            let mut old: libc::sigaction = std::mem::zeroed();
+            if libc::sigaction(sig, std::ptr::null(), &mut old) != 0
+                || old.sa_sigaction == libc::SIG_IGN
+            {
+                continue;
+            }
+            let mut new: libc::sigaction = std::mem::zeroed();
+            new.sa_sigaction = on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
+            new.sa_flags = libc::SA_RESTART;
+            libc::sigemptyset(&mut new.sa_mask);
+            libc::sigaction(sig, &new, std::ptr::null_mut());
+        }
+    }
 }
 
 /// Read stdin until it ends, answering every request but `tools/call`,

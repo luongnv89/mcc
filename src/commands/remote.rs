@@ -211,6 +211,8 @@ fn system_prompt(name: &str, host: &str) -> String {
         "You are working on the machine {name} ({host}) over SSH; it may not have Claude Code installed. \
          You have exactly one tool, `run`, which runs one shell command there as the remote user and returns its exit status, stdout and stderr; each call is a new SSH session. \
          You cannot read or change files on this local machine. \
+         The working directory and any local paths in your environment information belong to this local machine, not to {name}: they do not exist there, so never use them in a command. \
+         Each `run` call starts in the remote user's home directory on {name}, and a `cd` does not carry over to the next call; use paths on {name}, absolute or relative to that home directory. \
          Wrap long-running commands in a remote-side timeout (e.g. `timeout 300 ...`). \
          Finish with a short report of what you did and whether the task succeeded."
     )
@@ -594,6 +596,16 @@ impl Outcome {
         !self.is_error && self.subtype == "success"
     }
 
+    /// How it ended, as shown and logged: its subtype, but `error` for a
+    /// result that is an error yet says `success` (e.g. not logged in).
+    fn label(&self) -> &str {
+        if self.is_error && self.subtype == "success" {
+            "error"
+        } else {
+            &self.subtype
+        }
+    }
+
     /// `box: success, 3 turns, $0.0123, 2 remote commands (0 failed)`.
     fn summary(&self, machine: &str, commands: &[Option<i32>]) -> String {
         let failed = commands.iter().filter(|c| **c != Some(0)).count();
@@ -603,7 +615,7 @@ impl Outcome {
             .map_or("cost unknown".to_string(), |c| format!("${c:.4}"));
         format!(
             "{machine}: {}, {turns} turns, {cost}, {} remote command{} ({failed} failed)",
-            self.subtype,
+            self.label(),
             commands.len(),
             if commands.len() == 1 { "" } else { "s" }
         )
@@ -686,7 +698,7 @@ fn report(
         if code == 0 { "INFO" } else { "WARN" },
         &format!(
             "remote: profile {profile} on machine {machine}: exit {code}, {}, {} turns",
-            outcome.subtype,
+            outcome.label(),
             outcome.turns.map_or("?".to_string(), |t| t.to_string())
         ),
     );
@@ -750,6 +762,11 @@ mod tests {
         let prompt = system_prompt("box", "me@box");
         assert!(!prompt.contains('\n'));
         assert!(prompt.contains("box (me@box)"));
+        assert!(prompt.contains(
+            "The working directory and any local paths in your environment information belong to this local machine, not to box"
+        ));
+        assert!(prompt.contains("starts in the remote user's home directory on box"));
+        assert!(prompt.contains("You cannot read or change files on this local machine."));
     }
 
     fn result(extra: &str) -> Vec<u8> {
@@ -777,6 +794,14 @@ mod tests {
         assert!(!max.succeeded());
         let err = Outcome::parse(&result(r#","subtype":"success","is_error":true"#)).unwrap();
         assert!(!err.succeeded());
+        // An error is never summed up as a success.
+        let summary = err.summary("box", &[]);
+        assert_eq!(
+            summary,
+            "box: error, 3 turns, $0.0123, 0 remote commands (0 failed)"
+        );
+        assert!(!summary.contains("success"));
+        assert_eq!(max.label(), "error_max_turns");
         // No is_error: not a success.
         assert!(
             !Outcome::parse(&result(r#","subtype":"success""#))

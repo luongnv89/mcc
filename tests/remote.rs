@@ -407,6 +407,66 @@ fn remote_tool_stops_its_command_when_stdin_ends() {
     assert_eq!(record["exit"], Value::Null);
 }
 
+/// Claude Code ends its MCP servers with SIGINT (or SIGTERM): the tool
+/// takes it as it takes the end of stdin, idle or with a command running.
+/// It stops that command's ssh and exits 0 quietly: no "interrupted" in
+/// mcc.log, nothing on stderr.
+#[test]
+fn remote_tool_exits_quietly_on_sigint_and_sigterm() {
+    for (signal, busy) in [
+        (libc::SIGINT, false),
+        (libc::SIGINT, true),
+        (libc::SIGTERM, false),
+        (libc::SIGTERM, true),
+    ] {
+        let sb = Sandbox::new();
+        let host = Sandbox::new();
+        sb.add_machine("box", "me@box", Some(&host), None);
+        std::fs::create_dir_all(sb.path(".mcc/logs")).unwrap();
+        let mut tool = Tool::start(&sb, "me@box", &[]);
+        tool.send(r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#);
+        assert_eq!(tool.recv()["id"], 1);
+        let mut sleeper = None;
+        if busy {
+            tool.send(
+                r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"run","arguments":{"command":"echo $$ > \"$HOME/sleeper.pid\"; exec sleep 30"}}}"#,
+            );
+            assert!(wait_for(20, || host.exists("sleeper.pid")
+                && host.read("sleeper.pid").ends_with('\n')));
+            let pid: i32 = host.read("sleeper.pid").trim().parse().unwrap();
+            // SAFETY: signal 0 only checks that the process exists.
+            assert_eq!(unsafe { libc::kill(pid, 0) }, 0);
+            sleeper = Some(pid);
+        }
+        // Signal the tool only, with its stdin still open.
+        let start = Instant::now();
+        // SAFETY: a plain signal to the child started above.
+        assert_eq!(unsafe { libc::kill(tool.child.id() as i32, signal) }, 0);
+        let mut status = None;
+        assert!(
+            wait_for(10, || {
+                status = tool.child.try_wait().unwrap();
+                status.is_some()
+            }),
+            "remote-tool did not exit on signal {signal}"
+        );
+        assert!(start.elapsed() < Duration::from_secs(10));
+        assert_eq!(status.unwrap().code(), Some(0), "signal {signal}");
+        if let Some(pid) = sleeper {
+            // SAFETY: as above.
+            assert!(
+                wait_for(5, || unsafe { libc::kill(pid, 0) } != 0),
+                "the command's ssh was left running"
+            );
+        }
+        let log = sb.read(".mcc/logs/mcc.log");
+        assert!(log.contains("remote-tool"), "{log}");
+        assert!(!log.contains("interrupted"), "{log}");
+        assert!(!log.contains("WARN"), "{log}");
+        drop(tool.input.take());
+    }
+}
+
 /// T4: a host ssh could read as an option or a shell could act on, or a
 /// relative ssh, is refused before anything runs.
 #[test]
@@ -502,6 +562,12 @@ fn remote_starts_the_profile_headless_with_only_the_tool() {
     let prompt = argv.last().unwrap();
     assert!(prompt.contains("the machine box (me@box)"), "{prompt}");
     assert!(prompt.contains("exactly one tool, `run`"), "{prompt}");
+    assert!(
+        prompt.contains(
+            "local paths in your environment information belong to this local machine, not to box"
+        ),
+        "{prompt}"
+    );
     for never in ["--bare", "--restricted", "--dangerously-skip-permissions"] {
         assert!(!argv.iter().any(|a| a == never), "{never}");
     }
@@ -685,15 +751,20 @@ fn remote_reports_how_the_task_ended() {
     }
     assert!(log.contains("exit 1, error_max_turns, 31 turns"), "{log}");
 
+    // An error result that says `success` (e.g. not logged in) is never
+    // summed up as one.
     let failed = r#"{"type":"result","subtype":"success","is_error":true,"num_turns":1,"result":"API error"}"#;
     remote(&sb, &["work", "box", TASK])
         .env("FAKE_REMOTE_RESULT", failed)
         .assert()
         .code(1)
         .stdout("API error\n")
-        .stderr(predicate::str::contains(
-            "✗ box: success, 1 turns, cost unknown",
-        ));
+        .stderr(
+            predicate::str::contains("✗ box: error, 1 turns, cost unknown")
+                .and(predicate::str::contains("success").not()),
+        );
+    let log = sb.read(".mcc/logs/mcc.log");
+    assert!(log.contains("exit 1, error, 1 turns"), "{log}");
 
     // Claude Code's own failure status passes through.
     remote(&sb, &["work", "box", TASK])
