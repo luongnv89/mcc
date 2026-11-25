@@ -732,7 +732,14 @@ fn remote_needs_machines_and_reads_every_profile() {
         &["usage", "--json", "--remote"][..],
         &["usage", "--all", "--only", "work", "--remote"][..],
     ] {
-        sb.mcc().args(args).assert().code(2);
+        // The no-machines usage error is exit 2 as well: only clap's own
+        // conflict text shows the conflict, not the missing machines, failed.
+        sb.mcc()
+            .args(args)
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("cannot be used with"))
+            .stderr(predicate::str::contains("no other machines are set up").not());
     }
     assert!(sb.ssh_log().is_empty());
 }
